@@ -27,20 +27,13 @@ export default function SignupPage() {
       setLoading(false);
       return;
     }
-    // Check if user already exists (after sign up)
+    // Insert profile for the new user
     const userId = signUpData.user?.id;
     if (!userId) {
       setError("User creation failed.");
       setLoading(false);
       return;
     }
-    const { data: existingUser } = await supabase.auth.admin.getUserById(userId);
-    if (!existingUser || !existingUser.user) {
-      setError("A user with this email already exists.");
-      setLoading(false);
-      return;
-    }
-    // Insert profile
     const { error: insertError } = await supabase.from("profiles").insert([
       {
         id: userId,

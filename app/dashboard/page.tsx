@@ -36,6 +36,16 @@ export default function ClientDashboard() {
     });
   }, [router]);
 
+  // Helper to format phone number as (XXX) XXX XXXX
+  function formatPhone(phone?: string | null) {
+    if (!phone) return null;
+    const cleaned = phone.replace(/\D/g, "");
+    if (cleaned.length === 10) {
+      return `(${cleaned.slice(0, 3)}) ${cleaned.slice(3, 6)} ${cleaned.slice(6)}`;
+    }
+    return phone;
+  }
+
   if (loading) {
     return <div className="flex min-h-screen items-center justify-center">Loading...</div>;
   }
@@ -47,7 +57,7 @@ export default function ClientDashboard() {
       <div className="mb-4">
         <strong>Name:</strong> {profile?.full_name || <span className="text-gray-400">(not set)</span>}<br />
         <strong>Email:</strong> {profile?.email || user?.email || <span className="text-gray-400">(not set)</span>}<br />
-        <strong>Phone:</strong> {profile?.phone || <span className="text-gray-400">(not set)</span>}
+        <strong>Phone:</strong> {formatPhone(profile?.phone) || <span className="text-gray-400">(not set)</span>}
       </div>
       <div style={{ color: 'red', fontWeight: 'bold' }}>TEST ELEMENT</div>
       {/* Add wallet, calendar, requests, etc. */}
