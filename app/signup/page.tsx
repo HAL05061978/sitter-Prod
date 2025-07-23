@@ -13,6 +13,17 @@ export default function SignupPage() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
+  // Helper to auto-format phone number as (xxx) xxx-xxxx
+  function formatPhoneInput(value: string) {
+    // Remove all non-digit characters
+    const digits = value.replace(/\D/g, "");
+    const len = digits.length;
+    if (len === 0) return "";
+    if (len < 4) return `(${digits}`;
+    if (len < 7) return `(${digits.slice(0, 3)}) ${digits.slice(3)}`;
+    return `(${digits.slice(0, 3)}) ${digits.slice(3, 6)}-${digits.slice(6, 10)}`;
+  }
+
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     setLoading(true);
@@ -83,8 +94,9 @@ export default function SignupPage() {
           <input
             type="tel"
             value={phone}
-            onChange={(e: React.ChangeEvent<HTMLInputElement>) => setPhone(e.target.value)}
+            onChange={(e: React.ChangeEvent<HTMLInputElement>) => setPhone(formatPhoneInput(e.target.value))}
             className="w-full px-3 py-2 border rounded"
+            placeholder="(555) 123-4567"
             required
           />
         </div>

@@ -109,7 +109,8 @@ export default function ClientDashboard() {
   // Helper to format birthdate for display
   function formatBirthdate(birthdate: string | null): string {
     if (!birthdate) return "Not set";
-    return new Date(birthdate).toLocaleDateString();
+    // Add T00:00:00 to ensure local time and avoid timezone shift
+    return new Date(birthdate + 'T00:00:00').toLocaleDateString();
   }
 
   const handleAddChild = async (e: React.FormEvent) => {
@@ -120,9 +121,8 @@ export default function ClientDashboard() {
     }
 
     // Validate birthdate (not in the future)
-    const birthDate = new Date(childBirthdate);
-    const today = new Date();
-    if (birthDate > today) {
+    const todayStr = new Date().toISOString().split('T')[0];
+    if (childBirthdate > todayStr) {
       setChildError("Birthdate cannot be in the future");
       return;
     }
@@ -223,10 +223,10 @@ export default function ClientDashboard() {
           Messages
         </button>
         <button 
-          onClick={() => router.push('/chat')}
+          onClick={() => router.push('/schedule')}
           className="px-6 py-3 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition font-medium"
         >
-          Chat
+          Schedule
         </button>
         <button 
           onClick={() => router.push('/groups')}
@@ -273,7 +273,7 @@ export default function ClientDashboard() {
                   <input
                     type="text"
                     value={childName}
-                    onChange={(e: React.ChangeEvent<HTMLInputElement>) => setChildName(e.target.value)}
+                    onChange={(e) => setChildName((e as React.ChangeEvent<HTMLInputElement>).target.value)}
                     className="w-full px-3 py-2 border rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
                     placeholder="Enter child's name"
                     required
@@ -284,7 +284,7 @@ export default function ClientDashboard() {
                   <input
                     type="date"
                     value={childBirthdate}
-                    onChange={(e: React.ChangeEvent<HTMLInputElement>) => setChildBirthdate(e.target.value)}
+                    onChange={(e) => setChildBirthdate((e as React.ChangeEvent<HTMLInputElement>).target.value)}
                     className="w-full px-3 py-2 border rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
                     max={new Date().toISOString().split('T')[0]}
                     required
@@ -351,7 +351,7 @@ export default function ClientDashboard() {
                   <input
                     type="text"
                     value={groupName}
-                    onChange={(e: React.ChangeEvent<HTMLInputElement>) => setGroupName(e.target.value)}
+                    onChange={(e) => setGroupName((e as React.ChangeEvent<HTMLInputElement>).target.value)}
                     className="w-full px-3 py-2 border rounded focus:outline-none focus:ring-2 focus:ring-purple-500"
                     placeholder="Enter group name"
                     required
@@ -361,7 +361,7 @@ export default function ClientDashboard() {
                   <label className="block text-sm font-medium mb-1">Description (Optional)</label>
                   <textarea
                     value={groupDescription}
-                    onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setGroupDescription(e.target.value)}
+                    onChange={(e) => setGroupDescription((e as React.ChangeEvent<HTMLTextAreaElement>).target.value)}
                     className="w-full px-3 py-2 border rounded focus:outline-none focus:ring-2 focus:ring-purple-500"
                     placeholder="Enter group description"
                     rows={3}
