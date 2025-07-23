@@ -211,10 +211,39 @@ export default function ClientDashboard() {
         <LogoutButton />
       </div>
       
-      <h1 className="text-3xl font-bold mb-6">Welcome to your Dashboard!</h1>
+      {/* Navigation Buttons */}
+      <div className="flex flex-wrap gap-4 mb-8">
+        <button className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition font-medium">
+          Profile
+        </button>
+        <button 
+          onClick={() => router.push('/messages')}
+          className="px-6 py-3 bg-green-600 text-white rounded-lg hover:bg-green-700 transition font-medium"
+        >
+          Messages
+        </button>
+        <button 
+          onClick={() => router.push('/chat')}
+          className="px-6 py-3 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition font-medium"
+        >
+          Chat
+        </button>
+        <button 
+          onClick={() => router.push('/groups')}
+          className="px-6 py-3 bg-orange-600 text-white rounded-lg hover:bg-orange-700 transition font-medium"
+        >
+          Groups
+        </button>
+        <button 
+          onClick={() => router.push('/activities')}
+          className="px-6 py-3 bg-red-600 text-white rounded-lg hover:bg-red-700 transition font-medium"
+        >
+          Activities
+        </button>
+      </div>
       
+      {/* Profile Info (without header) */}
       <div className="bg-white rounded-lg shadow-md p-6 mb-6">
-        <h2 className="text-xl font-semibold mb-4">Your Profile</h2>
         <div className="space-y-2">
           <div><strong>Name:</strong> {profile?.full_name || <span className="text-gray-400">(not set)</span>}</div>
           <div><strong>Email:</strong> {profile?.email || user?.email || <span className="text-gray-400">(not set)</span>}</div>
