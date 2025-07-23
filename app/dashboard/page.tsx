@@ -20,17 +20,31 @@ interface Child {
   created_at: string;
 }
 
+interface Group {
+  id: string;
+  name: string;
+  description: string | null;
+  created_by: string;
+  created_at: string;
+}
+
 export default function ClientDashboard() {
   const router = useRouter();
   const [loading, setLoading] = useState(true);
   const [user, setUser] = useState<User | null>(null);
   const [profile, setProfile] = useState<Profile | null>(null);
   const [children, setChildren] = useState<Child[]>([]);
+  const [groups, setGroups] = useState<Group[]>([]);
   const [showAddChild, setShowAddChild] = useState(false);
+  const [showAddGroup, setShowAddGroup] = useState(false);
   const [childName, setChildName] = useState("");
   const [childBirthdate, setChildBirthdate] = useState("");
+  const [groupName, setGroupName] = useState("");
+  const [groupDescription, setGroupDescription] = useState("");
   const [addingChild, setAddingChild] = useState(false);
+  const [addingGroup, setAddingGroup] = useState(false);
   const [childError, setChildError] = useState("");
+  const [groupError, setGroupError] = useState("");
 
   useEffect(() => {
     supabase.auth.getUser().then(async ({ data }) => {
@@ -53,6 +67,14 @@ export default function ClientDashboard() {
           .eq("parent_id", data.user.id)
           .order("created_at", { ascending: false });
         setChildren(childrenData || []);
+        
+        // Fetch groups created by this parent
+        const { data: groupsData } = await supabase
+          .from("groups")
+          .select("*")
+          .eq("created_by", data.user.id)
+          .order("created_at", { ascending: false });
+        setGroups(groupsData || []);
         
         setLoading(false);
       }
@@ -142,6 +164,43 @@ export default function ClientDashboard() {
     }
   };
 
+  const handleAddGroup = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!user || !groupName.trim()) {
+      setGroupError("Please enter a group name");
+      return;
+    }
+
+    setAddingGroup(true);
+    setGroupError("");
+
+    const { error } = await supabase.from("groups").insert([
+      {
+        name: groupName.trim(),
+        description: groupDescription.trim() || null,
+        created_by: user.id,
+      },
+    ]);
+
+    setAddingGroup(false);
+    if (error) {
+      setGroupError(error.message);
+    } else {
+      // Refresh groups list
+      const { data: groupsData } = await supabase
+        .from("groups")
+        .select("*")
+        .eq("created_by", user.id)
+        .order("created_at", { ascending: false });
+      setGroups(groupsData || []);
+      
+      // Reset form
+      setGroupName("");
+      setGroupDescription("");
+      setShowAddGroup(false);
+    }
+  };
+
   if (loading) {
     return <div className="flex min-h-screen items-center justify-center">Loading...</div>;
   }
@@ -163,81 +222,155 @@ export default function ClientDashboard() {
         </div>
       </div>
 
-      <div className="bg-white rounded-lg shadow-md p-6">
-        <div className="flex justify-between items-center mb-4">
-          <h2 className="text-xl font-semibold">Your Children</h2>
-          <button
-            onClick={() => setShowAddChild(!showAddChild)}
-            className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 transition"
-          >
-            {showAddChild ? "Cancel" : "Add Child"}
-          </button>
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        {/* Children Section */}
+        <div className="bg-white rounded-lg shadow-md p-6">
+          <div className="flex justify-between items-center mb-4">
+            <h2 className="text-xl font-semibold">Your Children</h2>
+            <button
+              onClick={() => setShowAddChild(!showAddChild)}
+              className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 transition"
+            >
+              {showAddChild ? "Cancel" : "Add Child"}
+            </button>
+          </div>
+
+          {showAddChild && (
+            <form onSubmit={handleAddChild} className="mb-6 p-4 bg-gray-50 rounded-lg">
+              <h3 className="text-lg font-medium mb-4">Add New Child</h3>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+                <div>
+                  <label className="block text-sm font-medium mb-1">Child's Name</label>
+                  <input
+                    type="text"
+                    value={childName}
+                    onChange={(e: React.ChangeEvent<HTMLInputElement>) => setChildName(e.target.value)}
+                    className="w-full px-3 py-2 border rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    placeholder="Enter child's name"
+                    required
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium mb-1">Birthdate</label>
+                  <input
+                    type="date"
+                    value={childBirthdate}
+                    onChange={(e: React.ChangeEvent<HTMLInputElement>) => setChildBirthdate(e.target.value)}
+                    className="w-full px-3 py-2 border rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    max={new Date().toISOString().split('T')[0]}
+                    required
+                  />
+                </div>
+              </div>
+              {childError && <div className="text-red-600 mb-4">{childError}</div>}
+              <button
+                type="submit"
+                disabled={addingChild}
+                className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 transition disabled:opacity-50"
+              >
+                {addingChild ? "Adding..." : "Add Child"}
+              </button>
+            </form>
+          )}
+
+          {children.length === 0 ? (
+            <div className="text-center py-8 text-gray-500">
+              <p>No children added yet.</p>
+              <p className="text-sm">Click "Add Child" to get started.</p>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {children.map((child) => {
+                const age = calculateAge(child.birthdate);
+                return (
+                  <div key={child.id} className="bg-gray-50 rounded-lg p-4">
+                    <h3 className="font-medium text-lg">{child.full_name}</h3>
+                    <p className="text-gray-600">
+                      Age: {age !== null ? `${age} years old` : "Unknown"}
+                    </p>
+                    <p className="text-gray-600">
+                      Birthday: {formatBirthdate(child.birthdate)}
+                    </p>
+                    <p className="text-xs text-gray-400 mt-2">
+                      Added: {new Date(child.created_at).toLocaleDateString()}
+                    </p>
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
 
-        {showAddChild && (
-          <form onSubmit={handleAddChild} className="mb-6 p-4 bg-gray-50 rounded-lg">
-            <h3 className="text-lg font-medium mb-4">Add New Child</h3>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
-              <div>
-                <label className="block text-sm font-medium mb-1">Child's Name</label>
-                <input
-                  type="text"
-                  value={childName}
-                  onChange={(e: React.ChangeEvent<HTMLInputElement>) => setChildName(e.target.value)}
-                  className="w-full px-3 py-2 border rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  placeholder="Enter child's name"
-                  required
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium mb-1">Birthdate</label>
-                <input
-                  type="date"
-                  value={childBirthdate}
-                  onChange={(e: React.ChangeEvent<HTMLInputElement>) => setChildBirthdate(e.target.value)}
-                  className="w-full px-3 py-2 border rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  max={new Date().toISOString().split('T')[0]}
-                  required
-                />
-              </div>
-            </div>
-            {childError && <div className="text-red-600 mb-4">{childError}</div>}
+        {/* Groups Section */}
+        <div className="bg-white rounded-lg shadow-md p-6">
+          <div className="flex justify-between items-center mb-4">
+            <h2 className="text-xl font-semibold">Your Groups</h2>
             <button
-              type="submit"
-              disabled={addingChild}
-              className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 transition disabled:opacity-50"
+              onClick={() => setShowAddGroup(!showAddGroup)}
+              className="px-4 py-2 bg-purple-600 text-white rounded hover:bg-purple-700 transition"
             >
-              {addingChild ? "Adding..." : "Add Child"}
+              {showAddGroup ? "Cancel" : "Create Group"}
             </button>
-          </form>
-        )}
-
-        {children.length === 0 ? (
-          <div className="text-center py-8 text-gray-500">
-            <p>No children added yet.</p>
-            <p className="text-sm">Click "Add Child" to get started.</p>
           </div>
-        ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {children.map((child) => {
-              const age = calculateAge(child.birthdate);
-              return (
-                <div key={child.id} className="bg-gray-50 rounded-lg p-4">
-                  <h3 className="font-medium text-lg">{child.full_name}</h3>
-                  <p className="text-gray-600">
-                    Age: {age !== null ? `${age} years old` : "Unknown"}
-                  </p>
-                  <p className="text-gray-600">
-                    Birthday: {formatBirthdate(child.birthdate)}
-                  </p>
+
+          {showAddGroup && (
+            <form onSubmit={handleAddGroup} className="mb-6 p-4 bg-gray-50 rounded-lg">
+              <h3 className="text-lg font-medium mb-4">Create New Group</h3>
+              <div className="space-y-4 mb-4">
+                <div>
+                  <label className="block text-sm font-medium mb-1">Group Name</label>
+                  <input
+                    type="text"
+                    value={groupName}
+                    onChange={(e: React.ChangeEvent<HTMLInputElement>) => setGroupName(e.target.value)}
+                    className="w-full px-3 py-2 border rounded focus:outline-none focus:ring-2 focus:ring-purple-500"
+                    placeholder="Enter group name"
+                    required
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium mb-1">Description (Optional)</label>
+                  <textarea
+                    value={groupDescription}
+                    onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setGroupDescription(e.target.value)}
+                    className="w-full px-3 py-2 border rounded focus:outline-none focus:ring-2 focus:ring-purple-500"
+                    placeholder="Enter group description"
+                    rows={3}
+                  />
+                </div>
+              </div>
+              {groupError && <div className="text-red-600 mb-4">{groupError}</div>}
+              <button
+                type="submit"
+                disabled={addingGroup}
+                className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 transition disabled:opacity-50"
+              >
+                {addingGroup ? "Creating..." : "Create Group"}
+              </button>
+            </form>
+          )}
+
+          {groups.length === 0 ? (
+            <div className="text-center py-8 text-gray-500">
+              <p>No groups created yet.</p>
+              <p className="text-sm">Click "Create Group" to get started.</p>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {groups.map((group) => (
+                <div key={group.id} className="bg-gray-50 rounded-lg p-4">
+                  <h3 className="font-medium text-lg">{group.name}</h3>
+                  {group.description && (
+                    <p className="text-gray-600 mt-1">{group.description}</p>
+                  )}
                   <p className="text-xs text-gray-400 mt-2">
-                    Added: {new Date(child.created_at).toLocaleDateString()}
+                    Created: {new Date(group.created_at).toLocaleDateString()}
                   </p>
                 </div>
-              );
-            })}
-          </div>
-        )}
+              ))}
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
