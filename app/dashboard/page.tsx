@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { supabase } from "../lib/supabaseClient";
 import LogoutButton from "../components/LogoutButton";
 import type { User } from "@supabase/supabase-js";
+import { v4 as uuidv4 } from 'uuid';
 
 interface Profile {
   full_name: string | null;
@@ -34,7 +35,19 @@ export default function ClientDashboard() {
   const [user, setUser] = useState<User | null>(null);
   const [profile, setProfile] = useState<Profile | null>(null);
   const [children, setChildren] = useState<Child[]>([]);
+  const [editingChildId, setEditingChildId] = useState<string | null>(null);
+  const [editChildName, setEditChildName] = useState("");
+  const [editChildBirthdate, setEditChildBirthdate] = useState("");
+  const [childEditError, setChildEditError] = useState("");
   const [groups, setGroups] = useState<Group[]>([]);
+  const [editingGroupId, setEditingGroupId] = useState<string | null>(null);
+  const [invitingGroupId, setInvitingGroupId] = useState<string | null>(null);
+  const [inviteEmail, setInviteEmail] = useState("");
+  const [inviteNote, setInviteNote] = useState("");
+  const [inviteError, setInviteError] = useState("");
+  const [editGroupName, setEditGroupName] = useState("");
+  const [editGroupDescription, setEditGroupDescription] = useState("");
+  const [groupEditError, setGroupEditError] = useState("");
   const [showAddChild, setShowAddChild] = useState(false);
   const [showAddGroup, setShowAddGroup] = useState(false);
   const [childName, setChildName] = useState("");
@@ -201,6 +214,217 @@ export default function ClientDashboard() {
     }
   };
 
+  // Inline group edit handlers
+  function handleEditGroup(group: Group) {
+    setEditingGroupId(group.id);
+    setEditGroupName(group.name);
+    setEditGroupDescription(group.description || "");
+    setGroupEditError("");
+  }
+
+  async function handleSaveGroupEdit(group: Group) {
+    setGroupEditError("");
+    if (!editGroupName.trim()) {
+      setGroupEditError("Group name is required");
+      return;
+    }
+    const { error } = await supabase
+      .from("groups")
+      .update({ name: editGroupName.trim(), description: editGroupDescription.trim() })
+      .eq("id", group.id)
+      .eq("created_by", user?.id)
+      .select();
+    if (error) {
+      setGroupEditError(error.message);
+      return;
+    }
+    // Update local state
+    setGroups((prev) =>
+      prev.map((g) =>
+        g.id === group.id
+          ? { ...g, name: editGroupName.trim(), description: editGroupDescription.trim() }
+          : g
+      )
+    );
+    setEditingGroupId(null);
+  }
+
+  function handleCancelGroupEdit() {
+    setEditingGroupId(null);
+    setGroupEditError("");
+  }
+
+  function handleInviteGroup(group: Group) {
+    setInvitingGroupId(group.id);
+    setInviteEmail("");
+    setInviteNote("");
+    setInviteError("");
+  }
+
+  function handleCancelInvite() {
+    setInvitingGroupId(null);
+    setInviteError("");
+  }
+
+  async function handleSubmitInvite(e: React.FormEvent, group: Group) {
+    e.preventDefault();
+    setInviteError("");
+    if (!inviteEmail.trim()) {
+      setInviteError("Email is required");
+      return;
+    }
+    // Check if email exists in profiles
+    const { data: existingProfile, error: profileError } = await supabase
+      .from("profiles")
+      .select("id, full_name, email")
+      .eq("email", inviteEmail.trim().toLowerCase())
+      .single();
+    console.log('existingProfile:', existingProfile);
+    if (profileError && profileError.code !== "PGRST116") {
+      setInviteError(profileError.message);
+      return;
+    }
+    // Compose message content
+    const senderName = profile?.full_name || user?.email || "A parent";
+    const groupName = group.name;
+    const note = inviteNote.trim() ? `\n\nNote from ${senderName}: ${inviteNote.trim()}` : "";
+    const subject = `Group Invitation: ${groupName}`;
+    const content = `You have been invited to join the group '${groupName}' by ${senderName}.${note}`;
+    // Add to group_invites
+    const inviteId = uuidv4();
+    const { error: inviteError } = await supabase
+      .from("group_invites")
+      .insert([
+        {
+          id: inviteId,
+          group_id: group.id,
+          email: inviteEmail.trim().toLowerCase(),
+          invited_by: user?.id,
+          status: "pending",
+        },
+      ]);
+    if (inviteError) {
+      setInviteError(inviteError.message);
+      return;
+    }
+    // Fetch all group members (profile ids)
+    const { data: groupMembers, error: membersError } = await supabase
+      .from("group_members")
+      .select("profile_id")
+      .eq("group_id", group.id);
+    if (membersError) {
+      setInviteError(membersError.message);
+      return;
+    }
+    const memberIds = (groupMembers || []).map((m: any) => m.profile_id).filter(Boolean);
+    // Add the creator if not already in the list
+    if (user?.id && !memberIds.includes(user.id)) {
+      memberIds.push(user.id);
+    }
+    // Compose notification message for all group members
+    const notifySubject = `Invitation Sent: ${inviteEmail.trim()} to ${groupName}`;
+    const notifyContent = `A group invitation has been sent to ${inviteEmail.trim()} for group '${groupName}'.${note}`;
+    const notifyMessages = memberIds.map((recipientId: string) => ({
+      group_id: group.id,
+      sender_id: user?.id,
+      recipient_id: recipientId,
+      subject: notifySubject,
+      content: notifyContent,
+      role: 'invite',
+    }));
+    if (notifyMessages.length > 0) {
+      const { error: notifyError } = await supabase
+        .from("messages")
+        .insert(notifyMessages);
+      if (notifyError) {
+        setInviteError(notifyError.message);
+        return;
+      }
+    }
+    if (existingProfile) {
+      // Internal message
+      const messageInsert = {
+        group_id: group.id,
+        sender_id: user?.id,
+        recipient_id: existingProfile.id,
+        subject,
+        content,
+        role: 'invite',
+      };
+      console.log('Inserting message:', messageInsert);
+      const { error: msgError } = await supabase
+        .from("messages")
+        .insert([messageInsert]);
+      console.log('Supabase message insert error:', msgError);
+      if (msgError) {
+        setInviteError(msgError.message);
+        return;
+      }
+      setInviteError("");
+      setInvitingGroupId(null);
+      alert("Invite sent as internal message!");
+    } else {
+      // External email (stub)
+      // Here you would call your backend/email service
+      setInviteError("");
+      setInvitingGroupId(null);
+      alert("Invite sent via email (stub). Implement real email sending in production.");
+    }
+  }
+
+  // Inline child edit handlers
+  function handleEditChild(child: Child) {
+    setEditingChildId(child.id);
+    setEditChildName(child.full_name);
+    setEditChildBirthdate(child.birthdate || "");
+    setChildEditError("");
+  }
+
+  async function handleSaveChildEdit(child: Child) {
+    setChildEditError("");
+    if (!editChildName.trim()) {
+      setChildEditError("Child name is required");
+      return;
+    }
+    if (!editChildBirthdate.trim()) {
+      setChildEditError("Birthdate is required");
+      return;
+    }
+    const todayStr = new Date().toISOString().split('T')[0];
+    if (editChildBirthdate > todayStr) {
+      setChildEditError("Birthdate cannot be in the future");
+      return;
+    }
+    const { data, error } = await supabase
+      .from("children")
+      .update({ full_name: editChildName.trim(), birthdate: editChildBirthdate })
+      .eq("id", child.id)
+      .eq("parent_id", user?.id)
+      .select();
+    console.log('Supabase update children:', { data, error });
+    if (error) {
+      setChildEditError(error.message);
+      return;
+    }
+    // Re-fetch children from Supabase
+    const { data: childrenData, error: fetchError } = await supabase
+      .from("children")
+      .select("*")
+      .eq("parent_id", user?.id)
+      .order("full_name", { ascending: true });
+    if (fetchError) {
+      setChildEditError(fetchError.message);
+      return;
+    }
+    setChildren(childrenData || []);
+    setEditingChildId(null);
+  }
+
+  function handleCancelChildEdit() {
+    setEditingChildId(null);
+    setChildEditError("");
+  }
+
   if (loading) {
     return <div className="flex min-h-screen items-center justify-center">Loading...</div>;
   }
@@ -255,7 +479,7 @@ export default function ClientDashboard() {
         {/* Children Section */}
         <div className="bg-white rounded-lg shadow-md p-6">
           <div className="flex justify-between items-center mb-4">
-            <h2 className="text-xl font-semibold">Your Children</h2>
+            <h2 className="text-xl font-semibold">Children</h2>
             <button
               onClick={() => setShowAddChild(!showAddChild)}
               className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 transition"
@@ -273,7 +497,7 @@ export default function ClientDashboard() {
                   <input
                     type="text"
                     value={childName}
-                    onChange={(e) => setChildName((e as React.ChangeEvent<HTMLInputElement>).target.value)}
+                    onChange={(e: React.ChangeEvent<HTMLInputElement>) => setChildName(e.target.value)}
                     className="w-full px-3 py-2 border rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
                     placeholder="Enter child's name"
                     required
@@ -284,7 +508,7 @@ export default function ClientDashboard() {
                   <input
                     type="date"
                     value={childBirthdate}
-                    onChange={(e) => setChildBirthdate((e as React.ChangeEvent<HTMLInputElement>).target.value)}
+                    onChange={(e: React.ChangeEvent<HTMLInputElement>) => setChildBirthdate(e.target.value)}
                     className="w-full px-3 py-2 border rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
                     max={new Date().toISOString().split('T')[0]}
                     required
@@ -308,21 +532,68 @@ export default function ClientDashboard() {
               <p className="text-sm">Click "Add Child" to get started.</p>
             </div>
           ) : (
-            <div className="space-y-3">
+            <div className="space-y-4">
               {children.map((child) => {
                 const age = calculateAge(child.birthdate);
                 return (
-                  <div key={child.id} className="bg-gray-50 rounded-lg p-4">
-                    <h3 className="font-medium text-lg">{child.full_name}</h3>
-                    <p className="text-gray-600">
-                      Age: {age !== null ? `${age} years old` : "Unknown"}
-                    </p>
-                    <p className="text-gray-600">
-                      Birthday: {formatBirthdate(child.birthdate)}
-                    </p>
-                    <p className="text-xs text-gray-400 mt-2">
-                      Added: {new Date(child.created_at).toLocaleDateString()}
-                    </p>
+                  <div key={child.id} className="border rounded p-4 flex flex-col gap-2 bg-gray-50">
+                    {editingChildId === child.id ? (
+                      <>
+                        <input
+                          type="text"
+                          value={editChildName}
+                          onChange={(e: React.ChangeEvent<HTMLInputElement>) => setEditChildName(e.target.value)}
+                          className="px-3 py-2 border rounded mb-2"
+                          placeholder="Child's name"
+                          required
+                        />
+                        <input
+                          type="date"
+                          value={editChildBirthdate}
+                          onChange={(e: React.ChangeEvent<HTMLInputElement>) => setEditChildBirthdate(e.target.value)}
+                          className="px-3 py-2 border rounded mb-2"
+                          max={new Date().toISOString().split('T')[0]}
+                          required
+                        />
+                        {childEditError && <div className="text-red-600 mb-2">{childEditError}</div>}
+                        <div className="flex gap-2">
+                          <button
+                            type="button"
+                            onClick={() => handleSaveChildEdit(child)}
+                            className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 transition"
+                          >
+                            Save
+                          </button>
+                          <button
+                            onClick={handleCancelChildEdit}
+                            className="px-4 py-2 bg-gray-400 text-white rounded hover:bg-gray-500 transition"
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <div className="flex items-center gap-2">
+                          <span className="font-medium text-lg">{child.full_name}</span>
+                          <button
+                            onClick={() => handleEditChild(child)}
+                            className="px-2 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700 transition"
+                          >
+                            Edit
+                          </button>
+                        </div>
+                        <p className="text-gray-600">
+                          Age: {age !== null ? `${age} years old` : "Unknown"}
+                        </p>
+                        <p className="text-gray-600">
+                          Birthday: {formatBirthdate(child.birthdate)}
+                        </p>
+                        <p className="text-xs text-gray-400 mt-2">
+                          Added: {new Date(child.created_at).toLocaleDateString()}
+                        </p>
+                      </>
+                    )}
                   </div>
                 );
               })}
@@ -333,7 +604,7 @@ export default function ClientDashboard() {
         {/* Groups Section */}
         <div className="bg-white rounded-lg shadow-md p-6">
           <div className="flex justify-between items-center mb-4">
-            <h2 className="text-xl font-semibold">Your Groups</h2>
+            <h2 className="text-xl font-semibold">Groups</h2>
             <button
               onClick={() => setShowAddGroup(!showAddGroup)}
               className="px-4 py-2 bg-purple-600 text-white rounded hover:bg-purple-700 transition"
@@ -351,7 +622,7 @@ export default function ClientDashboard() {
                   <input
                     type="text"
                     value={groupName}
-                    onChange={(e) => setGroupName((e as React.ChangeEvent<HTMLInputElement>).target.value)}
+                    onChange={(e: React.ChangeEvent<HTMLInputElement>) => setGroupName(e.target.value)}
                     className="w-full px-3 py-2 border rounded focus:outline-none focus:ring-2 focus:ring-purple-500"
                     placeholder="Enter group name"
                     required
@@ -361,7 +632,7 @@ export default function ClientDashboard() {
                   <label className="block text-sm font-medium mb-1">Description (Optional)</label>
                   <textarea
                     value={groupDescription}
-                    onChange={(e) => setGroupDescription((e as React.ChangeEvent<HTMLTextAreaElement>).target.value)}
+                    onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setGroupDescription(e.target.value)}
                     className="w-full px-3 py-2 border rounded focus:outline-none focus:ring-2 focus:ring-purple-500"
                     placeholder="Enter group description"
                     rows={3}
@@ -379,22 +650,113 @@ export default function ClientDashboard() {
             </form>
           )}
 
+          {/* Editable Groups List (moved from profile card) */}
           {groups.length === 0 ? (
             <div className="text-center py-8 text-gray-500">
               <p>No groups created yet.</p>
               <p className="text-sm">Click "Create Group" to get started.</p>
             </div>
           ) : (
-            <div className="space-y-3">
+            <div className="space-y-4">
               {groups.map((group) => (
-                <div key={group.id} className="bg-gray-50 rounded-lg p-4">
-                  <h3 className="font-medium text-lg">{group.name}</h3>
-                  {group.description && (
-                    <p className="text-gray-600 mt-1">{group.description}</p>
+                <div key={group.id} className="border rounded p-4 flex flex-col gap-2 bg-gray-50">
+                  {editingGroupId === group.id ? (
+                    <>
+                      <input
+                        type="text"
+                        value={editGroupName}
+                        onChange={(e: React.ChangeEvent<HTMLInputElement>) => setEditGroupName(e.target.value)}
+                        className="px-3 py-2 border rounded mb-2"
+                        placeholder="Group name"
+                        required
+                      />
+                      <textarea
+                        value={editGroupDescription}
+                        onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setEditGroupDescription(e.target.value)}
+                        className="px-3 py-2 border rounded mb-2"
+                        placeholder="Group description"
+                        rows={2}
+                      />
+                      {groupEditError && <div className="text-red-600 mb-2">{groupEditError}</div>}
+                      <div className="flex gap-2">
+                        <button
+                          onClick={() => handleSaveGroupEdit(group)}
+                          className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 transition"
+                        >
+                          Save
+                        </button>
+                        <button
+                          onClick={handleCancelGroupEdit}
+                          className="px-4 py-2 bg-gray-400 text-white rounded hover:bg-gray-500 transition"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <div className="flex items-center gap-2">
+                        <span className="font-medium text-lg">{group.name}</span>
+                        <button
+                          onClick={() => handleEditGroup(group)}
+                          className="px-2 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700 transition"
+                        >
+                          Edit
+                        </button>
+                        <button
+                          onClick={() => handleInviteGroup(group)}
+                          className="px-2 py-1 text-xs bg-green-600 text-white rounded hover:bg-green-700 transition"
+                        >
+                          Invite
+                        </button>
+                      </div>
+                      {group.description && <div className="text-gray-600">{group.description}</div>}
+                      <p className="text-xs text-gray-400 mt-2">
+                        Created: {new Date(group.created_at).toLocaleDateString()}
+                      </p>
+                      {invitingGroupId === group.id && (
+                        <form onSubmit={(e) => handleSubmitInvite(e, group)} className="mt-2 p-3 bg-gray-100 rounded">
+                          <div className="mb-2">
+                            <label className="block text-sm font-medium mb-1">Parent Email</label>
+                            <input
+                              type="email"
+                              value={inviteEmail}
+                              onChange={(e: React.ChangeEvent<HTMLInputElement>) => setInviteEmail(e.target.value)}
+                              className="w-full px-3 py-2 border rounded"
+                              placeholder="parent@email.com"
+                              required
+                            />
+                          </div>
+                          <div className="mb-2">
+                            <label className="block text-sm font-medium mb-1">Custom Note</label>
+                            <textarea
+                              value={inviteNote}
+                              onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setInviteNote(e.target.value)}
+                              className="w-full px-3 py-2 border rounded"
+                              placeholder="Add a note (optional)"
+                              rows={2}
+                            />
+                          </div>
+                          {inviteError && <div className="text-red-600 mb-2">{inviteError}</div>}
+                          <div className="flex gap-2">
+                            <button
+                              type="submit"
+                              className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 transition"
+                            >
+                              Send Invite
+                            </button>
+                            <button
+                              type="button"
+                              onClick={handleCancelInvite}
+                              className="px-4 py-2 bg-gray-400 text-white rounded hover:bg-gray-500 transition"
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        </form>
+                      )}
+                    </>
                   )}
-                  <p className="text-xs text-gray-400 mt-2">
-                    Created: {new Date(group.created_at).toLocaleDateString()}
-                  </p>
                 </div>
               ))}
             </div>
