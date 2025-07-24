@@ -187,31 +187,55 @@ export default function ClientDashboard() {
     setAddingGroup(true);
     setGroupError("");
 
-    const { error } = await supabase.from("groups").insert([
-      {
-        name: groupName.trim(),
-        description: groupDescription.trim() || null,
-        created_by: user.id,
-      },
-    ]);
-
-    setAddingGroup(false);
-    if (error) {
-      setGroupError(error.message);
-    } else {
-      // Refresh groups list
-      const { data: groupsData } = await supabase
-        .from("groups")
-        .select("*")
-        .eq("created_by", user.id)
-        .order("created_at", { ascending: false });
-      setGroups(groupsData || []);
-      
-      // Reset form
-      setGroupName("");
-      setGroupDescription("");
-      setShowAddGroup(false);
+    // Insert group and get the new group's id
+    const { data: groupInsertData, error: groupInsertError } = await supabase
+      .from("groups")
+      .insert([
+        {
+          name: groupName.trim(),
+          description: groupDescription.trim() || null,
+          created_by: user.id,
+        },
+      ])
+      .select();
+    if (groupInsertError) {
+      setAddingGroup(false);
+      setGroupError(groupInsertError.message);
+      return;
     }
+    const newGroup = groupInsertData && groupInsertData[0];
+    if (!newGroup) {
+      setAddingGroup(false);
+      setGroupError("Failed to create group.");
+      return;
+    }
+    // Insert creator into group_members
+    const { error: memberInsertError } = await supabase
+      .from("group_members")
+      .insert([
+        {
+          group_id: newGroup.id,
+          profile_id: user.id,
+          role: 'parent',
+          joined_at: new Date().toISOString(),
+        },
+      ]);
+    setAddingGroup(false);
+    if (memberInsertError) {
+      setGroupError("Group created, but failed to add you as a member: " + memberInsertError.message);
+      return;
+    }
+    // Refresh groups list
+    const { data: groupsData } = await supabase
+      .from("groups")
+      .select("*")
+      .eq("created_by", user.id)
+      .order("created_at", { ascending: false });
+    setGroups(groupsData || []);
+    // Reset form
+    setGroupName("");
+    setGroupDescription("");
+    setShowAddGroup(false);
   };
 
   // Inline group edit handlers
@@ -321,28 +345,10 @@ export default function ClientDashboard() {
     if (user?.id && !memberIds.includes(user.id)) {
       memberIds.push(user.id);
     }
-    // Compose notification message for all group members
-    const notifySubject = `Invitation Sent: ${inviteEmail.trim()} to ${groupName}`;
-    const notifyContent = `A group invitation has been sent to ${inviteEmail.trim()} for group '${groupName}'.${note}`;
-    const notifyMessages = memberIds.map((recipientId: string) => ({
-      group_id: group.id,
-      sender_id: user?.id,
-      recipient_id: recipientId,
-      subject: notifySubject,
-      content: notifyContent,
-      role: 'invite',
-    }));
-    if (notifyMessages.length > 0) {
-      const { error: notifyError } = await supabase
-        .from("messages")
-        .insert(notifyMessages);
-      if (notifyError) {
-        setInviteError(notifyError.message);
-        return;
-      }
-    }
+    // Compose notification message for all group members (moved to after acceptance/rejection)
+    // Only send invite message to the invited parent if they exist
     if (existingProfile) {
-      // Internal message
+      // Internal message to invited parent only
       const messageInsert = {
         group_id: group.id,
         sender_id: user?.id,
@@ -360,6 +366,48 @@ export default function ClientDashboard() {
         setInviteError(msgError.message);
         return;
       }
+      // Insert or update group_members as pending
+      console.log('Attempting to insert group_members:', { group_id: group.id, profile_id: existingProfile.id });
+      const { data: insertData, error: memberInsertError } = await supabase
+        .from("group_members")
+        .insert([
+          {
+            group_id: group.id,
+            profile_id: existingProfile.id,
+            role: 'parent',
+            status: 'pending',
+            joined_at: new Date().toISOString(),
+          },
+        ]);
+      console.log('Insert response:', { insertData, memberInsertError });
+      if (memberInsertError) {
+        // If unique constraint, update status to pending
+        if (memberInsertError.code === '23505' || memberInsertError.message.includes('duplicate key')) {
+          console.log("Row exists, updating status to pending");
+          const { error: updateError } = await supabase
+            .from("group_members")
+            .update({ status: 'pending' })
+            .eq("group_id", group.id)
+            .eq("profile_id", existingProfile.id);
+          if (updateError) {
+            setInviteError(updateError.message);
+            return;
+          }
+        } else {
+          console.error("Error inserting group_member:", memberInsertError);
+          setInviteError(memberInsertError.message);
+          return;
+        }
+      } else {
+        console.log("Successfully inserted pending group_member");
+      }
+      // Debug: Log all group_members rows for this group and profile after insert/update
+      const { data: afterInsert } = await supabase
+        .from("group_members")
+        .select("*")
+        .eq("group_id", group.id)
+        .eq("profile_id", existingProfile.id);
+      console.log("group_members after invite insert/update:", afterInsert);
       setInviteError("");
       setInvitingGroupId(null);
       alert("Invite sent as internal message!");

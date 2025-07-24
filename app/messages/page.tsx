@@ -19,6 +19,7 @@ interface Message {
 interface Profile {
   id: string;
   full_name: string | null;
+  email: string | null;
 }
 
 interface Group {
@@ -44,7 +45,7 @@ export default function MessagesPage() {
         // Get current user's profile
         const { data: myProfile } = await supabase
           .from("profiles")
-          .select("id, full_name")
+          .select("id, full_name, email")
           .eq("id", data.user.id)
           .single();
         setProfile(myProfile);
@@ -68,7 +69,7 @@ export default function MessagesPage() {
           });
         }
         setProfilesMap(profilesMap);
-        // Fetch all involved groups
+        // Fetch all involved groups (fix: use all group_ids from messages)
         const groupIds = Array.from(new Set((messagesData || []).map((m: any) => m.group_id).filter(Boolean)));
         let groupsMap: Record<string, string> = {};
         if (groupIds.length > 0) {
@@ -80,6 +81,8 @@ export default function MessagesPage() {
             groupsMap[g.id] = g.name;
           });
         }
+        console.log("Message groupIds:", groupIds);
+        console.log("groupsMap:", groupsMap);
         setGroupsMap(groupsMap);
         setLoading(false);
       }
@@ -97,17 +100,39 @@ export default function MessagesPage() {
       .update({ status: 'accepted' })
       .eq('group_id', msg.group_id)
       .eq('email', profile?.email);
-    // Add to group_members
-    await supabase
+    // Debug: Log all group_members rows for this group before update
+    const { data: allMembers } = await supabase
       .from('group_members')
-      .insert([{ group_id: msg.group_id, profile_id: profile?.id, role: 'parent', joined_at: new Date().toISOString() }]);
-    // Notify all group members
+      .select('*')
+      .eq('group_id', msg.group_id);
+    console.log('All group_members for this group:', allMembers);
+    // Debug: Log the IDs used for update
+    console.log('Attempting to update group_members:', { group_id: msg.group_id, profile_id: profile?.id });
+    // Update group_members status to 'active' (if row exists)
+    const { data: updatedRows, error: updateError } = await supabase
+      .from('group_members')
+      .update({ status: 'active' })
+      .eq('group_id', msg.group_id)
+      .eq('profile_id', profile?.id)
+      .select();
+    console.log('Update result:', { updatedRows, updateError });
+    if (updateError) {
+      alert('Error updating group_members status: ' + updateError.message);
+      return;
+    }
+    if (!updatedRows || updatedRows.length === 0) {
+      alert('No group_members row was updated. Please check that the group_id and profile_id match the pending entry.');
+      return;
+    }
+    // Notify all group members (excluding the invited parent)
     const { data: groupMembers } = await supabase
       .from('group_members')
       .select('profile_id')
-      .eq('group_id', msg.group_id);
-    const memberIds = (groupMembers || []).map((m: any) => m.profile_id).filter(Boolean);
-    if (user?.id && !memberIds.includes(user.id)) memberIds.push(user.id);
+      .eq('group_id', msg.group_id)
+      .eq('status', 'active');
+    let memberIds = (groupMembers || []).map((m: any) => m.profile_id).filter(Boolean);
+    // Remove the invited parent (current user) from notification recipients
+    memberIds = memberIds.filter((id: string) => id !== profile?.id);
     const notifySubject = `Invitation Accepted: ${profile?.full_name || profile?.email} joined ${groupsMap[msg.group_id] || 'the group'}`;
     const notifyContent = `${profile?.full_name || profile?.email} has accepted the invitation and joined the group.`;
     const notifyMessages = memberIds.map((recipientId: string) => ({
@@ -121,8 +146,8 @@ export default function MessagesPage() {
     if (notifyMessages.length > 0) {
       await supabase.from('messages').insert(notifyMessages);
     }
-    // Optionally, remove the invite message or refresh
-    window.location.reload();
+    // Navigate to groups page to show the new group
+    router.push('/groups');
   }
 
   async function handleRejectInvite(msg: any) {
@@ -132,13 +157,13 @@ export default function MessagesPage() {
       .update({ status: 'rejected' })
       .eq('group_id', msg.group_id)
       .eq('email', profile?.email);
-    // Notify all group members
+    // Notify all group members (excluding the invited parent)
     const { data: groupMembers } = await supabase
       .from('group_members')
       .select('profile_id')
       .eq('group_id', msg.group_id);
-    const memberIds = (groupMembers || []).map((m: any) => m.profile_id).filter(Boolean);
-    if (user?.id && !memberIds.includes(user.id)) memberIds.push(user.id);
+    let memberIds = (groupMembers || []).map((m: any) => m.profile_id).filter(Boolean);
+    memberIds = memberIds.filter((id: string) => id !== profile?.id);
     const notifySubject = `Invitation Rejected: ${profile?.full_name || profile?.email} declined ${groupsMap[msg.group_id] || 'the group'}`;
     const notifyContent = `${profile?.full_name || profile?.email} has declined the invitation to join the group.`;
     const notifyMessages = memberIds.map((recipientId: string) => ({

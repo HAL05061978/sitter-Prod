@@ -47,27 +47,33 @@ export default function GroupsPage() {
         const { data: memberships } = await supabase
           .from('group_members')
           .select('group_id')
-          .eq('profile_id', data.user.id);
+          .eq('profile_id', data.user.id)
+          .eq('status', 'active');
         const groupIds = (memberships || []).map((m: any) => m.group_id);
-        // Fetch all groups where user is creator or member
+        console.log("Current user id:", data.user.id);
+        console.log("Memberships:", memberships);
+        console.log("groupIds:", groupIds);
+        // Fetch all groups where user is creator or member (single query)
         let groupsData: Group[] = [];
         if (groupIds.length > 0) {
-          const { data: memberGroups } = await supabase
+          const { data: allGroups } = await supabase
             .from('groups')
             .select('*')
-            .in('id', groupIds)
+            .or(`created_by.eq.${data.user.id},id.in.(${groupIds.join(',')})`)
             .order('created_at', { ascending: false });
-          groupsData = memberGroups || [];
+          groupsData = allGroups || [];
+        } else {
+          const { data: createdGroups } = await supabase
+            .from('groups')
+            .select('*')
+            .eq('created_by', data.user.id)
+            .order('created_at', { ascending: false });
+          groupsData = createdGroups || [];
         }
-        // Fetch groups created by user (if not already included)
-        const { data: createdGroups } = await supabase
-          .from('groups')
-          .select('*')
-          .eq('created_by', data.user.id)
-          .order('created_at', { ascending: false });
-        // Merge and dedupe
-        const allGroups = [...groupsData, ...(createdGroups || [])];
-        const uniqueGroups = allGroups.filter((g, i, arr) => arr.findIndex(x => x.id === g.id) === i);
+        console.log("groupsData:", groupsData);
+        // Deduplicate
+        const uniqueGroups = groupsData.filter((g, i, arr) => arr.findIndex(x => x.id === g.id) === i);
+        console.log("uniqueGroups:", uniqueGroups);
         setGroups(uniqueGroups);
         // Fetch all children for this parent
         const { data: childrenData } = await supabase
