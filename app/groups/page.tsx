@@ -33,8 +33,9 @@ export default function GroupsPage() {
   const [loading, setLoading] = useState(true);
   const [user, setUser] = useState<User | null>(null);
   const [groups, setGroups] = useState<Group[]>([]);
-  const [children, setChildren] = useState<Child[]>([]);
-  const [memberships, setMemberships] = useState<ChildGroupMember[]>([]);
+  const [parentChildren, setParentChildren] = useState<Child[]>([]); // Only parent's children
+  const [groupActiveChildren, setGroupActiveChildren] = useState<Record<string, Child[]>>({}); // groupId -> active children[] (all parents)
+  const [memberships, setMemberships] = useState<ChildGroupMember[]>([]); // All memberships for parent's children
   const [error, setError] = useState("");
 
   useEffect(() => {
@@ -43,17 +44,14 @@ export default function GroupsPage() {
         router.replace("/auth");
       } else {
         setUser(data.user);
-        // Fetch all group memberships for this user
+        // 1. Get all groups the parent is a member of
         const { data: memberships } = await supabase
           .from('group_members')
           .select('group_id')
           .eq('profile_id', data.user.id)
           .eq('status', 'active');
         const groupIds = (memberships || []).map((m: any) => m.group_id);
-        console.log("Current user id:", data.user.id);
-        console.log("Memberships:", memberships);
-        console.log("groupIds:", groupIds);
-        // Fetch all groups where user is creator or member (single query)
+        // 2. Fetch all groups where user is creator or member
         let groupsData: Group[] = [];
         if (groupIds.length > 0) {
           const { data: allGroups } = await supabase
@@ -70,49 +68,76 @@ export default function GroupsPage() {
             .order('created_at', { ascending: false });
           groupsData = createdGroups || [];
         }
-        console.log("groupsData:", groupsData);
         // Deduplicate
         const uniqueGroups = groupsData.filter((g, i, arr) => arr.findIndex(x => x.id === g.id) === i);
-        console.log("uniqueGroups:", uniqueGroups);
         setGroups(uniqueGroups);
-        // Fetch all children for this parent
-        const { data: childrenData } = await supabase
-          .from("children")
-          .select("*")
-          .eq("parent_id", data.user.id)
-          .order("full_name", { ascending: true });
-        setChildren(childrenData || []);
-        // Fetch all child-group memberships for this parent's children
-        const childIds = (childrenData || []).map((c: Child) => c.id);
-        let membershipsData: ChildGroupMember[] = [];
-        if (childIds.length > 0) {
+        // 3. For all visible groups, fetch all active child-group memberships
+        let groupActiveChildrenMap: Record<string, Child[]> = {};
+        let allChildIds: string[] = [];
+        let membershipsData: any[] = [];
+        if (uniqueGroups.length > 0) {
+          const { data: membershipsRaw, error: membershipsError } = await supabase
+            .from("child_group_members")
+            .select("*")
+            .in("group_id", uniqueGroups.map(g => g.id))
+            .eq("active", true);
+          if (membershipsError) {
+            setError(membershipsError.message);
+            setLoading(false);
+            return;
+          }
+          membershipsData = membershipsRaw || [];
+          allChildIds = Array.from(new Set(membershipsData.map((m: any) => m.child_id)));
+        }
+        // 4. Fetch all children for those child_ids (to get parent_id)
+        let allChildren: Child[] = [];
+        if (allChildIds.length > 0) {
+          const { data: allChildrenData, error: childrenError } = await supabase
+            .from("children")
+            .select("*")
+            .in("id", allChildIds);
+          if (childrenError) {
+            setError(childrenError.message);
+            setLoading(false);
+            return;
+          }
+          allChildren = allChildrenData || [];
+        }
+        // 5. Map groupId -> children[]
+        for (const group of uniqueGroups) {
+          const groupMemberships = membershipsData.filter((m: any) => m.group_id === group.id);
+          groupActiveChildrenMap[group.id] = groupMemberships
+            .map((m: any) => allChildren.find((c) => c.id === m.child_id))
+            .filter(Boolean) as Child[];
+        }
+        setGroupActiveChildren(groupActiveChildrenMap);
+        // 6. Set parent's children for button logic
+        const parentChildren = allChildren.filter((c) => c.parent_id === data.user.id);
+        setParentChildren(parentChildren);
+        // 7. Fetch all memberships for parent's children (for toggle logic)
+        const parentChildIds = parentChildren.map((c: Child) => c.id);
+        let parentMemberships: ChildGroupMember[] = [];
+        if (parentChildIds.length > 0) {
           const { data: membershipsRaw } = await supabase
             .from("child_group_members")
             .select("*")
-            .in("child_id", childIds);
-          membershipsData = membershipsRaw || [];
+            .in("child_id", parentChildIds);
+          parentMemberships = membershipsRaw || [];
         }
-        setMemberships(membershipsData);
+        setMemberships(parentMemberships);
         setLoading(false);
       }
     });
   }, [router]);
 
-  // Helper to check if a child is active in a group
+  // Helper to check if a parent's child is active in a group
   function isChildActiveInGroup(childId: string, groupId: string) {
     return memberships.find(
       (m) => m.child_id === childId && m.group_id === groupId && m.active
     );
   }
 
-  // Helper to get membership id for a child/group
-  function getMembershipId(childId: string, groupId: string) {
-    return memberships.find(
-      (m) => m.child_id === childId && m.group_id === groupId
-    )?.id;
-  }
-
-  // Toggle child membership in group
+  // Toggle child membership in group (only for parent's children)
   async function handleToggle(child: Child, group: Group) {
     setError("");
     const membership = memberships.find(
@@ -181,16 +206,27 @@ export default function GroupsPage() {
             <p className="text-sm">Create a group from your dashboard to get started.</p>
           </div>
         ) : (
-          groups.map((group) => (
-            <div key={group.id} className="bg-white rounded-lg shadow-md p-6">
-              <h2 className="text-xl font-semibold mb-2">{group.name}</h2>
-              {group.description && <p className="text-gray-600 mb-4">{group.description}</p>}
-              <h3 className="font-medium mb-2">Assign Your Children:</h3>
-              {children.length === 0 ? (
-                <div className="text-gray-500">You have no children to assign.</div>
-              ) : (
+          groups.map((group) => {
+            // Deduplicate children by id for this group
+            const uniqueChildren = Array.from(
+              new Map(
+                (groupActiveChildren[group.id] || []).map(child => [child.id, child])
+              ).values()
+            );
+            // 1. Parent's children (all, regardless of active status)
+            const parentChildIds = parentChildren.map((c) => c.id);
+            // 2. Other active children (exclude parent's children)
+            const otherActiveChildren = uniqueChildren.filter(
+              (child) => !parentChildIds.includes(child.id)
+            );
+            return (
+              <div key={group.id} className="bg-white rounded-lg shadow-md p-6">
+                <h2 className="text-xl font-semibold mb-2">{group.name}</h2>
+                {group.description && <p className="text-gray-600 mb-4">{group.description}</p>}
+                <h3 className="font-medium mb-2">Children in this Group:</h3>
                 <div className="space-y-2">
-                  {children.map((child) => {
+                  {/* Parent's children (with button) */}
+                  {parentChildren.map((child) => {
                     const active = isChildActiveInGroup(child.id, group.id);
                     return (
                       <div key={child.id} className="flex items-center gap-3">
@@ -204,10 +240,21 @@ export default function GroupsPage() {
                       </div>
                     );
                   })}
+                  {/* Other parents' active children (read-only) */}
+                  {otherActiveChildren.map((child) => (
+                    <div key={child.id} className="flex items-center gap-3 opacity-70">
+                      <span className="w-40">{child.full_name}</span>
+                      <span className="px-3 py-1 rounded bg-green-100 text-green-800 font-medium">Active</span>
+                    </div>
+                  ))}
+                  {/* If no children at all */}
+                  {parentChildren.length === 0 && otherActiveChildren.length === 0 && (
+                    <div className="text-gray-500">No children in this group.</div>
+                  )}
                 </div>
-              )}
-            </div>
-          ))
+              </div>
+            );
+          })
         )}
       </div>
     </div>
