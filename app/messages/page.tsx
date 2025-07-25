@@ -146,6 +146,13 @@ export default function MessagesPage() {
     if (notifyMessages.length > 0) {
       await supabase.from('messages').insert(notifyMessages);
     }
+    // Delete the invite message after accepting
+    const { error: deleteError } = await supabase
+      .from('messages')
+      .delete()
+      .eq('id', msg.id);
+    console.log('Delete error:', deleteError);
+    await new Promise(res => setTimeout(res, 300));
     // Navigate to groups page to show the new group
     router.push('/groups');
   }
@@ -177,6 +184,13 @@ export default function MessagesPage() {
     if (notifyMessages.length > 0) {
       await supabase.from('messages').insert(notifyMessages);
     }
+    // Delete the invite message after rejecting
+    const { error: deleteErrorReject } = await supabase
+      .from('messages')
+      .delete()
+      .eq('id', msg.id);
+    console.log('Delete error (reject):', deleteErrorReject);
+    await new Promise(res => setTimeout(res, 300));
     window.location.reload();
   }
 

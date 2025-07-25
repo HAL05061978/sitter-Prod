@@ -188,6 +188,11 @@ export default function ClientDashboard() {
     setGroupError("");
 
     // Insert group and get the new group's id
+    console.log('Creating group with created_by:', user.id, {
+      name: groupName.trim(),
+      description: groupDescription.trim() || null,
+      created_by: user.id,
+    });
     const { data: groupInsertData, error: groupInsertError } = await supabase
       .from("groups")
       .insert([
