@@ -12,6 +12,7 @@ interface Message {
   subject: string | null;
   content: string;
   sender_id: string;
+  recipient_id: string;
   group_id: string | null;
   created_at: string;
   role?: string;
@@ -117,6 +118,18 @@ export default function MessagesPage() {
       }
       console.log('Successfully updated group_invites');
 
+      // Debug: Let's check what's in group_members BEFORE updating the current user
+      const { data: membersBeforeUpdate, error: beforeError } = await supabase
+        .from('group_members')
+        .select('profile_id, status')
+        .eq('group_id', msg.group_id);
+      
+      if (beforeError) {
+        console.error('Error checking members before update:', beforeError);
+      } else {
+        console.log('Group members BEFORE updating current user:', membersBeforeUpdate);
+      }
+
       // Update group_members status to 'active'
       const { data: updatedRows, error: updateError } = await supabase
         .from('group_members')
@@ -136,6 +149,18 @@ export default function MessagesPage() {
         return;
       }
       console.log('Successfully updated group_members:', updatedRows);
+      
+      // Debug: Let's check what the group_members table looks like right after this update
+      const { data: membersAfterUpdate, error: checkError } = await supabase
+        .from('group_members')
+        .select('profile_id, status')
+        .eq('group_id', msg.group_id);
+      
+      if (checkError) {
+        console.error('Error checking members after update:', checkError);
+      } else {
+        console.log('Group members immediately after update:', membersAfterUpdate);
+      }
 
       // Update the message status to 'accepted' instead of deleting
       const { error: messageUpdateError } = await supabase
@@ -151,16 +176,96 @@ export default function MessagesPage() {
         console.log('Successfully updated message status to accepted');
       }
 
-      // Notify all group members (excluding the invited parent)
-      const { data: groupMembers } = await supabase
+      // Update local state to reflect the change
+      setMessages(prev => prev.map(m => 
+        m.id === msg.id ? { ...m, status: 'accepted' } : m
+      ));
+
+      // Now notify all group members (AFTER updating the current user's status)
+      // Get ALL group members (including the newly accepted one)
+      const { data: allGroupMembers, error: membersError } = await supabase
         .from('group_members')
-        .select('profile_id')
-        .eq('group_id', msg.group_id)
-        .eq('status', 'active');
+        .select('profile_id, status')
+        .eq('group_id', msg.group_id);
       
-      let memberIds = (groupMembers || []).map((m: any) => m.profile_id).filter(Boolean);
+      if (membersError) {
+        console.error('Error fetching group members:', membersError);
+      }
+      
+      console.log('All group members found (after acceptance):', allGroupMembers);
+      
+      // Debug: Let's see ALL members regardless of status to understand what's happening
+      console.log('All group members with statuses:', allGroupMembers?.map((m: any) => ({
+        profile_id: m.profile_id,
+        status: m.status
+      })));
+      
+      // Debug: Let's also check if there are any RLS policy issues by querying without RLS
+      const { data: allMembersNoRLS, error: rlsError } = await supabase
+        .from('group_members')
+        .select('profile_id, status')
+        .eq('group_id', msg.group_id);
+      
+      if (rlsError) {
+        console.error('Error fetching members without RLS consideration:', rlsError);
+      } else {
+        console.log('All group members (potential RLS issue check):', allMembersNoRLS);
+      }
+      
+      // Also get the group creator
+      const { data: groupData, error: groupError } = await supabase
+        .from('groups')
+        .select('created_by')
+        .eq('id', msg.group_id)
+        .single();
+      
+      if (groupError) {
+        console.error('Error fetching group data:', groupError);
+      }
+      
+      console.log('Group creator found:', groupData);
+      
+      // Get all ACTIVE members (including the newly accepted one)
+      const activeMembers = (allGroupMembers || [])
+        .filter((m: any) => m.status === 'active')
+        .map((m: any) => m.profile_id);
+      
+      console.log('Active members found:', activeMembers);
+      console.log('Active members count:', activeMembers.length);
+      
+      let memberIds = [...activeMembers]; // Start with active members
+      
+      // Add the group creator if they're not already in the members list
+      if (groupData?.created_by && !memberIds.includes(groupData.created_by)) {
+        memberIds.push(groupData.created_by);
+        console.log('Added group creator to notification list');
+      }
+      
+      console.log('Member IDs after adding creator:', memberIds);
+      
       // Remove the invited parent (current user) from notification recipients
       memberIds = memberIds.filter((id: string) => id !== profile?.id);
+      
+      console.log('Member IDs after removing current user:', memberIds);
+      
+      // Remove members who have rejected the group (they shouldn't receive notifications)
+      const rejectedMembers = (allGroupMembers || [])
+        .filter((m: any) => m.status === 'rejected')
+        .map((m: any) => m.profile_id);
+      
+      memberIds = memberIds.filter((id: string) => !rejectedMembers.includes(id));
+      
+      console.log('Rejected members excluded from notifications:', rejectedMembers);
+      console.log('Final member IDs for notifications:', memberIds);
+      
+      // Debug: Let's also check what profiles these IDs correspond to
+      if (memberIds.length > 0) {
+        const { data: memberProfiles } = await supabase
+          .from('profiles')
+          .select('id, full_name, email')
+          .in('id', memberIds);
+        console.log('Member profiles for notifications:', memberProfiles);
+      }
       
       const notifySubject = `Invitation Accepted: ${profile?.full_name || profile?.email} joined ${groupsMap[msg.group_id!] || 'the group'}`;
       const notifyContent = `${profile?.full_name || profile?.email} has accepted the invitation and joined the group.`;
@@ -175,18 +280,16 @@ export default function MessagesPage() {
       }));
 
       if (notifyMessages.length > 0) {
+        console.log('Sending notification messages:', notifyMessages);
         const { error: notifyError } = await supabase.from('messages').insert(notifyMessages);
         if (notifyError) {
           console.error('Error sending notifications:', notifyError);
         } else {
           console.log('Successfully sent notifications to', notifyMessages.length, 'members');
         }
+      } else {
+        console.log('No members to notify (only the invited parent is in the group)');
       }
-
-      // Update local state to reflect the change
-      setMessages(prev => prev.map(m => 
-        m.id === msg.id ? { ...m, status: 'accepted' } : m
-      ));
 
       console.log('Accept invite process completed successfully');
       
@@ -249,14 +352,83 @@ export default function MessagesPage() {
         console.log('Successfully updated message status to rejected');
       }
 
-      // Notify all group members (excluding the invited parent)
-      const { data: groupMembers } = await supabase
+      // Update local state to reflect the change
+      setMessages(prev => prev.map(m => 
+        m.id === msg.id ? { ...m, status: 'rejected' } : m
+      ));
+      
+      // Now notify all group members (AFTER updating the current user's status)
+      // Get ALL group members (including the newly rejected one)
+      const { data: allGroupMembers, error: membersError } = await supabase
         .from('group_members')
-        .select('profile_id')
+        .select('profile_id, status')
         .eq('group_id', msg.group_id);
       
-      let memberIds = (groupMembers || []).map((m: any) => m.profile_id).filter(Boolean);
+      if (membersError) {
+        console.error('Error fetching group members for rejection:', membersError);
+      }
+      
+      console.log('All group members found for rejection notification (after rejection):', allGroupMembers);
+      
+      // Debug: Let's see ALL members regardless of status to understand what's happening
+      console.log('All group members with statuses for rejection:', allGroupMembers?.map((m: any) => ({
+        profile_id: m.profile_id,
+        status: m.status
+      })));
+      
+      // Also get the group creator
+      const { data: groupData, error: groupError } = await supabase
+        .from('groups')
+        .select('created_by')
+        .eq('id', msg.group_id)
+        .single();
+      
+      if (groupError) {
+        console.error('Error fetching group data for rejection:', groupError);
+      }
+      
+      console.log('Group creator found for rejection notification:', groupData);
+      
+      // Get all ACTIVE members (excluding the newly rejected one)
+      const activeMembers = (allGroupMembers || [])
+        .filter((m: any) => m.status === 'active')
+        .map((m: any) => m.profile_id);
+      
+      console.log('Active members found for rejection notification:', activeMembers);
+      console.log('Active members count for rejection:', activeMembers.length);
+      
+      let memberIds = [...activeMembers]; // Start with active members
+      
+      // Add the group creator if they're not already in the members list
+      if (groupData?.created_by && !memberIds.includes(groupData.created_by)) {
+        memberIds.push(groupData.created_by);
+        console.log('Added group creator to rejection notification list');
+      }
+      
+      console.log('Member IDs after adding creator for rejection:', memberIds);
+      
       memberIds = memberIds.filter((id: string) => id !== profile?.id);
+      
+      console.log('Member IDs after removing current user for rejection:', memberIds);
+      
+      // Remove members who have rejected the group (they shouldn't receive notifications)
+      const rejectedMembers = (allGroupMembers || [])
+        .filter((m: any) => m.status === 'rejected')
+        .map((m: any) => m.profile_id);
+      
+      memberIds = memberIds.filter((id: string) => !rejectedMembers.includes(id));
+      
+      console.log('Rejected members excluded from rejection notifications:', rejectedMembers);
+      console.log('Final member IDs for rejection notifications:', memberIds);
+      
+      // Debug: Let's also check what profiles these IDs correspond to
+      if (memberIds.length > 0) {
+        const { data: memberProfiles } = await supabase
+          .from('profiles')
+          .select('id, full_name, email')
+          .in('id', memberIds);
+        console.log('Member profiles for rejection notifications:', memberProfiles);
+      }
       
       const notifySubject = `Invitation Rejected: ${profile?.full_name || profile?.email} declined ${groupsMap[msg.group_id!] || 'the group'}`;
       const notifyContent = `${profile?.full_name || profile?.email} has declined the invitation to join the group.`;
@@ -271,18 +443,16 @@ export default function MessagesPage() {
       }));
 
       if (notifyMessages.length > 0) {
+        console.log('Sending rejection notification messages:', notifyMessages);
         const { error: notifyError } = await supabase.from('messages').insert(notifyMessages);
         if (notifyError) {
           console.error('Error sending notifications:', notifyError);
         } else {
           console.log('Successfully sent rejection notifications to', notifyMessages.length, 'members');
         }
+      } else {
+        console.log('No members to notify of rejection (only the invited parent is in the group)');
       }
-
-      // Update local state to reflect the change
-      setMessages(prev => prev.map(m => 
-        m.id === msg.id ? { ...m, status: 'rejected' } : m
-      ));
       
       console.log('Reject invite process completed successfully');
     } catch (error) {
