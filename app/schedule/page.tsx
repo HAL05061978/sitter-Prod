@@ -95,6 +95,7 @@ export default function SchedulePage() {
   const [responses, setResponses] = useState<RequestResponse[]>([]);
   const [currentDate, setCurrentDate] = useState(new Date());
   const [selectedDate, setSelectedDate] = useState<Date | null>(null);
+  const [activeChildrenPerGroup, setActiveChildrenPerGroup] = useState<{[groupId: string]: Child[]}>({});
 
   // Modal states
   const [showCreateRequest, setShowCreateRequest] = useState(false);
@@ -124,6 +125,36 @@ export default function SchedulePage() {
     reciprocalEndTime: '',
     keepOpenToOthers: false
   });
+
+  // Function to refresh active children data
+  const refreshActiveChildren = async (userId: string, childrenData: Child[]) => {
+    const { data: memberGroups } = await supabase
+      .from("group_members")
+      .select("group_id, status")
+      .eq("profile_id", userId)
+      .eq("status", "active");
+
+    if (memberGroups) {
+      const groupIds = memberGroups.map(mg => mg.group_id);
+      const activeChildrenMap: {[groupId: string]: Child[]} = {};
+      
+      for (const groupId of groupIds) {
+        const { data: childMemberships } = await supabase
+          .from("child_group_members")
+          .select("child_id")
+          .eq("group_id", groupId);
+
+        if (childMemberships) {
+          const childIds = childMemberships.map(cm => cm.child_id);
+          const activeChildren = childrenData?.filter(child => 
+            childIds.includes(child.id)
+          ) || [];
+          activeChildrenMap[groupId] = activeChildren;
+        }
+      }
+      setActiveChildrenPerGroup(activeChildrenMap);
+    }
+  };
 
   useEffect(() => {
     supabase.auth.getUser().then(async ({ data }) => {
@@ -161,6 +192,9 @@ export default function SchedulePage() {
             .select("*")
             .in("id", groupIds);
           setGroups(groupsData || []);
+
+          // Fetch active children for each group
+          await refreshActiveChildren(data.user.id, childrenData || []);
         }
 
         // Fetch scheduled blocks for the current month
@@ -218,9 +252,23 @@ export default function SchedulePage() {
     }
   };
 
+  // Get active children for a specific group
+  const getActiveChildrenForGroup = (groupId: string) => {
+    return activeChildrenPerGroup[groupId] || [];
+  };
+
   const createBabysittingRequest = async () => {
     if (!user || !requestForm.groupId || !requestForm.childId || !requestForm.requestedDate || !requestForm.startTime || !requestForm.endTime) {
       alert('Please fill in all required fields');
+      return;
+    }
+
+    // Validate that the child is a member of the selected group
+    const activeChildren = activeChildrenPerGroup[requestForm.groupId] || [];
+    const isChildInGroup = activeChildren.some(child => child.id === requestForm.childId);
+
+    if (!isChildInGroup) {
+      alert('The selected child is not a member of this group. Please add the child to the group first.');
       return;
     }
 
@@ -395,7 +443,7 @@ export default function SchedulePage() {
       return;
     }
 
-    // Create scheduled blocks for the current user (initiator) only
+    // Create scheduled blocks for BOTH parents
     // Block 1: Initiator providing care to responder (reciprocal)
     const reciprocalStartTime = new Date(`2000-01-01T${response.reciprocal_start_time}`);
     const reciprocalEndTime = new Date(`2000-01-01T${response.reciprocal_end_time}`);
@@ -447,6 +495,52 @@ export default function SchedulePage() {
 
     if (careBlockError) {
       alert('Error creating care block: ' + careBlockError.message);
+      return;
+    }
+
+    // Block 3: Responder providing care to initiator (original request)
+    const { error: responderCareBlockError } = await supabase
+      .from("scheduled_blocks")
+      .insert({
+        group_id: originalRequest.group_id,
+        request_id: originalRequest.id,
+        parent_id: response.responder_id, // The responder is providing care
+        child_id: originalRequest.child_id, // Caring for the initiator's child
+        scheduled_date: originalRequest.requested_date,
+        start_time: originalRequest.start_time,
+        end_time: originalRequest.end_time,
+        duration_minutes: careDurationMinutes,
+        block_type: 'care_provided',
+        status: 'confirmed',
+        is_open_to_others: response.keep_open_to_others || false,
+        notes: `Care provided for ${getChildName(originalRequest.child_id, originalRequest)}`
+      });
+
+    if (responderCareBlockError) {
+      alert('Error creating responder care block: ' + responderCareBlockError.message);
+      return;
+    }
+
+    // Block 4: Responder needing care (reciprocal)
+    const { error: responderReciprocalBlockError } = await supabase
+      .from("scheduled_blocks")
+      .insert({
+        group_id: originalRequest.group_id,
+        request_id: originalRequest.id,
+        parent_id: response.responder_id, // The responder needs care
+        child_id: response.reciprocal_child_id!, // Their own child needs care
+        scheduled_date: response.reciprocal_date,
+        start_time: response.reciprocal_start_time,
+        end_time: response.reciprocal_end_time,
+        duration_minutes: reciprocalDurationMinutes,
+        block_type: 'care_needed',
+        status: 'confirmed',
+        is_open_to_others: false,
+        notes: `Reciprocal care needed for ${response.reciprocal_children?.full_name || 'Unknown child'}`
+      });
+
+    if (responderReciprocalBlockError) {
+      alert('Error creating responder reciprocal care block: ' + responderReciprocalBlockError.message);
       return;
     }
 
@@ -766,12 +860,24 @@ export default function SchedulePage() {
                 </div>
               )}
 
-              <div className="mt-4 pt-4 border-t border-gray-200">
+              <div className="mt-4 pt-4 border-t border-gray-200 flex gap-2">
                 <button 
                   onClick={() => setShowCreateRequest(true)}
                   className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 transition"
                 >
                   New Babysitting Request
+                </button>
+                <button 
+                  onClick={async () => {
+                    if (user) {
+                      await refreshActiveChildren(user.id, children);
+                      await fetchRequestsAndResponses(user.id);
+                    }
+                  }}
+                  className="px-4 py-2 bg-gray-600 text-white rounded hover:bg-gray-700 transition"
+                  title="Refresh data (useful after activating/deactivating children)"
+                >
+                  ↻ Refresh
                 </button>
               </div>
             </div>
@@ -790,7 +896,15 @@ export default function SchedulePage() {
                 <label className="block text-sm font-medium mb-1">Group *</label>
                 <select
                   value={requestForm.groupId}
-                  onChange={(e) => setRequestForm({...requestForm, groupId: e.target.value})}
+                  onChange={async (e: React.ChangeEvent<HTMLSelectElement>) => {
+                    const newGroupId = e.target.value;
+                    setRequestForm({...requestForm, groupId: newGroupId, childId: ''});
+                    
+                    // Refresh active children data when group changes
+                    if (newGroupId && user) {
+                      await refreshActiveChildren(user.id, children);
+                    }
+                  }}
                   className="w-full p-2 border border-gray-300 rounded"
                   required
                 >
@@ -801,27 +915,32 @@ export default function SchedulePage() {
                 </select>
               </div>
 
-              <div>
-                <label className="block text-sm font-medium mb-1">Child *</label>
-                <select
-                  value={requestForm.childId}
-                  onChange={(e) => setRequestForm({...requestForm, childId: e.target.value})}
-                  className="w-full p-2 border border-gray-300 rounded"
-                  required
-                >
-                  <option value="">Select a child</option>
-                  {children.map(child => (
-                    <option key={child.id} value={child.id}>{child.full_name}</option>
-                  ))}
-                </select>
-              </div>
+                             <div>
+                 <label className="block text-sm font-medium mb-1">Child *</label>
+                 <select
+                   value={requestForm.childId}
+                   onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setRequestForm({...requestForm, childId: e.target.value})}
+                   className="w-full p-2 border border-gray-300 rounded"
+                   required
+                 >
+                   <option value="">Select a child</option>
+                   {activeChildrenPerGroup[requestForm.groupId]?.map(child => (
+                     <option key={child.id} value={child.id}>{child.full_name}</option>
+                   )) || []}
+                 </select>
+                 {requestForm.groupId && (!activeChildrenPerGroup[requestForm.groupId] || activeChildrenPerGroup[requestForm.groupId].length === 0) && (
+                   <p className="text-sm text-red-600 mt-1">
+                     You don't have any children in this group. Please add a child to the group first.
+                   </p>
+                 )}
+               </div>
 
               <div>
                 <label className="block text-sm font-medium mb-1">Date *</label>
                 <input
                   type="date"
                   value={requestForm.requestedDate}
-                  onChange={(e) => setRequestForm({...requestForm, requestedDate: e.target.value})}
+                  onChange={(e: React.ChangeEvent<HTMLInputElement>) => setRequestForm({...requestForm, requestedDate: e.target.value})}
                   className="w-full p-2 border border-gray-300 rounded"
                   required
                 />
@@ -833,7 +952,7 @@ export default function SchedulePage() {
                   <input
                     type="time"
                     value={requestForm.startTime}
-                    onChange={(e) => setRequestForm({...requestForm, startTime: e.target.value})}
+                    onChange={(e: React.ChangeEvent<HTMLInputElement>) => setRequestForm({...requestForm, startTime: e.target.value})}
                     className="w-full p-2 border border-gray-300 rounded"
                     required
                   />
@@ -843,7 +962,7 @@ export default function SchedulePage() {
                   <input
                     type="time"
                     value={requestForm.endTime}
-                    onChange={(e) => setRequestForm({...requestForm, endTime: e.target.value})}
+                    onChange={(e: React.ChangeEvent<HTMLInputElement>) => setRequestForm({...requestForm, endTime: e.target.value})}
                     className="w-full p-2 border border-gray-300 rounded"
                     required
                   />
@@ -854,7 +973,7 @@ export default function SchedulePage() {
                 <label className="block text-sm font-medium mb-1">Notes</label>
                 <textarea
                   value={requestForm.notes}
-                  onChange={(e) => setRequestForm({...requestForm, notes: e.target.value})}
+                  onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setRequestForm({...requestForm, notes: e.target.value})}
                   className="w-full p-2 border border-gray-300 rounded"
                   rows={3}
                   placeholder="Any additional details..."

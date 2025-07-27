@@ -25,7 +25,8 @@ interface ChildGroupMember {
   id: string;
   child_id: string;
   group_id: string;
-  active: boolean;
+  added_by: string;
+  added_at: string;
 }
 
 export default function GroupsPage() {
@@ -35,7 +36,7 @@ export default function GroupsPage() {
   const [groups, setGroups] = useState<Group[]>([]);
   const [parentChildren, setParentChildren] = useState<Child[]>([]);
   const [memberships, setMemberships] = useState<ChildGroupMember[]>([]);
-  const [allActiveChildren, setAllActiveChildren] = useState<Record<string, Child[]>>({}); // groupId -> all active children
+  const [allChildrenInGroups, setAllChildrenInGroups] = useState<Record<string, Child[]>>({}); // groupId -> all children
   const [error, setError] = useState("");
 
   useEffect(() => {
@@ -95,31 +96,30 @@ export default function GroupsPage() {
           setMemberships(membershipsData || []);
         }
 
-        // 6. Fetch all active children for each group (including other parents' children)
+        // 6. Fetch all children for each group (including other parents' children)
         if (uniqueGroups && uniqueGroups.length > 0) {
           const groupIds = uniqueGroups.map(group => group.id);
-          const { data: allActiveMemberships } = await supabase
+          const { data: allMemberships } = await supabase
             .from("child_group_members")
             .select("*")
-            .in("group_id", groupIds)
-            .eq("active", true);
+            .in("group_id", groupIds);
           
-          if (allActiveMemberships && allActiveMemberships.length > 0) {
-            const allChildIds = Array.from(new Set(allActiveMemberships.map(m => m.child_id)));
+          if (allMemberships && allMemberships.length > 0) {
+            const allChildIds = Array.from(new Set(allMemberships.map(m => m.child_id)));
             const { data: allChildrenData } = await supabase
               .from("children")
               .select("*")
               .in("id", allChildIds);
             
             if (allChildrenData) {
-              const activeChildrenMap: Record<string, Child[]> = {};
+              const childrenMap: Record<string, Child[]> = {};
               uniqueGroups.forEach(group => {
-                const groupMemberships = allActiveMemberships.filter(m => m.group_id === group.id);
-                activeChildrenMap[group.id] = groupMemberships
+                const groupMemberships = allMemberships.filter(m => m.group_id === group.id);
+                childrenMap[group.id] = groupMemberships
                   .map(membership => allChildrenData.find(child => child.id === membership.child_id))
                   .filter(Boolean) as Child[];
               });
-              setAllActiveChildren(activeChildrenMap);
+              setAllChildrenInGroups(childrenMap);
             }
           }
         }
@@ -129,10 +129,10 @@ export default function GroupsPage() {
     });
   }, [router]);
 
-  // Helper to check if a child is active in a group
-  function isChildActiveInGroup(childId: string, groupId: string) {
+  // Helper to check if a child is a member of a group
+  function isChildInGroup(childId: string, groupId: string) {
     return memberships.find(
-      (m) => m.child_id === childId && m.group_id === groupId && m.active
+      (m) => m.child_id === childId && m.group_id === groupId
     );
   }
 
@@ -149,63 +149,81 @@ export default function GroupsPage() {
     );
 
     if (!membership) {
-      // Add new membership (activate)
-      const { data, error } = await supabase
-        .from("child_group_members")
-        .insert([
-          { child_id: child.id, group_id: group.id, active: true },
-        ])
-        .select();
-      
-      if (error) {
-        setError(error.message);
-        return;
-      }
-      
-      if (data && data.length > 0) {
-        setMemberships([...memberships, data[0]]);
-        // Update the allActiveChildren state
-        setAllActiveChildren(prev => ({
-          ...prev,
-          [group.id]: [...(prev[group.id] || []), child]
-        }));
+      // Add new membership - handle both with and without added_by column
+      try {
+        const { data, error } = await supabase
+          .from("child_group_members")
+          .insert([
+            { 
+              child_id: child.id, 
+              group_id: group.id, 
+              added_by: user!.id 
+            },
+          ])
+          .select();
+        
+        if (error) {
+          // If added_by column doesn't exist, try without it
+          if (error.message.includes('added_by')) {
+            console.log('added_by column not found, trying without it');
+            const { data: data2, error: error2 } = await supabase
+              .from("child_group_members")
+              .insert([
+                { 
+                  child_id: child.id, 
+                  group_id: group.id
+                },
+              ])
+              .select();
+            
+            if (error2) {
+              setError(error2.message);
+              return;
+            }
+            
+            if (data2 && data2.length > 0) {
+              setMemberships([...memberships, data2[0]]);
+              setAllChildrenInGroups(prev => ({
+                ...prev,
+                [group.id]: [...(prev[group.id] || []), child]
+              }));
+            }
+          } else {
+            setError(error.message);
+            return;
+          }
+        } else {
+          if (data && data.length > 0) {
+            setMemberships([...memberships, data[0]]);
+            setAllChildrenInGroups(prev => ({
+              ...prev,
+              [group.id]: [...(prev[group.id] || []), child]
+            }));
+          }
+        }
+      } catch (err) {
+        console.error('Error adding child to group:', err);
+        setError('Failed to add child to group');
       }
     } else {
-      // Toggle active flag
-      const { data, error } = await supabase
+      // Remove membership
+      const { error } = await supabase
         .from("child_group_members")
-        .update({ active: !membership.active })
-        .eq("id", membership.id)
-        .select();
+        .delete()
+        .eq("id", membership.id);
       
       if (error) {
         setError(error.message);
         return;
       }
       
-      if (data && data.length > 0) {
-        setMemberships(memberships.map((m) =>
-          m.id === membership.id ? { ...m, active: !membership.active } : m
-        ));
-        
-        // Update the allActiveChildren state
-        setAllActiveChildren(prev => {
-          const currentActive = prev[group.id] || [];
-          if (!membership.active) {
-            // Activating - add to active list
-            return {
-              ...prev,
-              [group.id]: [...currentActive, child]
-            };
-          } else {
-            // Deactivating - remove from active list
-            return {
-              ...prev,
-              [group.id]: currentActive.filter(c => c.id !== child.id)
-            };
-          }
-        });
-      }
+      setMemberships(memberships.filter((m) => m.id !== membership.id));
+      
+      // Update the allChildrenInGroups state
+      setAllChildrenInGroups(prev => ({
+        ...prev,
+        [group.id]: (prev[group.id] || []).filter(c => c.id !== child.id)
+      }));
     }
   }
 
@@ -239,9 +257,9 @@ export default function GroupsPage() {
           </div>
         ) : (
           groups.map((group) => {
-            const allActiveInGroup = allActiveChildren[group.id] || [];
-            const myActiveChildren = allActiveInGroup.filter(child => child.parent_id === user?.id);
-            const otherActiveChildren = allActiveInGroup.filter(child => child.parent_id !== user?.id);
+            const allChildrenInGroup = allChildrenInGroups[group.id] || [];
+            const myChildren = allChildrenInGroup.filter(child => child.parent_id === user?.id);
+            const otherChildren = allChildrenInGroup.filter(child => child.parent_id !== user?.id);
             const isCreator = isGroupCreator(group);
             
             return (
@@ -258,14 +276,14 @@ export default function GroupsPage() {
                 </div>
                 {group.description && <p className="text-gray-600 mb-4">{group.description}</p>}
                 
-                {/* All Active Children in Group */}
+                {/* All Children in Group */}
                 <div className="mb-6">
-                  <h3 className="font-medium mb-3 text-lg">All Active Children in this Group:</h3>
-                  {allActiveInGroup.length === 0 ? (
-                    <div className="text-gray-500">No children are currently active in this group.</div>
+                  <h3 className="font-medium mb-3 text-lg">All Children in this Group:</h3>
+                  {allChildrenInGroup.length === 0 ? (
+                    <div className="text-gray-500">No children are currently in this group.</div>
                   ) : (
                     <div className="space-y-2">
-                      {allActiveInGroup.map((child) => {
+                      {allChildrenInGroup.map((child) => {
                         const isMyChild = child.parent_id === user?.id;
                         return (
                           <div key={child.id} className={`flex items-center justify-between p-2 rounded-lg ${
@@ -283,7 +301,7 @@ export default function GroupsPage() {
                               )}
                             </div>
                             <span className="px-3 py-1 bg-green-100 text-green-800 rounded-full text-sm font-medium">
-                              Active
+                              Member
                             </span>
                           </div>
                         );
@@ -298,7 +316,7 @@ export default function GroupsPage() {
                     <h3 className="font-medium mb-4 text-lg">Manage My Children:</h3>
                     <div className="space-y-3">
                       {parentChildren.map((child) => {
-                        const active = isChildActiveInGroup(child.id, group.id);
+                        const isMember = isChildInGroup(child.id, group.id);
                         return (
                           <div key={child.id} className="flex items-center justify-between p-3 bg-blue-50 rounded-lg border border-blue-200">
                             <div>
@@ -312,12 +330,12 @@ export default function GroupsPage() {
                             <button
                               onClick={() => handleToggle(child, group)}
                               className={`px-4 py-2 rounded-lg font-medium transition-colors ${
-                                active 
-                                  ? 'bg-green-600 text-white hover:bg-green-700' 
-                                  : 'bg-gray-300 text-gray-700 hover:bg-gray-400'
+                                isMember 
+                                  ? 'bg-red-600 text-white hover:bg-red-700' 
+                                  : 'bg-green-600 text-white hover:bg-green-700'
                               }`}
                             >
-                              {active ? 'Active' : 'Inactive'}
+                              {isMember ? 'Remove' : 'Add'}
                             </button>
                           </div>
                         );
