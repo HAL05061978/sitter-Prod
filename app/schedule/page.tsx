@@ -375,6 +375,89 @@ export default function SchedulePage() {
     setScheduledBlocks(uniqueBlocks);
   };
 
+  const fetchScheduledBlocksForRange = async (userId: string, startDate: Date, endDate: Date) => {
+    // First, get all groups the user is a member of
+    const { data: userGroups } = await supabase
+      .from("group_members")
+      .select("group_id")
+      .eq("profile_id", userId);
+
+    if (!userGroups || userGroups.length === 0) {
+      setScheduledBlocks([]);
+      return;
+    }
+
+    const groupIds = userGroups.map(g => g.group_id);
+
+    // Get the user's children IDs for filtering
+    const { data: userChildren } = await supabase
+      .from("children")
+      .select("id")
+      .eq("parent_id", userId);
+
+    const userChildIds = userChildren?.map(child => child.id) || [];
+
+    // Fetch scheduled blocks that are relevant to the current user:
+    // 1. Blocks where the user is the parent_id (they are providing or needing care)
+    // 2. Blocks where the user's children need care (care_needed blocks only)
+    
+    // First, get blocks where the user is the parent_id with child data
+    const { data: userBlocks, error: userError } = await supabase
+      .from("scheduled_blocks")
+      .select(`
+        *,
+        children:child_id (
+          id,
+          full_name,
+          parent_id
+        )
+      `)
+      .gte("scheduled_date", startDate.toISOString().split('T')[0])
+      .lte("scheduled_date", endDate.toISOString().split('T')[0])
+      .in("group_id", groupIds)
+      .eq("status", "confirmed")
+      .eq("parent_id", userId);
+
+    if (userError) {
+      console.error('Error fetching user blocks:', userError);
+    }
+
+    // Then, get care_needed blocks where the user's children are involved with child data
+    let childCareNeededBlocks: any[] = [];
+    if (userChildIds.length > 0) {
+      const { data: childBlocksData, error: childError } = await supabase
+        .from("scheduled_blocks")
+        .select(`
+          *,
+          children:child_id (
+            id,
+            full_name,
+            parent_id
+          )
+        `)
+        .gte("scheduled_date", startDate.toISOString().split('T')[0])
+        .lte("scheduled_date", endDate.toISOString().split('T')[0])
+        .in("group_id", groupIds)
+        .eq("status", "confirmed")
+        .eq("block_type", "care_needed") // Only care_needed blocks for user's children
+        .in("child_id", userChildIds);
+
+      if (childError) {
+        console.error('Error fetching child care needed blocks:', childError);
+      } else {
+        childCareNeededBlocks = childBlocksData || [];
+      }
+    }
+
+    // Combine and deduplicate the results
+    const allBlocks = [...(userBlocks || []), ...childCareNeededBlocks];
+    const uniqueBlocks = allBlocks.filter((block, index, self) => 
+      index === self.findIndex(b => b.id === block.id)
+    );
+
+    setScheduledBlocks(uniqueBlocks);
+  };
+
   const fetchRequestsAndResponses = async (userId: string) => {
     // First, get all groups the user is a member of
     const { data: userGroups } = await supabase
@@ -719,8 +802,15 @@ export default function SchedulePage() {
 
     // Refresh data
     await fetchRequestsAndResponses(user.id);
-    await fetchScheduledBlocks(user.id, currentDate);
     await fetchInvitations(user.id);
+    
+    // Fetch blocks for a wider date range to include the invitation date
+    const invitationDate = new Date(selectedInvitation.invitation_date);
+    const startDate = new Date(Math.min(currentDate.getTime(), invitationDate.getTime()));
+    const endDate = new Date(Math.max(currentDate.getTime(), invitationDate.getTime()));
+    
+    // Fetch blocks for the wider range
+    await fetchScheduledBlocksForRange(user.id, startDate, endDate);
 
     // Close modal and reset state
     setShowAcceptInvitationModal(false);
