@@ -1,84 +1,148 @@
--- Clear all scheduling-related data while preserving profiles, groups, and children
--- This script will remove all scheduling data to allow fresh testing
+-- Clear Scheduling Data (Updated)
+-- This script safely clears all scheduling-related records while preserving fundamental app data
+-- Run this in your Supabase SQL editor
 
--- First, drop all scheduling-related functions and triggers
-DROP FUNCTION IF EXISTS create_reciprocal_scheduled_blocks() CASCADE;
-DROP FUNCTION IF EXISTS invite_specific_parents_to_care(p_group_id UUID, p_inviter_id UUID, p_invitee_ids UUID[], p_time_blocks JSONB) CASCADE;
-DROP FUNCTION IF EXISTS accept_group_invitation_with_time_block(p_invitation_id UUID, p_accepting_user_id UUID, p_selected_time_block_index INTEGER, p_selected_child_id UUID) CASCADE;
-DROP FUNCTION IF EXISTS get_available_time_blocks_for_invitation(p_invitation_id UUID) CASCADE;
-DROP FUNCTION IF EXISTS get_available_group_members_for_invitation(p_group_id UUID, p_inviter_id UUID) CASCADE;
-DROP FUNCTION IF EXISTS get_user_children_for_group(p_user_id UUID, p_group_id UUID) CASCADE;
+-- ============================================================================
+-- STEP 1: Create backup tables (optional - uncomment if you want backups)
+-- ============================================================================
 
--- Clear all scheduling-related tables
+-- Uncomment these lines if you want to create backup tables first
+/*
+CREATE TABLE IF NOT EXISTS scheduled_blocks_backup AS SELECT * FROM public.scheduled_blocks;
+CREATE TABLE IF NOT EXISTS babysitting_requests_backup AS SELECT * FROM public.babysitting_requests;
+CREATE TABLE IF NOT EXISTS request_responses_backup AS SELECT * FROM public.request_responses;
+CREATE TABLE IF NOT EXISTS group_invitations_backup AS SELECT * FROM public.group_invitations;
+CREATE TABLE IF NOT EXISTS invitation_time_blocks_backup AS SELECT * FROM public.invitation_time_blocks;
+*/
+
+-- ============================================================================
+-- STEP 2: Clear all scheduling-related data
+-- ============================================================================
+
+-- Clear scheduled blocks (calendar events)
 DELETE FROM public.scheduled_blocks;
-DELETE FROM public.request_responses;
-DELETE FROM public.babysitting_requests;
-DELETE FROM public.group_invitations;
-DELETE FROM public.invitation_time_blocks;
 
--- Reset sequences if they exist
+-- Clear babysitting requests
+DELETE FROM public.babysitting_requests;
+
+-- Clear request responses
+DELETE FROM public.request_responses;
+
+-- Clear group invitations
+DELETE FROM public.group_invitations;
+
+-- Clear invitation time blocks (if table exists)
 DO $$
 BEGIN
-    -- Reset scheduled_blocks id sequence
-    IF EXISTS (SELECT 1 FROM information_schema.sequences WHERE sequence_name = 'scheduled_blocks_id_seq') THEN
-        EXECUTE 'ALTER SEQUENCE scheduled_blocks_id_seq RESTART WITH 1';
-    END IF;
-    
-    -- Reset babysitting_requests id sequence
-    IF EXISTS (SELECT 1 FROM information_schema.sequences WHERE sequence_name = 'babysitting_requests_id_seq') THEN
-        EXECUTE 'ALTER SEQUENCE babysitting_requests_id_seq RESTART WITH 1';
-    END IF;
-    
-    -- Reset request_responses id sequence
-    IF EXISTS (SELECT 1 FROM information_schema.sequences WHERE sequence_name = 'request_responses_id_seq') THEN
-        EXECUTE 'ALTER SEQUENCE request_responses_id_seq RESTART WITH 1';
-    END IF;
-    
-    -- Reset group_invitations id sequence
-    IF EXISTS (SELECT 1 FROM information_schema.sequences WHERE sequence_name = 'group_invitations_id_seq') THEN
-        EXECUTE 'ALTER SEQUENCE group_invitations_id_seq RESTART WITH 1';
-    END IF;
-    
-    -- Reset invitation_time_blocks id sequence
-    IF EXISTS (SELECT 1 FROM information_schema.sequences WHERE sequence_name = 'invitation_time_blocks_id_seq') THEN
-        EXECUTE 'ALTER SEQUENCE invitation_time_blocks_id_seq RESTART WITH 1';
+    IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'invitation_time_blocks') THEN
+        DELETE FROM public.invitation_time_blocks;
     END IF;
 END $$;
 
--- Verify the cleanup
+-- ============================================================================
+-- STEP 3: Reset sequences (if any)
+-- ============================================================================
+
+-- Reset any sequences that might be used for IDs
+-- Note: Most tables use UUIDs, so sequences might not be needed
+DO $$
+BEGIN
+    -- Reset babysitting_requests sequence if it exists
+    IF EXISTS (SELECT 1 FROM information_schema.sequences WHERE sequence_name = 'babysitting_requests_id_seq') THEN
+        ALTER SEQUENCE public.babysitting_requests_id_seq RESTART WITH 1;
+    END IF;
+    
+    -- Reset request_responses sequence if it exists
+    IF EXISTS (SELECT 1 FROM information_schema.sequences WHERE sequence_name = 'request_responses_id_seq') THEN
+        ALTER SEQUENCE public.request_responses_id_seq RESTART WITH 1;
+    END IF;
+    
+    -- Reset group_invitations sequence if it exists
+    IF EXISTS (SELECT 1 FROM information_schema.sequences WHERE sequence_name = 'group_invitations_id_seq') THEN
+        ALTER SEQUENCE public.group_invitations_id_seq RESTART WITH 1;
+    END IF;
+    
+    -- Reset scheduled_blocks sequence if it exists
+    IF EXISTS (SELECT 1 FROM information_schema.sequences WHERE sequence_name = 'scheduled_blocks_id_seq') THEN
+        ALTER SEQUENCE public.scheduled_blocks_id_seq RESTART WITH 1;
+    END IF;
+END $$;
+
+-- ============================================================================
+-- STEP 4: Verify data is cleared
+-- ============================================================================
+
+-- Check that all scheduling tables are empty
 SELECT 
-    'scheduled_blocks' as table_name, COUNT(*) as record_count 
+    'Scheduled Blocks' as table_name,
+    COUNT(*) as record_count
 FROM public.scheduled_blocks
 UNION ALL
 SELECT 
-    'request_responses' as table_name, COUNT(*) as record_count 
-FROM public.request_responses
-UNION ALL
-SELECT 
-    'babysitting_requests' as table_name, COUNT(*) as record_count 
+    'Babysitting Requests' as table_name,
+    COUNT(*) as record_count
 FROM public.babysitting_requests
 UNION ALL
 SELECT 
-    'group_invitations' as table_name, COUNT(*) as record_count 
-FROM public.group_invitations
+    'Request Responses' as table_name,
+    COUNT(*) as record_count
+FROM public.request_responses
 UNION ALL
 SELECT 
-    'invitation_time_blocks' as table_name, COUNT(*) as record_count 
-FROM public.invitation_time_blocks;
+    'Group Invitations' as table_name,
+    COUNT(*) as record_count
+FROM public.group_invitations;
 
--- Show that profiles, groups, and children are preserved
+-- ============================================================================
+-- STEP 5: Verify fundamental data is preserved
+-- ============================================================================
+
+-- Check that fundamental data still exists
 SELECT 
-    'profiles' as table_name, COUNT(*) as record_count 
+    'Profiles' as table_name,
+    COUNT(*) as record_count
 FROM public.profiles
 UNION ALL
 SELECT 
-    'groups' as table_name, COUNT(*) as record_count 
+    'Groups' as table_name,
+    COUNT(*) as record_count
 FROM public.groups
 UNION ALL
 SELECT 
-    'children' as table_name, COUNT(*) as record_count 
+    'Children' as table_name,
+    COUNT(*) as record_count
 FROM public.children
 UNION ALL
 SELECT 
-    'group_members' as table_name, COUNT(*) as record_count 
-FROM public.group_members; 
+    'Group Members' as table_name,
+    COUNT(*) as record_count
+FROM public.group_members
+UNION ALL
+SELECT 
+    'Child Group Members' as table_name,
+    COUNT(*) as record_count
+FROM public.child_group_members;
+
+-- ============================================================================
+-- SUCCESS MESSAGE
+-- ============================================================================
+
+SELECT 'Scheduling data cleared successfully! 
+
+✅ PRESERVED:
+- Profiles
+- Groups  
+- Children
+- Group Members
+- Child Group Members
+- All RLS policies
+- All functions and triggers
+
+🗑️ CLEARED:
+- Scheduled blocks (calendar events)
+- Babysitting requests
+- Request responses
+- Group invitations
+- Invitation time blocks
+
+You can now test the scheduling system from scratch!' as status; 

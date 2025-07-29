@@ -41,6 +41,7 @@ interface ScheduledBlock {
   children?: {
     full_name: string;
   };
+  care_group_id?: string;
 }
 
 interface BabysittingRequest {
@@ -64,18 +65,12 @@ interface RequestResponse {
   id: string;
   request_id: string;
   responder_id: string;
-  response_type: 'agree' | 'counter' | 'reject';
-  counter_date?: string;
-  counter_start_time?: string;
-  counter_end_time?: string;
-  counter_duration_minutes?: number;
+  response_type: 'agree' | 'reject';
   reciprocal_date?: string;
   reciprocal_start_time?: string;
   reciprocal_end_time?: string;
   reciprocal_duration_minutes?: number;
   reciprocal_child_id?: string;
-  keep_open_to_others?: boolean;
-  initiator_agreed?: boolean;
   notes?: string;
   status: string;
   created_at: string;
@@ -136,7 +131,7 @@ export default function SchedulePage() {
   const [showAcceptInvitationModal, setShowAcceptInvitationModal] = useState(false);
   const [selectedRequest, setSelectedRequest] = useState<BabysittingRequest | null>(null);
   const [selectedInvitation, setSelectedInvitation] = useState<GroupInvitation | null>(null);
-  const [responseType, setResponseType] = useState<'agree' | 'counter' | 'reject'>('agree');
+  const [responseType, setResponseType] = useState<'agree' | 'reject'>('agree');
   const [availableTimeBlocks, setAvailableTimeBlocks] = useState<InvitationTimeBlock[]>([]);
   const [availableGroupMembers, setAvailableGroupMembers] = useState<AvailableGroupMember[]>([]);
   const [userChildren, setUserChildren] = useState<Child[]>([]);
@@ -153,14 +148,10 @@ export default function SchedulePage() {
   });
 
   const [responseForm, setResponseForm] = useState({
-    counterDate: '',
-    counterStartTime: '',
-    counterEndTime: '',
     reciprocalDate: '',
     reciprocalStartTime: '',
     reciprocalEndTime: '',
     reciprocalChildId: '',
-    keepOpenToOthers: false,
     notes: ''
   });
 
@@ -173,6 +164,27 @@ export default function SchedulePage() {
     }>,
     notes: ''
   });
+
+  const [childrenInCareBlocks, setChildrenInCareBlocks] = useState<{[blockId: string]: {child_name: string}[]}>({});
+
+  // Load children data for care blocks
+  useEffect(() => {
+    const loadChildrenInCareBlocks = async () => {
+      const newChildrenData: {[blockId: string]: {child_name: string}[]} = {};
+      
+      for (const block of scheduledBlocks) {
+        // For now, just show the child name for this specific block
+        // This avoids the duplicate names issue
+        newChildrenData[block.id] = [{ child_name: getChildName(block.child_id, undefined, block) }];
+      }
+      
+      setChildrenInCareBlocks(newChildrenData);
+    };
+    
+    if (scheduledBlocks.length > 0) {
+      loadChildrenInCareBlocks();
+    }
+  }, [scheduledBlocks]);
 
   // Function to refresh active children data
   const refreshActiveChildren = async (userId: string, childrenData: Child[]) => {
@@ -306,10 +318,17 @@ export default function SchedulePage() {
     // 1. Blocks where the user is the parent_id (they are providing or needing care)
     // 2. Blocks where the user's children need care (care_needed blocks only)
     
-    // First, get blocks where the user is the parent_id
+    // First, get blocks where the user is the parent_id with child data
     const { data: userBlocks, error: userError } = await supabase
       .from("scheduled_blocks")
-      .select("*")
+      .select(`
+        *,
+        children:child_id (
+          id,
+          full_name,
+          parent_id
+        )
+      `)
       .gte("scheduled_date", startOfMonth.toISOString().split('T')[0])
       .lte("scheduled_date", endOfMonth.toISOString().split('T')[0])
       .in("group_id", groupIds)
@@ -320,12 +339,19 @@ export default function SchedulePage() {
       console.error('Error fetching user blocks:', userError);
     }
 
-    // Then, get care_needed blocks where the user's children are involved
+    // Then, get care_needed blocks where the user's children are involved with child data
     let childCareNeededBlocks: any[] = [];
     if (userChildIds.length > 0) {
       const { data: childBlocksData, error: childError } = await supabase
         .from("scheduled_blocks")
-        .select("*")
+        .select(`
+          *,
+          children:child_id (
+            id,
+            full_name,
+            parent_id
+          )
+        `)
         .gte("scheduled_date", startOfMonth.toISOString().split('T')[0])
         .lte("scheduled_date", endOfMonth.toISOString().split('T')[0])
         .in("group_id", groupIds)
@@ -364,10 +390,17 @@ export default function SchedulePage() {
 
     const groupIds = userGroups.map(g => g.group_id);
 
-    // Fetch all requests (active and closed) from user's groups
+    // Fetch all requests (active and closed) from user's groups with child data
     const { data: requestsData } = await supabase
       .from("babysitting_requests")
-      .select("*")
+      .select(`
+        *,
+        children:child_id (
+          id,
+          full_name,
+          parent_id
+        )
+      `)
       .in("group_id", groupIds)
       .in("status", ["active", "closed"])
       .order("created_at", { ascending: false });
@@ -497,23 +530,6 @@ export default function SchedulePage() {
       status: 'pending'
     };
 
-    // Add counter data if countering
-    if (responseType === 'counter') {
-      if (!responseForm.counterDate || !responseForm.counterStartTime || !responseForm.counterEndTime) {
-        alert('Please fill in all counter fields');
-        return;
-      }
-      
-      const startTime = new Date(`2000-01-01T${responseForm.counterStartTime}`);
-      const endTime = new Date(`2000-01-01T${responseForm.counterEndTime}`);
-      const durationMinutes = Math.round((endTime.getTime() - startTime.getTime()) / (1000 * 60));
-
-      responseData.counter_date = responseForm.counterDate;
-      responseData.counter_start_time = responseForm.counterStartTime;
-      responseData.counter_end_time = responseForm.counterEndTime;
-      responseData.counter_duration_minutes = durationMinutes;
-    }
-
     // Add reciprocal care data if agreeing
     if (responseType === 'agree') {
       if (responseForm.reciprocalDate && responseForm.reciprocalStartTime && responseForm.reciprocalEndTime && responseForm.reciprocalChildId) {
@@ -526,13 +542,14 @@ export default function SchedulePage() {
         responseData.reciprocal_end_time = responseForm.reciprocalEndTime;
         responseData.reciprocal_duration_minutes = durationMinutes;
         responseData.reciprocal_child_id = responseForm.reciprocalChildId;
-        responseData.keep_open_to_others = responseForm.keepOpenToOthers;
       }
     }
 
-    const { error } = await supabase
+    const { data: createdResponse, error } = await supabase
       .from("request_responses")
-      .insert(responseData);
+      .insert(responseData)
+      .select()
+      .single();
 
     if (error) {
       alert('Error responding to request: ' + error.message);
@@ -541,14 +558,10 @@ export default function SchedulePage() {
 
     // Reset form and close modal
     setResponseForm({
-      counterDate: '',
-      counterStartTime: '',
-      counterEndTime: '',
       reciprocalDate: '',
       reciprocalStartTime: '',
       reciprocalEndTime: '',
       reciprocalChildId: '',
-      keepOpenToOthers: false,
       notes: ''
     });
     setShowResponseModal(false);
@@ -565,16 +578,6 @@ export default function SchedulePage() {
     }
     setSelectedRequest(request);
     setResponseType('agree');
-    setShowResponseModal(true);
-  };
-
-  const handleCounterRequest = async (request: BabysittingRequest) => {
-    if (request.status === 'closed') {
-      alert('This request is closed and no longer accepting responses.');
-      return;
-    }
-    setSelectedRequest(request);
-    setResponseType('counter');
     setShowResponseModal(true);
   };
 
@@ -799,9 +802,27 @@ export default function SchedulePage() {
   };
 
   const getBlocksForDate = (date: Date) => {
-    const dateStr = date.toISOString().split('T')[0];
-    const blocksForDate = scheduledBlocks.filter(block => block.scheduled_date === dateStr);
-    return blocksForDate;
+    return scheduledBlocks.filter(block => {
+      const blockDate = new Date(block.scheduled_date);
+      return blockDate.toDateString() === date.toDateString();
+    });
+  };
+
+  const getAllChildrenInBlock = async (block: ScheduledBlock) => {
+    if (!block.care_group_id) {
+      return [{ child_name: getChildName(block.child_id, undefined, block) }];
+    }
+    
+    const { data: children, error } = await supabase.rpc('get_children_in_care_block', {
+      p_care_group_id: block.care_group_id
+    });
+    
+    if (error) {
+      console.error('Error fetching children in care block:', error);
+      return [{ child_name: getChildName(block.child_id, undefined, block) }];
+    }
+    
+    return children || [{ child_name: getChildName(block.child_id, undefined, block) }];
   };
 
   const formatTime = (time: string) => {
@@ -839,7 +860,26 @@ export default function SchedulePage() {
       return child.full_name;
     }
     
-    // Return a more descriptive fallback
+    // If we still don't have the name, try to fetch it directly from the database
+    // This is a fallback for when the child data wasn't loaded with the blocks
+    const fetchChildName = async () => {
+      try {
+        const { data: childData, error } = await supabase
+          .from('children')
+          .select('full_name')
+          .eq('id', childId)
+          .single();
+        
+        if (!error && childData?.full_name) {
+          return childData.full_name;
+        }
+      } catch (err) {
+        console.error('Error fetching child name:', err);
+      }
+      return `Child (${childId.slice(0, 8)}...)`;
+    };
+    
+    // For now, return the fallback and we'll handle async fetching in the UI
     return `Child (${childId.slice(0, 8)}...)`;
   };
 
@@ -905,6 +945,36 @@ export default function SchedulePage() {
 
     // Open the invite modal with this request
     await handleInviteOthers(originalRequest);
+  };
+
+  const acceptResponse = async (responseId: string, requestId: string) => {
+    if (!user) {
+      alert('User not found');
+      return;
+    }
+
+    try {
+      // Call the create_care_exchange function to accept the response and create blocks
+      const { error: exchangeError } = await supabase.rpc('create_care_exchange', {
+        p_request_id: requestId,
+        p_response_id: responseId
+      });
+
+      if (exchangeError) {
+        console.error('Error creating care exchange:', exchangeError);
+        alert('Error accepting response: ' + exchangeError.message);
+        return;
+      }
+
+      // Refresh data to show the new scheduled blocks
+      await fetchRequestsAndResponses(user.id);
+      await fetchScheduledBlocks(user.id, currentDate);
+      
+      alert('Response accepted successfully! Care blocks have been created.');
+    } catch (error) {
+      console.error('Error accepting response:', error);
+      alert('Error accepting response. Please try again.');
+    }
   };
 
   if (loading) {
@@ -1011,29 +1081,34 @@ export default function SchedulePage() {
                   <>
                     <div className="text-sm font-medium mb-1">{day.getDate()}</div>
                     <div className="space-y-1">
-                      {blocksForDay.map(block => (
-                        <div
-                          key={block.id}
-                          className={`text-xs p-1 rounded cursor-pointer hover:opacity-80 transition-opacity relative ${
-                            block.block_type === 'care_needed' 
-                              ? 'bg-red-100 text-red-800' 
-                              : 'bg-green-100 text-green-800'
-                          }`}
-                          onDoubleClick={() => handleBlockDoubleClick(block)}
-                          title={block.block_type === 'care_provided' && block.parent_id === user?.id 
-                            ? 'Double-click to invite other group members' 
-                            : undefined}
-                        >
-                          <div className="font-medium">{getChildName(block.child_id, undefined, block)}</div>
-                          <div>{formatTime(block.start_time)} - {formatTime(block.end_time)}</div>
-                          <div className="text-xs opacity-75">
-                            {block.block_type === 'care_needed' ? 'Care Needed' : 'Providing Care'}
+                      {blocksForDay.map(block => {
+                        const childrenInBlock = childrenInCareBlocks[block.id] || [{ child_name: getChildName(block.child_id, undefined, block) }];
+                        const childNames = childrenInBlock.map(c => c.child_name).join(', ');
+                        
+                        return (
+                          <div
+                            key={block.id}
+                            className={`text-xs p-1 rounded cursor-pointer hover:opacity-80 transition-opacity relative ${
+                              block.block_type === 'care_needed' 
+                                ? 'bg-red-100 text-red-800' 
+                                : 'bg-green-100 text-green-800'
+                            }`}
+                            onDoubleClick={() => handleBlockDoubleClick(block)}
+                            title={block.block_type === 'care_provided' && block.parent_id === user?.id 
+                              ? 'Double-click to invite other group members' 
+                              : undefined}
+                          >
+                            <div className="font-medium">{childNames}</div>
+                            <div>{formatTime(block.start_time)} - {formatTime(block.end_time)}</div>
+                            <div className="text-xs opacity-75">
+                              {block.block_type === 'care_needed' ? 'Care Needed' : 'Providing Care'}
+                            </div>
+                            {block.block_type === 'care_provided' && block.parent_id === user?.id && (
+                              <div className="absolute top-0 right-0 w-2 h-2 bg-blue-500 rounded-full opacity-75"></div>
+                            )}
                           </div>
-                          {block.block_type === 'care_provided' && block.parent_id === user?.id && (
-                            <div className="absolute top-0 right-0 w-2 h-2 bg-blue-500 rounded-full opacity-75"></div>
-                          )}
-                        </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   </>
                 )}
@@ -1117,12 +1192,6 @@ export default function SchedulePage() {
                               Agree
                             </button>
                             <button 
-                              onClick={() => handleCounterRequest(request)}
-                              className="px-3 py-1 bg-yellow-600 text-white text-sm rounded hover:bg-yellow-700 transition"
-                            >
-                              Counter
-                            </button>
-                            <button 
                               onClick={() => handleRejectRequest(request)}
                               className="px-3 py-1 bg-red-600 text-white text-sm rounded hover:bg-red-700 transition"
                             >
@@ -1203,53 +1272,26 @@ export default function SchedulePage() {
                                     <div key={response.id} className="text-sm bg-gray-50 p-2 rounded">
                                       <div className="flex justify-between items-start">
                                         <div>
-                                          <span className="font-medium">
+                                          <span className={`px-2 py-1 text-xs rounded ${
+                                            response.response_type === 'agree' ? 'bg-green-100 text-green-800' :
+                                            response.response_type === 'reject' ? 'bg-red-100 text-red-800' :
+                                            'bg-gray-100 text-gray-800'
+                                          }`}>
                                             {response.response_type === 'agree' && response.status === 'accepted' && '✅ Accepted'}
                                             {response.response_type === 'agree' && response.status === 'pending' && '⏳ Pending'}
-                                            {response.response_type === 'agree' && response.status === 'rejected' && '❌ Rejected'}
-                                            {response.response_type === 'counter' && '🔄 Countered'}
                                             {response.response_type === 'reject' && '❌ Rejected'}
                                           </span>
-                                          {/* Debug info visible on page */}
-                                          <div className="text-xs text-gray-400 mt-1">
-                                            Debug: {response.response_type} | {response.status} | User: {getResponderName(response.responder_id)} | Initiator: {getInitiatorName(request.initiator_id)}
-                                          </div>
                                           <span className="text-gray-500 ml-2">
-                                            {response.response_type === 'agree' 
-                                              ? parseLocalDate(request.requested_date).toLocaleDateString()
-                                              : new Date(response.created_at).toLocaleDateString()
-                                            }
+                                            {new Date(response.created_at).toLocaleDateString()}
                                           </span>
                                         </div>
-                                        {/* Show accept button for single pending response if user is the request initiator */}
+                                        {/* Show accept button for pending agree responses if user is the request initiator */}
                                         {response.response_type === 'agree' && 
                                          response.status === 'pending' && 
                                          user && 
                                          request.initiator_id === user.id && (
                                           <button
-                                            onClick={async () => {
-                                              try {
-                                                const { error } = await supabase.rpc('select_response_and_reject_others', {
-                                                  p_response_id: response.id
-                                                });
-                                                
-                                                if (error) {
-                                                  console.error('Error selecting response:', error);
-                                                  alert('Error selecting response: ' + error.message);
-                                                } else {
-                                                  // Refresh the data
-                                                  if (user) {
-                                                    await fetchRequestsAndResponses(user.id);
-                                                    await fetchScheduledBlocks(user.id, currentDate);
-                                                    // Also refresh children data to ensure we have latest child names
-                                                    await refreshActiveChildren(user.id, children);
-                                                  }
-                                                }
-                                              } catch (error) {
-                                                console.error('Error:', error);
-                                                alert('Error selecting response');
-                                              }
-                                            }}
+                                            onClick={() => acceptResponse(response.id, request.id)}
                                             className="px-3 py-1 bg-green-600 text-white text-sm rounded hover:bg-green-700 transition"
                                           >
                                             Accept
@@ -1259,22 +1301,9 @@ export default function SchedulePage() {
                                       {response.notes && (
                                         <p className="text-gray-600 mt-1">{response.notes}</p>
                                       )}
-                                      {response.response_type === 'counter' && response.counter_date && (
+                                      {response.response_type === 'agree' && response.reciprocal_date && (
                                         <p className="text-gray-600 mt-1">
-                                          Counter: {parseLocalDate(response.counter_date).toLocaleDateString()} • {formatTime(response.counter_start_time!)} - {formatTime(response.counter_end_time!)}
-                                        </p>
-                                      )}
-                                      {response.response_type === 'agree' && (
-                                        <p className="text-gray-600 mt-1">
-                                          Agreed to: {parseLocalDate(request.requested_date).toLocaleDateString()} • {formatTime(request.start_time)} - {formatTime(request.end_time)}
-                                          {response.reciprocal_date && response.reciprocal_start_time && response.reciprocal_end_time && (
-                                            <span className="block mt-1 text-blue-600">
-                                              Reciprocal: {parseLocalDate(response.reciprocal_date).toLocaleDateString()} • {formatTime(response.reciprocal_start_time)} - {formatTime(response.reciprocal_end_time)}
-                                              {response.reciprocal_child_id && (
-                                                <span className="text-gray-500"> • Child: {getChildName(response.reciprocal_child_id)}</span>
-                                              )}
-                                            </span>
-                                          )}
+                                          Reciprocal: {parseLocalDate(response.reciprocal_date).toLocaleDateString()} • {formatTime(response.reciprocal_start_time!)} - {formatTime(response.reciprocal_end_time!)}
                                         </p>
                                       )}
                                     </div>
@@ -1326,22 +1355,39 @@ export default function SchedulePage() {
           <div className="space-y-4">
             {invitations.map(invitation => {
               const request = requests.find(r => r.id === invitation.request_id);
+              const inviterName = allProfiles.find(p => p.id === invitation.inviter_id)?.full_name || 'Unknown Parent';
+              const inviterChild = allGroupChildren.find(c => c.parent_id === invitation.inviter_id);
               
               return (
                 <div key={invitation.id} className="border border-green-200 rounded-lg p-4 bg-green-50">
                   <div className="flex justify-between items-start mb-3">
                     <div>
                       <h4 className="font-medium text-green-800">
-                        Invitation to provide care
+                        Invitation from {inviterName} to join care exchange
                       </h4>
-                      <p className="text-sm text-green-600">
-                        {parseLocalDate(invitation.invitation_date).toLocaleDateString()} • {formatTime(invitation.invitation_start_time)} - {formatTime(invitation.invitation_end_time)}
-                      </p>
+                      
+                      {/* Show the existing agreement between Parent A and Parent B */}
                       {request && (
-                        <p className="text-sm text-green-600">
-                          For: {getChildName(request.child_id, request)}
-                        </p>
+                        <div className="mb-2 p-2 bg-blue-50 rounded border-l-4 border-blue-400">
+                          <p className="text-sm font-medium text-blue-800">
+                            {inviterName} is offering to provide care for the already agreed scheduled time with {getChildName(request.child_id, request)}:
+                          </p>
+                          <p className="text-sm text-blue-600">
+                            {parseLocalDate(request.requested_date).toLocaleDateString()} • {formatTime(request.start_time)} - {formatTime(request.end_time)}
+                          </p>
+                        </div>
                       )}
+                      
+                      {/* Show when Parent B needs care for their own child */}
+                      <div className="mb-2 p-2 bg-green-50 rounded border-l-4 border-green-400">
+                        <p className="text-sm font-medium text-green-800">
+                          {inviterName} needs care for {inviterChild ? inviterChild.full_name : 'their child'} on:
+                        </p>
+                        <p className="text-sm text-green-600">
+                          {parseLocalDate(invitation.invitation_date).toLocaleDateString()} • {formatTime(invitation.invitation_start_time)} - {formatTime(invitation.invitation_end_time)}
+                        </p>
+                      </div>
+                      
                       {invitation.notes && (
                         <p className="text-sm text-green-600 mt-1">{invitation.notes}</p>
                       )}
@@ -1501,7 +1547,6 @@ export default function SchedulePage() {
           <div className="bg-white rounded-lg p-6 w-full max-w-md">
             <h3 className="text-lg font-semibold mb-4">
               {responseType === 'agree' && 'Agree to Request'}
-              {responseType === 'counter' && 'Counter Request'}
               {responseType === 'reject' && 'Reject Request'}
             </h3>
             
@@ -1514,43 +1559,6 @@ export default function SchedulePage() {
             </div>
 
             <div className="space-y-4">
-              {responseType === 'counter' && (
-                <>
-                  <div>
-                    <label className="block text-sm font-medium mb-1">Counter Date *</label>
-                    <input
-                      type="date"
-                      value={responseForm.counterDate}
-                      onChange={(e: React.ChangeEvent<HTMLInputElement>) => setResponseForm({...responseForm, counterDate: e.target.value})}
-                      className="w-full p-2 border border-gray-300 rounded"
-                      required
-                    />
-                  </div>
-                  <div className="grid grid-cols-2 gap-2">
-                    <div>
-                      <label className="block text-sm font-medium mb-1">Counter Start Time *</label>
-                      <input
-                        type="time"
-                        value={responseForm.counterStartTime}
-                        onChange={(e: React.ChangeEvent<HTMLInputElement>) => setResponseForm({...responseForm, counterStartTime: e.target.value})}
-                        className="w-full p-2 border border-gray-300 rounded"
-                        required
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-sm font-medium mb-1">Counter End Time *</label>
-                      <input
-                        type="time"
-                        value={responseForm.counterEndTime}
-                        onChange={(e: React.ChangeEvent<HTMLInputElement>) => setResponseForm({...responseForm, counterEndTime: e.target.value})}
-                        className="w-full p-2 border border-gray-300 rounded"
-                        required
-                      />
-                    </div>
-                  </div>
-                </>
-              )}
-
               {responseType === 'agree' && (
                 <>
                   <div className="border-t pt-4 mt-4">
@@ -1626,12 +1634,10 @@ export default function SchedulePage() {
                 onClick={respondToRequest}
                 className={`flex-1 px-4 py-2 text-white rounded transition ${
                   responseType === 'agree' ? 'bg-green-600 hover:bg-green-700' :
-                  responseType === 'counter' ? 'bg-yellow-600 hover:bg-yellow-700' :
                   'bg-red-600 hover:bg-red-700'
                 }`}
               >
                 {responseType === 'agree' && 'Agree'}
-                {responseType === 'counter' && 'Counter'}
                 {responseType === 'reject' && 'Reject'}
               </button>
               <button
