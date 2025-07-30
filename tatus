@@ -1,0 +1,10 @@
+[33m8477e35[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmaster[m[33m)[m Scheduling Open Period
+[33m9b26c5b[m Scheduing Open period request debug
+[33me73dbad[m Debugging Scheduling
+[33mf755ec2[m Scheduling in progress 1
+[33mfd6337a[m Scheduling started
+[33m3e08a9d[m Update with new member messaging
+[33m6252a06[m New DB test - working on  messaging
+[33m3da4ae7[m Groups functionality with RLS disabled
+[33mf6322c7[m Fixed Group filters
+[33me6e2908[m Fixed Group Invitation bug/loop

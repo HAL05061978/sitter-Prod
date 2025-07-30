@@ -5,12 +5,12 @@
 
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
-import { supabase } from '../lib/supabaseClient';
-import LogoutButton from '../components/LogoutButton';
+import { supabase } from '@/lib/supabaseClient';
 
-import type { User as SupabaseUser } from '@supabase/supabase-js';
-
-interface User extends SupabaseUser {}
+interface User {
+  id: string;
+  email: string;
+}
 
 interface Profile {
   id: string;
@@ -62,27 +62,11 @@ interface CareRequest {
   end_time: string;
   duration_minutes: number;
   notes: string | null;
-  request_type: 'simple' | 'reciprocal' | 'event' | 'open_block';
   status: string;
   created_at: string;
   children?: {
     full_name: string;
   };
-  // Event fields
-  event_title?: string;
-  event_description?: string;
-  // Open block fields
-  open_block_slots?: number;
-  open_block_slots_used?: number;
-  open_block_parent_id?: string;
-  // Reciprocal fields
-  is_reciprocal?: boolean;
-  reciprocal_parent_id?: string;
-  reciprocal_child_id?: string;
-  reciprocal_date?: string;
-  reciprocal_start_time?: string;
-  reciprocal_end_time?: string;
-  reciprocal_status?: string;
 }
 
 // Updated interface for new care_responses table
@@ -90,13 +74,13 @@ interface CareResponse {
   id: string;
   request_id: string;
   responder_id: string;
-  response_type: 'accept' | 'decline' | 'pending';
+  response_type: 'agree' | 'reject';
   reciprocal_date?: string;
   reciprocal_start_time?: string;
   reciprocal_end_time?: string;
   reciprocal_duration_minutes?: number;
   reciprocal_child_id?: string;
-  response_notes?: string; // Fixed column name
+  notes?: string;
   status: string;
   created_at: string;
 }
@@ -156,7 +140,7 @@ export default function SchedulePage() {
   const [showAcceptInvitationModal, setShowAcceptInvitationModal] = useState(false);
   const [selectedRequest, setSelectedRequest] = useState<CareRequest | null>(null); // Updated type
   const [selectedInvitation, setSelectedInvitation] = useState<GroupInvitation | null>(null);
-  const [responseType, setResponseType] = useState<'accept' | 'decline'>('accept');
+  const [responseType, setResponseType] = useState<'agree' | 'reject'>('agree');
   const [availableTimeBlocks, setAvailableTimeBlocks] = useState<InvitationTimeBlock[]>([]);
   const [availableGroupMembers, setAvailableGroupMembers] = useState<AvailableGroupMember[]>([]);
   const [userChildren, setUserChildren] = useState<Child[]>([]);
@@ -169,11 +153,7 @@ export default function SchedulePage() {
     requestedDate: '',
     startTime: '',
     endTime: '',
-    notes: '',
-    requestType: 'simple' as 'simple' | 'reciprocal' | 'event' | 'open_block',
-    eventTitle: '',
-    eventDescription: '',
-    openBlockSlots: 1
+    notes: ''
   });
 
   const [responseForm, setResponseForm] = useState({
@@ -410,7 +390,7 @@ export default function SchedulePage() {
 
     const groupIds = userGroups.map(g => g.group_id);
 
-    // Fetch all requests (pending, active and closed) from user's groups with child data
+    // Fetch all requests (active and closed) from user's groups with child data
     const { data: requestsData } = await supabase
       .from("care_requests") // Updated table name
       .select(`
@@ -422,7 +402,7 @@ export default function SchedulePage() {
         )
       `)
       .in("group_id", groupIds)
-      .in("status", ["pending", "active", "closed"])
+      .in("status", ["active", "closed"])
       .order("created_at", { ascending: false });
 
     setRequests(requestsData || []);
@@ -475,52 +455,19 @@ export default function SchedulePage() {
       return;
     }
 
-    // Validate request type specific fields
-    if (requestForm.requestType === 'event' && (!requestForm.eventTitle || !requestForm.eventDescription)) {
-      alert('Please fill in event title and description for event requests');
-      return;
-    }
-
-    if (requestForm.requestType === 'open_block' && requestForm.openBlockSlots < 1) {
-      alert('Open block must have at least 1 slot available');
-      return;
-    }
-
     try {
-      // Convert local date to UTC for database storage
-      const localDate = new Date(requestForm.requestedDate + 'T00:00:00');
-      const utcDate = localDate.toISOString().split('T')[0];
-
-      const requestData: any = {
-        group_id: requestForm.groupId,
-        requester_id: user.id,
-        child_id: requestForm.childId,
-        requested_date: utcDate,
-        start_time: requestForm.startTime,
-        end_time: requestForm.endTime,
-        notes: requestForm.notes,
-        request_type: requestForm.requestType,
-        status: 'pending'
-      };
-
-      // Add request type specific fields
-      if (requestForm.requestType === 'event') {
-        requestData.event_title = requestForm.eventTitle;
-        requestData.event_description = requestForm.eventDescription;
-      }
-
-      if (requestForm.requestType === 'open_block') {
-        requestData.open_block_slots = requestForm.openBlockSlots;
-        requestData.open_block_parent_id = user.id;
-      }
-
-      if (requestForm.requestType === 'reciprocal') {
-        requestData.is_reciprocal = true;
-      }
-
       const { error } = await supabase
-        .from("care_requests")
-        .insert(requestData);
+        .from("care_requests") // Updated table name
+        .insert({
+          group_id: requestForm.groupId,
+          requester_id: user.id, // Updated column name
+          child_id: requestForm.childId,
+          requested_date: requestForm.requestedDate,
+          start_time: requestForm.startTime,
+          end_time: requestForm.endTime,
+          notes: requestForm.notes,
+          status: 'active'
+        });
 
       if (error) {
         console.error('Error creating care request:', error);
@@ -537,11 +484,7 @@ export default function SchedulePage() {
         requestedDate: '',
         startTime: '',
         endTime: '',
-        notes: '',
-        requestType: 'simple',
-        eventTitle: '',
-        eventDescription: '',
-        openBlockSlots: 1
+        notes: ''
       });
       alert('Care request created successfully!');
     } catch (error) {
@@ -557,12 +500,6 @@ export default function SchedulePage() {
       return;
     }
 
-    // Prevent users from responding to their own requests
-    if (selectedRequest.requester_id === user.id) {
-      alert('You cannot respond to your own request');
-      return;
-    }
-
     try {
       const { error } = await supabase
         .from("care_responses") // Updated table name
@@ -574,7 +511,7 @@ export default function SchedulePage() {
           reciprocal_start_time: responseForm.reciprocalStartTime,
           reciprocal_end_time: responseForm.reciprocalEndTime,
           reciprocal_child_id: responseForm.reciprocalChildId,
-          response_notes: responseForm.notes, // Fixed column name
+          notes: responseForm.notes,
           status: 'pending'
         });
 
@@ -603,26 +540,14 @@ export default function SchedulePage() {
 
   // Updated function names and types
   const handleAgreeToRequest = async (request: CareRequest) => {
-    // Prevent users from responding to their own requests
-    if (request.requester_id === user?.id) {
-      alert('You cannot respond to your own request');
-      return;
-    }
-    
     setSelectedRequest(request);
-    setResponseType('accept');
+    setResponseType('agree');
     setShowResponseModal(true);
   };
 
   const handleRejectRequest = async (request: CareRequest) => {
-    // Prevent users from responding to their own requests
-    if (request.requester_id === user?.id) {
-      alert('You cannot respond to your own request');
-      return;
-    }
-    
     setSelectedRequest(request);
-    setResponseType('decline');
+    setResponseType('reject');
     setShowResponseModal(true);
   };
 
@@ -889,44 +814,6 @@ export default function SchedulePage() {
 
   return (
     <div className="p-6 max-w-7xl mx-auto">
-      <div className="flex justify-end mb-6">
-        <LogoutButton />
-      </div>
-      
-      {/* Navigation Buttons */}
-      <div className="flex flex-wrap gap-4 mb-8">
-        <button 
-          onClick={() => router.push('/dashboard')}
-          className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition font-medium"
-        >
-          Profile
-        </button>
-        <button 
-          onClick={() => router.push('/messages')}
-          className="px-6 py-3 bg-green-600 text-white rounded-lg hover:bg-green-700 transition font-medium"
-        >
-          Messages
-        </button>
-        <button 
-          onClick={() => router.push('/schedule')}
-          className="px-6 py-3 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition font-medium"
-        >
-          Schedule
-        </button>
-        <button 
-          onClick={() => router.push('/groups')}
-          className="px-6 py-3 bg-orange-600 text-white rounded-lg hover:bg-orange-700 transition font-medium"
-        >
-          Groups
-        </button>
-        <button 
-          onClick={() => router.push('/activities')}
-          className="px-6 py-3 bg-red-600 text-white rounded-lg hover:bg-red-700 transition font-medium"
-        >
-          Activities
-        </button>
-      </div>
-      
       <div className="mb-6">
         <h1 className="text-3xl font-bold text-gray-900">Schedule</h1>
         <p className="text-gray-600">Manage your childcare schedule and requests</p>
@@ -1007,165 +894,94 @@ export default function SchedulePage() {
         </button>
       </div>
 
-             {/* Create Request Modal */}
-       {showCreateRequest && (
-         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-           <div className="bg-white rounded-lg p-6 w-full max-w-md max-h-[90vh] overflow-y-auto">
-             <h3 className="text-lg font-medium mb-4">Create Care Request</h3>
-             <div className="space-y-4">
-               <div>
-                 <label className="block text-sm font-medium text-gray-700">Request Type</label>
-                                   <select
-                    value={requestForm.requestType}
-                    onChange={(e: any) => setRequestForm(prev => ({ 
-                      ...prev, 
-                      requestType: e.target.value as 'simple' | 'reciprocal' | 'event' | 'open_block' 
-                    }))}
+      {/* Create Request Modal */}
+      {showCreateRequest && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg p-6 w-full max-w-md">
+            <h3 className="text-lg font-medium mb-4">Create Care Request</h3>
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700">Group</label>
+                <select
+                  value={requestForm.groupId}
+                  onChange={(e) => setRequestForm(prev => ({ ...prev, groupId: e.target.value }))}
+                  className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2"
+                >
+                  <option value="">Select a group</option>
+                  {groups.map(group => (
+                    <option key={group.id} value={group.id}>{group.name}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700">Child</label>
+                <select
+                  value={requestForm.childId}
+                  onChange={(e) => setRequestForm(prev => ({ ...prev, childId: e.target.value }))}
+                  className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2"
+                >
+                  <option value="">Select a child</option>
+                  {children.map(child => (
+                    <option key={child.id} value={child.id}>{child.full_name}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700">Date</label>
+                <input
+                  type="date"
+                  value={requestForm.requestedDate}
+                  onChange={(e) => setRequestForm(prev => ({ ...prev, requestedDate: e.target.value }))}
+                  className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2"
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700">Start Time</label>
+                  <input
+                    type="time"
+                    value={requestForm.startTime}
+                    onChange={(e) => setRequestForm(prev => ({ ...prev, startTime: e.target.value }))}
                     className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2"
-                  >
-                   <option value="simple">Simple Request</option>
-                   <option value="reciprocal">Reciprocal Request</option>
-                   <option value="event">Event Request</option>
-                   <option value="open_block">Open Block Request</option>
-                 </select>
-                 <p className="text-xs text-gray-500 mt-1">
-                   {requestForm.requestType === 'simple' && 'Direct request for care'}
-                   {requestForm.requestType === 'reciprocal' && 'Request with reciprocal care exchange'}
-                   {requestForm.requestType === 'event' && 'Group event or activity'}
-                   {requestForm.requestType === 'open_block' && 'Open time block to other group members'}
-                 </p>
-               </div>
-               
-               <div>
-                 <label className="block text-sm font-medium text-gray-700">Group</label>
-                 <select
-                   value={requestForm.groupId}
-                   onChange={(e: any) => setRequestForm(prev => ({ ...prev, groupId: e.target.value }))}
-                   className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2"
-                 >
-                   <option value="">Select a group</option>
-                   {groups.map(group => (
-                     <option key={group.id} value={group.id}>{group.name}</option>
-                   ))}
-                 </select>
-               </div>
-               
-               <div>
-                 <label className="block text-sm font-medium text-gray-700">Child</label>
-                 <select
-                   value={requestForm.childId}
-                   onChange={(e: any) => setRequestForm(prev => ({ ...prev, childId: e.target.value }))}
-                   className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2"
-                 >
-                   <option value="">Select a child</option>
-                   {children.map(child => (
-                     <option key={child.id} value={child.id}>{child.full_name}</option>
-                   ))}
-                 </select>
-               </div>
-               
-               <div>
-                 <label className="block text-sm font-medium text-gray-700">Date (Local Time)</label>
-                 <input
-                   type="date"
-                   value={requestForm.requestedDate}
-                   onChange={(e: any) => setRequestForm(prev => ({ ...prev, requestedDate: e.target.value }))}
-                   className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2"
-                 />
-                 <p className="text-xs text-gray-500 mt-1">Date will be stored in your local timezone</p>
-               </div>
-               
-               <div className="grid grid-cols-2 gap-4">
-                 <div>
-                   <label className="block text-sm font-medium text-gray-700">Start Time</label>
-                   <input
-                     type="time"
-                     value={requestForm.startTime}
-                     onChange={(e: any) => setRequestForm(prev => ({ ...prev, startTime: e.target.value }))}
-                     className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2"
-                   />
-                 </div>
-                 <div>
-                   <label className="block text-sm font-medium text-gray-700">End Time</label>
-                   <input
-                     type="time"
-                     value={requestForm.endTime}
-                     onChange={(e: any) => setRequestForm(prev => ({ ...prev, endTime: e.target.value }))}
-                     className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2"
-                   />
-                 </div>
-               </div>
-
-               {/* Event-specific fields */}
-               {requestForm.requestType === 'event' && (
-                 <>
-                   <div>
-                     <label className="block text-sm font-medium text-gray-700">Event Title</label>
-                     <input
-                       type="text"
-                       value={requestForm.eventTitle}
-                       onChange={(e: any) => setRequestForm(prev => ({ ...prev, eventTitle: e.target.value }))}
-                       className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2"
-                       placeholder="e.g., Basketball Game, Park Playdate"
-                     />
-                   </div>
-                   <div>
-                     <label className="block text-sm font-medium text-gray-700">Event Description</label>
-                     <textarea
-                       value={requestForm.eventDescription}
-                       onChange={(e: any) => setRequestForm(prev => ({ ...prev, eventDescription: e.target.value }))}
-                       className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2"
-                       rows={3}
-                       placeholder="Describe the event or activity..."
-                     />
-                   </div>
-                 </>
-               )}
-
-               {/* Open Block specific fields */}
-               {requestForm.requestType === 'open_block' && (
-                 <div>
-                   <label className="block text-sm font-medium text-gray-700">Available Slots</label>
-                   <input
-                     type="number"
-                     min="1"
-                     max="10"
-                     value={requestForm.openBlockSlots}
-                     onChange={(e: any) => setRequestForm(prev => ({ ...prev, openBlockSlots: parseInt(e.target.value) || 1 }))}
-                     className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2"
-                   />
-                   <p className="text-xs text-gray-500 mt-1">How many additional children can join this time block</p>
-                 </div>
-               )}
-
-               <div>
-                 <label className="block text-sm font-medium text-gray-700">Notes</label>
-                 <textarea
-                   value={requestForm.notes}
-                   onChange={(e: any) => setRequestForm(prev => ({ ...prev, notes: e.target.value }))}
-                   className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2"
-                   rows={3}
-                   placeholder="Additional notes or special instructions..."
-                 />
-               </div>
-             </div>
-             <div className="mt-6 flex space-x-3">
-               <button
-                 onClick={createCareRequest}
-                 className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700"
-               >
-                 Create Request
-               </button>
-               <button
-                 onClick={() => setShowCreateRequest(false)}
-                 className="flex-1 px-4 py-2 bg-gray-300 text-gray-700 rounded-md hover:bg-gray-400"
-               >
-                 Cancel
-               </button>
-             </div>
-           </div>
-         </div>
-       )}
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700">End Time</label>
+                  <input
+                    type="time"
+                    value={requestForm.endTime}
+                    onChange={(e) => setRequestForm(prev => ({ ...prev, endTime: e.target.value }))}
+                    className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2"
+                  />
+                </div>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700">Notes</label>
+                <textarea
+                  value={requestForm.notes}
+                  onChange={(e) => setRequestForm(prev => ({ ...prev, notes: e.target.value }))}
+                  className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2"
+                  rows={3}
+                />
+              </div>
+            </div>
+            <div className="mt-6 flex space-x-3">
+              <button
+                onClick={createCareRequest}
+                className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700"
+              >
+                Create Request
+              </button>
+              <button
+                onClick={() => setShowCreateRequest(false)}
+                className="flex-1 px-4 py-2 bg-gray-300 text-gray-700 rounded-md hover:bg-gray-400"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Response Modal */}
       {showResponseModal && selectedRequest && (
@@ -1175,70 +991,70 @@ export default function SchedulePage() {
             <div className="space-y-4">
               <div>
                 <label className="block text-sm font-medium text-gray-700">Response Type</label>
-                                 <select
-                   value={responseType}
-                   onChange={(e: any) => setResponseType(e.target.value as 'accept' | 'decline')}
-                   className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2"
-                 >
-                                       <option value="accept">Accept</option>
-                    <option value="decline">Decline</option>
-                 </select>
-               </div>
-                                 {responseType === 'accept' && (
-                 <>
-                   <div>
-                     <label className="block text-sm font-medium text-gray-700">Reciprocal Date</label>
-                     <input
-                       type="date"
-                       value={responseForm.reciprocalDate}
-                       onChange={(e: any) => setResponseForm(prev => ({ ...prev, reciprocalDate: e.target.value }))}
-                       className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2"
-                     />
-                   </div>
-                   <div className="grid grid-cols-2 gap-4">
-                     <div>
-                       <label className="block text-sm font-medium text-gray-700">Start Time</label>
-                       <input
-                         type="time"
-                         value={responseForm.reciprocalStartTime}
-                         onChange={(e: any) => setResponseForm(prev => ({ ...prev, reciprocalStartTime: e.target.value }))}
-                         className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2"
-                       />
-                     </div>
-                     <div>
-                       <label className="block text-sm font-medium text-gray-700">End Time</label>
-                       <input
-                         type="time"
-                         value={responseForm.reciprocalEndTime}
-                         onChange={(e: any) => setResponseForm(prev => ({ ...prev, reciprocalEndTime: e.target.value }))}
-                         className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2"
-                       />
-                     </div>
-                   </div>
-                   <div>
-                     <label className="block text-sm font-medium text-gray-700">Reciprocal Child</label>
-                     <select
-                       value={responseForm.reciprocalChildId}
-                       onChange={(e: any) => setResponseForm(prev => ({ ...prev, reciprocalChildId: e.target.value }))}
-                       className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2"
-                     >
-                       <option value="">Select a child</option>
-                       {children.map(child => (
-                         <option key={child.id} value={child.id}>{child.full_name}</option>
-                       ))}
-                     </select>
-                   </div>
-                 </>
-               )}
-               <div>
-                 <label className="block text-sm font-medium text-gray-700">Notes</label>
-                 <textarea
-                   value={responseForm.notes}
-                   onChange={(e: any) => setResponseForm(prev => ({ ...prev, notes: e.target.value }))}
-                   className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2"
-                   rows={3}
-                 />
-               </div>
+                <select
+                  value={responseType}
+                  onChange={(e) => setResponseType(e.target.value as 'agree' | 'reject')}
+                  className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2"
+                >
+                  <option value="agree">Agree</option>
+                  <option value="reject">Reject</option>
+                </select>
+              </div>
+              {responseType === 'agree' && (
+                <>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700">Reciprocal Date</label>
+                    <input
+                      type="date"
+                      value={responseForm.reciprocalDate}
+                      onChange={(e) => setResponseForm(prev => ({ ...prev, reciprocalDate: e.target.value }))}
+                      className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2"
+                    />
+                  </div>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700">Start Time</label>
+                      <input
+                        type="time"
+                        value={responseForm.reciprocalStartTime}
+                        onChange={(e) => setResponseForm(prev => ({ ...prev, reciprocalStartTime: e.target.value }))}
+                        className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700">End Time</label>
+                      <input
+                        type="time"
+                        value={responseForm.reciprocalEndTime}
+                        onChange={(e) => setResponseForm(prev => ({ ...prev, reciprocalEndTime: e.target.value }))}
+                        className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2"
+                      />
+                    </div>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700">Reciprocal Child</label>
+                    <select
+                      value={responseForm.reciprocalChildId}
+                      onChange={(e) => setResponseForm(prev => ({ ...prev, reciprocalChildId: e.target.value }))}
+                      className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2"
+                    >
+                      <option value="">Select a child</option>
+                      {children.map(child => (
+                        <option key={child.id} value={child.id}>{child.full_name}</option>
+                      ))}
+                    </select>
+                  </div>
+                </>
+              )}
+              <div>
+                <label className="block text-sm font-medium text-gray-700">Notes</label>
+                <textarea
+                  value={responseForm.notes}
+                  onChange={(e) => setResponseForm(prev => ({ ...prev, notes: e.target.value }))}
+                  className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2"
+                  rows={3}
+                />
+              </div>
             </div>
             <div className="mt-6 flex space-x-3">
               <button
@@ -1258,146 +1074,52 @@ export default function SchedulePage() {
         </div>
       )}
 
-             {/* Requests List */}
-       <div className="mt-8">
-         <h3 className="text-lg font-medium text-gray-900 mb-4">Active Care Requests</h3>
-         <div className="space-y-4">
-           {requests.map(request => (
-             <div key={request.id} className="bg-white rounded-lg border p-4">
-               <div className="flex justify-between items-start">
-                 <div className="flex-1">
-                   <div className="flex items-center gap-2 mb-2">
-                     <h4 className="font-medium text-gray-900">
-                       {request.request_type === 'event' && request.event_title 
-                         ? request.event_title 
-                         : `Care Request for ${getChildName(request.child_id, request)}`
-                       }
-                     </h4>
-                     <span className={`px-2 py-1 text-xs rounded-full ${
-                       request.request_type === 'simple' ? 'bg-blue-100 text-blue-800' :
-                       request.request_type === 'reciprocal' ? 'bg-purple-100 text-purple-800' :
-                       request.request_type === 'event' ? 'bg-green-100 text-green-800' :
-                       'bg-orange-100 text-orange-800'
-                     }`}>
-                       {request.request_type === 'simple' ? 'Simple' :
-                        request.request_type === 'reciprocal' ? 'Reciprocal' :
-                        request.request_type === 'event' ? 'Event' : 'Open Block'}
-                     </span>
-                   </div>
-                   <p className="text-sm text-gray-600">
-                     {request.requested_date} • {formatTime(request.start_time)} - {formatTime(request.end_time)}
-                   </p>
-                   <p className="text-sm text-gray-600">
-                     Group: {getGroupName(request.group_id)} • Requested by: {getInitiatorName(request.requester_id)}
-                   </p>
-                   {request.request_type === 'event' && request.event_description && (
-                     <p className="text-sm text-gray-600 mt-1">{request.event_description}</p>
-                   )}
-                   {request.request_type === 'open_block' && request.open_block_slots && (
-                     <p className="text-sm text-gray-600 mt-1">
-                       Available slots: {request.open_block_slots - (request.open_block_slots_used || 0)}/{request.open_block_slots}
-                     </p>
-                   )}
-                   {request.notes && (
-                     <p className="text-sm text-gray-600 mt-1">{request.notes}</p>
-                   )}
-                 </div>
-                 <div className="flex space-x-2 ml-4">
-                   {/* Only show Agree/Reject buttons if the logged-in user is not the creator AND no response has been submitted */}
-                   {request.requester_id !== user?.id && !responses.some(r => r.request_id === request.id) && (
-                     <>
-                       <button
-                         onClick={() => handleAgreeToRequest(request)}
-                         className="px-3 py-1 text-sm bg-green-600 text-white rounded hover:bg-green-700"
-                       >
-                         Agree
-                       </button>
-                       <button
-                         onClick={() => handleRejectRequest(request)}
-                         className="px-3 py-1 text-sm bg-red-600 text-white rounded hover:bg-red-700"
-                       >
-                         Reject
-                       </button>
-                     </>
-                   )}
-                   {request.request_type === 'open_block' && (
-                     <button
-                       onClick={() => handleInviteOthers(request)}
-                       className="px-3 py-1 text-sm bg-blue-600 text-white rounded hover:bg-blue-700"
-                     >
-                       Join Block
-                     </button>
-                   )}
-                 </div>
-               </div>
-             </div>
-           ))}
-         </div>
-       </div>
-
-       {/* Responses List - Show responses for requests where the logged-in user is the creator */}
-       {responses.length > 0 && (
-         <div className="mt-8">
-           <h3 className="text-lg font-medium text-gray-900 mb-4">Responses to Your Requests</h3>
-           <div className="space-y-4">
-             {responses
-               .filter(response => {
-                 const request = requests.find(r => r.id === response.request_id);
-                 return request && request.requester_id === user?.id;
-               })
-               .map(response => {
-                 const request = requests.find(r => r.id === response.request_id);
-                 if (!request) return null;
-                 
-                 return (
-                   <div key={response.id} className="bg-white rounded-lg border p-4">
-                     <div className="flex justify-between items-start">
-                       <div className="flex-1">
-                         <div className="flex items-center gap-2 mb-2">
-                           <h4 className="font-medium text-gray-900">
-                             Response from {getResponderName(response.responder_id)}
-                           </h4>
-                           <span className={`px-2 py-1 text-xs rounded-full ${
-                             response.response_type === 'accept' ? 'bg-green-100 text-green-800' :
-                             response.response_type === 'decline' ? 'bg-red-100 text-red-800' :
-                             'bg-yellow-100 text-yellow-800'
-                           }`}>
-                             {response.response_type === 'accept' ? 'Accepted' :
-                              response.response_type === 'decline' ? 'Declined' : 'Pending'}
-                           </span>
-                         </div>
-                         <p className="text-sm text-gray-600">
-                           For: {getChildName(request.child_id, request)} on {request.requested_date} • {formatTime(request.start_time)} - {formatTime(request.end_time)}
-                         </p>
-                         {response.response_type === 'accept' && response.reciprocal_date && (
-                           <div className="mt-2 p-3 bg-blue-50 rounded-md">
-                             <p className="text-sm font-medium text-blue-900">Reciprocal Care Offered:</p>
-                             <p className="text-sm text-blue-700">
-                               {getChildName(response.reciprocal_child_id || '', undefined, undefined, response)} on {response.reciprocal_date} • {formatTime(response.reciprocal_start_time || '')} - {formatTime(response.reciprocal_end_time || '')}
-                             </p>
-                           </div>
-                         )}
-                         {response.response_notes && (
-                           <p className="text-sm text-gray-600 mt-1">Notes: {response.response_notes}</p>
-                         )}
-                       </div>
-                       <div className="flex space-x-2 ml-4">
-                         {response.response_type === 'accept' && response.status === 'pending' && (
-                           <button
-                             onClick={() => acceptResponse(response.id, response.request_id)}
-                             className="px-3 py-1 text-sm bg-green-600 text-white rounded hover:bg-green-700"
-                           >
-                             Accept Response
-                           </button>
-                         )}
-                       </div>
-                     </div>
-                   </div>
-                 );
-               })}
-           </div>
-         </div>
-       )}
+      {/* Requests List */}
+      <div className="mt-8">
+        <h3 className="text-lg font-medium text-gray-900 mb-4">Active Care Requests</h3>
+        <div className="space-y-4">
+          {requests.map(request => (
+            <div key={request.id} className="bg-white rounded-lg border p-4">
+              <div className="flex justify-between items-start">
+                <div>
+                  <h4 className="font-medium text-gray-900">
+                    Care Request for {getChildName(request.child_id, request)}
+                  </h4>
+                  <p className="text-sm text-gray-600">
+                    {request.requested_date} • {formatTime(request.start_time)} - {formatTime(request.end_time)}
+                  </p>
+                  <p className="text-sm text-gray-600">
+                    Group: {getGroupName(request.group_id)} • Requested by: {getInitiatorName(request.requester_id)}
+                  </p>
+                  {request.notes && (
+                    <p className="text-sm text-gray-600 mt-1">{request.notes}</p>
+                  )}
+                </div>
+                <div className="flex space-x-2">
+                  <button
+                    onClick={() => handleAgreeToRequest(request)}
+                    className="px-3 py-1 text-sm bg-green-600 text-white rounded hover:bg-green-700"
+                  >
+                    Agree
+                  </button>
+                  <button
+                    onClick={() => handleRejectRequest(request)}
+                    className="px-3 py-1 text-sm bg-red-600 text-white rounded hover:bg-red-700"
+                  >
+                    Reject
+                  </button>
+                  <button
+                    onClick={() => handleInviteOthers(request)}
+                    className="px-3 py-1 text-sm bg-blue-600 text-white rounded hover:bg-blue-700"
+                  >
+                    Invite Others
+                  </button>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
     </div>
   );
 } 
