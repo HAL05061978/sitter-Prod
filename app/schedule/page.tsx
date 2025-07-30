@@ -41,9 +41,9 @@ interface ScheduledCare {
   start_time: string;
   end_time: string;
   duration_minutes: number;
-  care_type: 'care_needed' | 'care_provided'; // Changed from block_type
+  care_type: 'needed' | 'provided' | 'event'; // Updated to match database schema
   status: string;
-  request_id: string;
+  related_request_id: string; // Updated to match database schema
   notes: string | null;
   children?: {
     full_name: string;
@@ -375,7 +375,7 @@ export default function SchedulePage() {
         .lte("care_date", endOfMonth.toISOString().split('T')[0]) // Updated column name
         .in("group_id", groupIds)
         .eq("status", "confirmed")
-        .eq("care_type", "care_needed") // Updated column name
+        .eq("care_type", "needed") // Updated to match database schema
         .in("child_id", userChildIds);
 
       if (childError) {
@@ -391,6 +391,7 @@ export default function SchedulePage() {
       index === self.findIndex(b => b.id === block.id)
     );
 
+    console.log('Fetched scheduled care blocks:', uniqueBlocks);
     setScheduledCare(uniqueBlocks); // Updated variable name
   };
 
@@ -753,7 +754,23 @@ export default function SchedulePage() {
   };
 
   const formatTime = (time: string) => {
-    return time;
+    // Convert military time (HH:MM:SS) to AM/PM format (H:MM AM/PM)
+    if (!time) return '';
+    
+    // Remove seconds if present
+    const timeWithoutSeconds = time.split(':').slice(0, 2).join(':');
+    
+    // Parse the time
+    const [hours, minutes] = timeWithoutSeconds.split(':').map(Number);
+    
+    // Convert to 12-hour format
+    const period = hours >= 12 ? 'PM' : 'AM';
+    const displayHours = hours === 0 ? 12 : hours > 12 ? hours - 12 : hours;
+    
+    // Format with leading zero for minutes
+    const displayMinutes = minutes.toString().padStart(2, '0');
+    
+    return `${displayHours}:${displayMinutes} ${period}`;
   };
 
   // Helper function to parse date strings as local dates (not UTC)
@@ -826,6 +843,11 @@ export default function SchedulePage() {
     return profile?.full_name || `User (${responderId.slice(0, 8)}...)`;
   };
 
+  const getParentName = (parentId: string) => {
+    const profile = allProfiles.find(p => p.id === parentId);
+    return profile?.full_name || `Parent (${parentId.slice(0, 8)}...)`;
+  };
+
   const handlePreviousMonth = () => {
     setCurrentDate(new Date(currentDate.getFullYear(), currentDate.getMonth() - 1, 1));
   };
@@ -836,7 +858,7 @@ export default function SchedulePage() {
 
   // Updated function with new types
   const findOriginalRequestForBlock = (block: ScheduledCare): CareRequest | null => {
-    return requests.find(request => request.id === block.request_id) || null;
+    return requests.find(request => request.id === block.related_request_id) || null;
   };
 
   const handleBlockDoubleClick = async (block: ScheduledCare) => { // Updated type
@@ -975,20 +997,58 @@ export default function SchedulePage() {
                     {day.getDate()}
                   </div>
                   <div className="space-y-1">
-                    {getBlocksForDate(day).map(block => (
-                      <div
-                        key={block.id}
-                        className={`text-xs p-1 rounded cursor-pointer ${
-                          block.care_type === 'care_needed' 
-                            ? 'bg-blue-100 text-blue-800' 
-                            : 'bg-green-100 text-green-800'
-                        }`}
-                        onDoubleClick={() => handleBlockDoubleClick(block)}
-                        title={`${block.care_type === 'care_needed' ? 'Care Needed' : 'Care Provided'} - ${formatTime(block.start_time)} to ${formatTime(block.end_time)}`}
-                      >
-                        {formatTime(block.start_time)} - {formatTime(block.end_time)}
-                      </div>
-                    ))}
+                    {getBlocksForDate(day).map(block => {
+                      console.log('Rendering block:', block);
+                      const isUserProviding = block.parent_id === user?.id && block.care_type === 'provided';
+                      const isUserNeeding = block.parent_id === user?.id && block.care_type === 'needed';
+                      const isUserChildNeeding = block.care_type === 'needed' && children.some(c => c.id === block.child_id);
+                      
+                      // Determine the visual style based on user context
+                      let blockStyle = '';
+                      let blockText = '';
+                      
+                      if (isUserProviding) {
+                        // User is providing care for someone else's child
+                        blockStyle = 'bg-green-100 text-green-800 border border-green-300';
+                        blockText = `Providing care for ${block.children?.full_name || getChildName(block.child_id, undefined, block)}`;
+                      } else if (isUserNeeding) {
+                        // User's child needs care
+                        blockStyle = 'bg-red-100 text-red-800 border border-red-300';
+                        blockText = `Need: ${block.children?.full_name || getChildName(block.child_id, undefined, block)}`;
+                      } else if (isUserChildNeeding) {
+                        // User's child needs care (but user is not the parent_id)
+                        blockStyle = 'bg-orange-100 text-orange-800 border border-orange-300';
+                        blockText = `Child: ${block.children?.full_name || getChildName(block.child_id, undefined, block)}`;
+                      } else {
+                        // Other care arrangements
+                        if (block.care_type === 'needed') {
+                          // For "needed" blocks, show who is providing care
+                          const providingParentName = getParentName(block.parent_id);
+                          blockStyle = 'bg-blue-100 text-blue-800 border border-blue-300';
+                          blockText = `${providingParentName} providing care for ${block.children?.full_name || getChildName(block.child_id, undefined, block)}`;
+                        } else {
+                          // For "provided" blocks
+                          blockStyle = 'bg-gray-100 text-gray-800 border border-gray-300';
+                          blockText = `Providing care for ${block.children?.full_name || getChildName(block.child_id, undefined, block)}`;
+                        }
+                      }
+                      
+                      return (
+                        <div
+                          key={block.id}
+                          className={`text-xs p-1 rounded cursor-pointer ${blockStyle}`}
+                          onDoubleClick={() => handleBlockDoubleClick(block)}
+                          title={`${block.care_type === 'needed' ? 'Care Needed' : 'Care Provided'} - ${formatTime(block.start_time)} to ${formatTime(block.end_time)} - ${block.children?.full_name || getChildName(block.child_id, undefined, block)}`}
+                        >
+                          <div className="font-medium truncate">
+                            {blockText}
+                          </div>
+                          <div className="text-xs opacity-75">
+                            {formatTime(block.start_time)} - {formatTime(block.end_time)}
+                          </div>
+                        </div>
+                      );
+                    })}
                   </div>
                 </>
               )}
