@@ -1,28 +1,14 @@
--- Test script to check calendar display issues
--- This will help us understand why blocks are appearing gray and both reading 'Provide:'
+-- Test script to examine scheduled_care data and parent relationships
+-- This will help us understand how parent_id is being used in the calendar display
 
 -- ============================================================================
--- STEP 1: CHECK CURRENT SCHEDULED_CARE DATA
+-- STEP 1: EXAMINE SCHEDULED_CARE DATA STRUCTURE
 -- ============================================================================
 
+-- Check the current scheduled_care data
 SELECT 
-    'Current scheduled_care records:' as info,
-    COUNT(*) as total_records
-FROM public.scheduled_care;
-
--- Check the care_type values in the database
-SELECT 
-    'Care type distribution:' as info,
-    care_type,
-    COUNT(*) as count
-FROM public.scheduled_care 
-GROUP BY care_type
-ORDER BY care_type;
-
--- Check a few sample records with full details
-SELECT 
-    'Sample scheduled_care records:' as info,
     id,
+    group_id,
     parent_id,
     child_id,
     care_date,
@@ -30,89 +16,116 @@ SELECT
     end_time,
     care_type,
     status,
+    related_request_id,
     notes
-FROM public.scheduled_care 
-ORDER BY care_date DESC, start_time DESC
+FROM public.scheduled_care
+ORDER BY care_date DESC, start_time
 LIMIT 10;
 
 -- ============================================================================
--- STEP 2: CHECK CHILDREN DATA
+-- STEP 2: EXAMINE PARENT-CHILD RELATIONSHIPS
 -- ============================================================================
 
--- Check if children data is properly linked
+-- Check which children belong to which parents
 SELECT 
-    'Children in scheduled_care:' as info,
-    sc.id as care_id,
-    sc.child_id,
+    c.id as child_id,
     c.full_name as child_name,
+    c.parent_id as child_parent_id,
+    p.full_name as child_parent_name
+FROM public.children c
+JOIN public.profiles p ON c.parent_id = p.id
+ORDER BY c.full_name;
+
+-- ============================================================================
+-- STEP 3: EXAMINE CARE REQUESTS AND RESPONSES
+-- ============================================================================
+
+-- Check care requests
+SELECT 
+    id,
+    requester_id,
+    child_id,
+    requested_date,
+    start_time,
+    end_time,
+    request_type,
+    status
+FROM public.care_requests
+ORDER BY created_at DESC
+LIMIT 5;
+
+-- Check care responses
+SELECT 
+    id,
+    request_id,
+    responder_id,
+    response_type,
+    status
+FROM public.care_responses
+ORDER BY created_at DESC
+LIMIT 5;
+
+-- ============================================================================
+-- STEP 4: ANALYZE THE RELATIONSHIP BETWEEN SCHEDULED_CARE AND REQUESTS/RESPONSES
+-- ============================================================================
+
+-- Join scheduled_care with care_requests to understand the relationship
+SELECT 
+    sc.id as scheduled_care_id,
+    sc.parent_id as scheduled_care_parent_id,
     sc.care_type,
-    sc.parent_id
+    sc.child_id as scheduled_care_child_id,
+    cr.requester_id as request_requester_id,
+    cr.child_id as request_child_id,
+    cr.status as request_status
 FROM public.scheduled_care sc
-LEFT JOIN public.children c ON sc.child_id = c.id
-ORDER BY sc.care_date DESC, sc.start_time DESC
+LEFT JOIN public.care_requests cr ON sc.related_request_id = cr.id
+ORDER BY sc.care_date DESC, sc.start_time
 LIMIT 10;
 
 -- ============================================================================
--- STEP 3: CHECK PROFILES DATA
+-- STEP 5: CHECK PROFILES FOR PARENT NAMES
 -- ============================================================================
 
--- Check if parent data is available
+-- Get all profiles to understand parent names
 SELECT 
-    'Parents in scheduled_care:' as info,
-    sc.id as care_id,
+    id,
+    full_name,
+    email
+FROM public.profiles
+ORDER BY full_name;
+
+-- ============================================================================
+-- STEP 6: UNDERSTAND THE ISSUE
+-- ============================================================================
+
+-- For "needed" care blocks, the parent_id should be the parent who NEEDS care
+-- For "provided" care blocks, the parent_id should be the parent who PROVIDES care
+-- But in the frontend, we're using parent_id for both cases, which is incorrect
+
+-- Let's see what the actual data looks like:
+SELECT 
+    sc.id,
+    sc.care_type,
     sc.parent_id,
     p.full_name as parent_name,
-    sc.care_type,
-    sc.child_id
+    sc.child_id,
+    c.full_name as child_name,
+    sc.care_date,
+    sc.start_time,
+    sc.end_time
 FROM public.scheduled_care sc
-LEFT JOIN public.profiles p ON sc.parent_id = p.id
-ORDER BY sc.care_date DESC, sc.start_time DESC
+JOIN public.profiles p ON sc.parent_id = p.id
+JOIN public.children c ON sc.child_id = c.id
+ORDER BY sc.care_date DESC, sc.start_time
 LIMIT 10;
 
 -- ============================================================================
--- STEP 4: VERIFY DATABASE SCHEMA
--- ============================================================================
-
--- Check the care_type constraint
-SELECT 
-    'Care type constraint:' as info,
-    constraint_name,
-    check_clause
-FROM information_schema.check_constraints 
-WHERE constraint_name LIKE '%care_type%';
-
--- Check the scheduled_care table structure
-SELECT 
-    'Scheduled_care table structure:' as info,
-    column_name,
-    data_type,
-    is_nullable,
-    column_default
-FROM information_schema.columns 
-WHERE table_name = 'scheduled_care' 
-AND table_schema = 'public'
-ORDER BY ordinal_position;
-
--- ============================================================================
--- STEP 5: SUMMARY
+-- STEP 7: SUMMARY
 -- ============================================================================
 
 SELECT 
-    CASE 
-        WHEN EXISTS (
-            SELECT 1 FROM public.scheduled_care 
-            WHERE care_type IN ('needed', 'provided', 'event')
-        ) THEN '✅ PASS: Database has correct care_type values'
-        ELSE '❌ FAIL: Database has incorrect care_type values'
-    END as database_check;
-
-SELECT 
-    CASE 
-        WHEN EXISTS (
-            SELECT 1 FROM public.scheduled_care 
-            WHERE care_type IS NOT NULL
-        ) THEN '✅ PASS: Database has scheduled_care records'
-        ELSE '❌ FAIL: No scheduled_care records found'
-    END as data_check;
-
-SELECT 'Calendar display test completed. Check the results above.' as status; 
+    'Analysis Complete' as status,
+    'For red blocks (care needed), parent_id should be the parent who NEEDS care' as note1,
+    'For green blocks (care provided), parent_id should be the parent who PROVIDES care' as note2,
+    'The frontend logic needs to be updated to handle this correctly' as note3; 

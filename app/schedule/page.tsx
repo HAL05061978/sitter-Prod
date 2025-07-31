@@ -64,6 +64,8 @@ interface CareRequest {
   notes: string | null;
   request_type: 'simple' | 'reciprocal' | 'event' | 'open_block';
   status: string;
+  responder_id?: string; // Who accepted the request
+  response_notes?: string; // Notes from the responder
   created_at: string;
   children?: {
     full_name: string;
@@ -148,6 +150,7 @@ export default function SchedulePage() {
   const [activeChildrenPerGroup, setActiveChildrenPerGroup] = useState<{[groupId: string]: Child[]}>({});
   const [allGroupChildren, setAllGroupChildren] = useState<Child[]>([]);
   const [allProfiles, setAllProfiles] = useState<Profile[]>([]);
+  const [calendarView, setCalendarView] = useState<'weekly' | 'monthly'>('weekly');
 
   // State for modals
   const [showCreateRequest, setShowCreateRequest] = useState(false);
@@ -156,6 +159,9 @@ export default function SchedulePage() {
   const [showAcceptInvitationModal, setShowAcceptInvitationModal] = useState(false);
   const [selectedRequest, setSelectedRequest] = useState<CareRequest | null>(null); // Updated type
   const [selectedInvitation, setSelectedInvitation] = useState<GroupInvitation | null>(null);
+  const [showDailyScheduleModal, setShowDailyScheduleModal] = useState(false);
+  const [selectedDateForDailyView, setSelectedDateForDailyView] = useState<Date | null>(null);
+
   const [responseType, setResponseType] = useState<'accept' | 'decline'>('accept');
   const [availableTimeBlocks, setAvailableTimeBlocks] = useState<InvitationTimeBlock[]>([]);
   const [availableGroupMembers, setAvailableGroupMembers] = useState<AvailableGroupMember[]>([]);
@@ -305,12 +311,24 @@ export default function SchedulePage() {
     if (user) {
       fetchScheduledCare(user.id, currentDate); // Updated function name
     }
-  }, [user, currentDate]);
+  }, [user, currentDate, calendarView]);
 
   // Updated function name and table references
   const fetchScheduledCare = async (userId: string, date: Date) => {
-    const startOfMonth = new Date(date.getFullYear(), date.getMonth(), 1);
-    const endOfMonth = new Date(date.getFullYear(), date.getMonth() + 1, 0);
+    // Determine the date range based on calendar view
+    let startDate: Date;
+    let endDate: Date;
+    
+    if (calendarView === 'weekly') {
+      // For weekly view, get the week containing the current date
+      const weekDays = getDaysInWeek(date);
+      startDate = weekDays[0]; // Sunday
+      endDate = weekDays[6];   // Saturday
+    } else {
+      // For monthly view, get the entire month
+      startDate = new Date(date.getFullYear(), date.getMonth(), 1);
+      endDate = new Date(date.getFullYear(), date.getMonth() + 1, 0);
+    }
 
     // First, get all groups the user is a member of
     const { data: userGroups } = await supabase
@@ -348,8 +366,8 @@ export default function SchedulePage() {
           parent_id
         )
       `)
-      .gte("care_date", startOfMonth.toISOString().split('T')[0]) // Updated column name
-      .lte("care_date", endOfMonth.toISOString().split('T')[0]) // Updated column name
+      .gte("care_date", startDate.toISOString().split('T')[0]) // Updated column name
+      .lte("care_date", endDate.toISOString().split('T')[0]) // Updated column name
       .in("group_id", groupIds)
       .eq("status", "confirmed")
       .eq("parent_id", userId);
@@ -371,8 +389,8 @@ export default function SchedulePage() {
             parent_id
           )
         `)
-        .gte("care_date", startOfMonth.toISOString().split('T')[0]) // Updated column name
-        .lte("care_date", endOfMonth.toISOString().split('T')[0]) // Updated column name
+        .gte("care_date", startDate.toISOString().split('T')[0]) // Updated column name
+        .lte("care_date", endDate.toISOString().split('T')[0]) // Updated column name
         .in("group_id", groupIds)
         .eq("status", "confirmed")
         .eq("care_type", "needed") // Updated to match database schema
@@ -391,7 +409,17 @@ export default function SchedulePage() {
       index === self.findIndex(b => b.id === block.id)
     );
 
-    console.log('Fetched scheduled care blocks:', uniqueBlocks);
+    console.log('DEBUG - fetchScheduledCare - uniqueBlocks:', {
+      totalBlocks: uniqueBlocks.length,
+      blocks: uniqueBlocks.map(block => ({
+        id: block.id,
+        care_type: block.care_type,
+        parent_id: block.parent_id,
+        child_id: block.child_id,
+        related_request_id: block.related_request_id,
+        care_date: block.care_date
+      }))
+    });
     setScheduledCare(uniqueBlocks); // Updated variable name
   };
 
@@ -411,7 +439,7 @@ export default function SchedulePage() {
 
     const groupIds = userGroups.map(g => g.group_id);
 
-    // Fetch all requests (pending, active and closed) from user's groups with child data
+    // Fetch all requests from user's groups with child data (including all statuses)
     const { data: requestsData } = await supabase
       .from("care_requests") // Updated table name
       .select(`
@@ -423,12 +451,16 @@ export default function SchedulePage() {
         )
       `)
       .in("group_id", groupIds)
-      .in("status", ["pending", "active", "closed"])
       .order("created_at", { ascending: false });
+
+    console.log('DEBUG - fetchRequestsAndResponses - requestsData:', {
+      requestsCount: requestsData?.length || 0,
+      requests: requestsData?.map(r => ({ id: r.id, status: r.status, requester_id: r.requester_id }))
+    });
 
     setRequests(requestsData || []);
 
-    // Fetch responses for these requests
+    // Fetch responses for these requests (including all statuses)
     if (requestsData && requestsData.length > 0) {
       const requestIds = requestsData.map(r => r.id);
       const { data: responsesData } = await supabase
@@ -437,7 +469,14 @@ export default function SchedulePage() {
         .in("request_id", requestIds)
         .order("created_at", { ascending: false });
 
+      console.log('DEBUG - fetchRequestsAndResponses - responsesData:', {
+        responsesCount: responsesData?.length || 0,
+        responses: responsesData?.map(r => ({ id: r.id, request_id: r.request_id, status: r.status, responder_id: r.responder_id }))
+      });
+
       setResponses(responsesData || []);
+    } else {
+      setResponses([]);
     }
 
     // Fetch all children in the user's groups for name resolution
@@ -729,6 +768,83 @@ export default function SchedulePage() {
     return days;
   };
 
+  // New function to get days for a week
+  const getDaysInWeek = (date: Date) => {
+    const currentDay = date.getDay(); // 0 = Sunday, 1 = Monday, etc.
+    const days = [];
+    
+    // Get the start of the week (Sunday)
+    const startOfWeek = new Date(date);
+    startOfWeek.setDate(date.getDate() - currentDay);
+    
+    // Generate 7 days starting from Sunday
+    for (let i = 0; i < 7; i++) {
+      const day = new Date(startOfWeek);
+      day.setDate(startOfWeek.getDate() + i);
+      days.push(day);
+    }
+    
+    return days;
+  };
+
+  // Updated navigation functions to work with both monthly and weekly views
+  const handlePreviousPeriod = () => {
+    if (calendarView === 'weekly') {
+      // Go to previous week
+      const newDate = new Date(currentDate);
+      newDate.setDate(currentDate.getDate() - 7);
+      setCurrentDate(newDate);
+    } else {
+      // Go to previous month
+      setCurrentDate(new Date(currentDate.getFullYear(), currentDate.getMonth() - 1, 1));
+    }
+  };
+
+  const handleNextPeriod = () => {
+    if (calendarView === 'weekly') {
+      // Go to next week
+      const newDate = new Date(currentDate);
+      newDate.setDate(currentDate.getDate() + 7);
+      setCurrentDate(newDate);
+    } else {
+      // Go to next month
+      setCurrentDate(new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 1));
+    }
+  };
+
+  // Function to get the appropriate days based on view
+  const getDaysForView = () => {
+    if (calendarView === 'weekly') {
+      return getDaysInWeek(currentDate);
+    } else {
+      return getDaysInMonth(currentDate);
+    }
+  };
+
+  // Function to get the display title based on view
+  const getDisplayTitle = () => {
+    if (calendarView === 'weekly') {
+      const weekDays = getDaysInWeek(currentDate);
+      const startDate = weekDays[0];
+      const endDate = weekDays[6];
+      
+      // If start and end are in the same month
+      if (startDate.getMonth() === endDate.getMonth()) {
+        return `${monthNames[startDate.getMonth()]} ${startDate.getDate()} - ${endDate.getDate()}, ${startDate.getFullYear()}`;
+      } else if (startDate.getFullYear() === endDate.getFullYear()) {
+        // Different months, same year
+        return `${monthNames[startDate.getMonth()]} ${startDate.getDate()} - ${monthNames[endDate.getMonth()]} ${endDate.getDate()}, ${startDate.getFullYear()}`;
+      } else {
+        // Different years
+        return `${monthNames[startDate.getMonth()]} ${startDate.getDate()}, ${startDate.getFullYear()} - ${monthNames[endDate.getMonth()]} ${endDate.getDate()}, ${endDate.getFullYear()}`;
+      }
+    } else {
+      return `${monthNames[currentDate.getMonth()]} ${currentDate.getFullYear()}`;
+    }
+  };
+
+
+
   const getBlocksForDate = (date: Date) => {
     return scheduledCare.filter(block => { // Updated variable name
       const blockDate = parseLocalDate(block.care_date); // Updated column name
@@ -840,33 +956,61 @@ export default function SchedulePage() {
 
   const getResponderName = (responderId: string) => {
     const profile = allProfiles.find(p => p.id === responderId);
+    console.log('DEBUG - getResponderName:', {
+      responderId: responderId,
+      profileFound: !!profile,
+      profile: profile ? { id: profile.id, full_name: profile.full_name } : 'Not found'
+    });
     return profile?.full_name || `User (${responderId.slice(0, 8)}...)`;
   };
 
   const getParentName = (parentId: string) => {
+    console.log('DEBUG - getParentName:', {
+      parentId: parentId,
+      allProfilesCount: allProfiles.length,
+      allProfiles: allProfiles.map(p => ({ id: p.id, full_name: p.full_name }))
+    });
+    
+    // If allProfiles is empty, try to fetch it again
+    if (allProfiles.length === 0) {
+      console.log('DEBUG - allProfiles is empty, fetching profiles...');
+      fetchAllProfiles();
+      return `Parent (${parentId.slice(0, 8)}...)`;
+    }
+    
     const profile = allProfiles.find(p => p.id === parentId);
+    console.log('DEBUG - getParentName result:', {
+      parentId: parentId,
+      profileFound: !!profile,
+      profile: profile ? { id: profile.id, full_name: profile.full_name } : 'Not found'
+    });
     return profile?.full_name || `Parent (${parentId.slice(0, 8)}...)`;
   };
 
-  const handlePreviousMonth = () => {
-    setCurrentDate(new Date(currentDate.getFullYear(), currentDate.getMonth() - 1, 1));
-  };
 
-  const handleNextMonth = () => {
-    setCurrentDate(new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 1));
-  };
 
   // Updated function with new types
   const findOriginalRequestForBlock = (block: ScheduledCare): CareRequest | null => {
-    return requests.find(request => request.id === block.related_request_id) || null;
+    console.log('DEBUG - findOriginalRequestForBlock:', {
+      blockId: block.id,
+      relatedRequestId: block.related_request_id,
+      requestsCount: requests.length,
+      requests: requests.map(r => ({ id: r.id, status: r.status }))
+    });
+    
+    const foundRequest = requests.find(request => request.id === block.related_request_id);
+    console.log('DEBUG - foundRequest:', foundRequest);
+    
+    return foundRequest || null;
   };
 
   const handleBlockDoubleClick = async (block: ScheduledCare) => { // Updated type
-    const originalRequest = findOriginalRequestForBlock(block);
-    if (originalRequest) {
-      setSelectedRequest(originalRequest);
-      setShowResponseModal(true);
-    }
+    console.log('Block double-clicked:', block);
+    // Show daily schedule popup for the block's date
+    // Fix timezone issue by parsing the date properly
+    const blockDate = parseLocalDate(block.care_date);
+    setSelectedDateForDailyView(blockDate);
+    setShowDailyScheduleModal(true);
   };
 
   const acceptResponse = async (responseId: string, requestId: string) => {
@@ -903,7 +1047,7 @@ export default function SchedulePage() {
     return <div className="flex min-h-screen items-center justify-center">Loading...</div>;
   }
 
-  const days = getDaysInMonth(currentDate);
+  const days = getDaysForView();
   const monthNames = [
     'January', 'February', 'March', 'April', 'May', 'June',
     'July', 'August', 'September', 'October', 'November', 'December'
@@ -956,21 +1100,45 @@ export default function SchedulePage() {
 
       {/* Calendar Header */}
       <div className="flex items-center justify-between mb-6">
-        <button
-          onClick={handlePreviousMonth}
-          className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50"
-        >
-          Previous
-        </button>
-        <h2 className="text-xl font-semibold text-gray-900">
-          {monthNames[currentDate.getMonth()]} {currentDate.getFullYear()}
-        </h2>
-        <button
-          onClick={handleNextMonth}
-          className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50"
-        >
-          Next
-        </button>
+        <div className="flex items-center space-x-4">
+          <button
+            onClick={handlePreviousPeriod}
+            className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50"
+          >
+            Previous
+          </button>
+          <h2 className="text-xl font-semibold text-gray-900">
+            {getDisplayTitle()}
+          </h2>
+          <button
+            onClick={handleNextPeriod}
+            className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50"
+          >
+            Next
+          </button>
+        </div>
+        <div className="flex items-center space-x-2">
+          <button
+            onClick={() => setCalendarView('weekly')}
+            className={`px-3 py-1 text-sm font-medium rounded-md ${
+              calendarView === 'weekly'
+                ? 'bg-blue-600 text-white'
+                : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+            }`}
+          >
+            Weekly
+          </button>
+          <button
+            onClick={() => setCalendarView('monthly')}
+            className={`px-3 py-1 text-sm font-medium rounded-md ${
+              calendarView === 'monthly'
+                ? 'bg-blue-600 text-white'
+                : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+            }`}
+          >
+            Monthly
+          </button>
+        </div>
       </div>
 
       {/* Calendar Grid */}
@@ -987,7 +1155,7 @@ export default function SchedulePage() {
           {days.map((day, index) => (
             <div
               key={index}
-              className={`min-h-[120px] bg-white p-2 ${
+              className={`${calendarView === 'weekly' ? 'min-h-[200px]' : 'min-h-[120px]'} bg-white p-2 ${
                 day ? 'hover:bg-gray-50' : 'bg-gray-100'
               }`}
             >
@@ -995,12 +1163,16 @@ export default function SchedulePage() {
                 <>
                   <div className="text-sm font-medium text-gray-900 mb-1">
                     {day.getDate()}
+                    {calendarView === 'weekly' && (
+                      <span className="text-xs text-gray-500 ml-1">
+                        {day.toLocaleDateString('en-US', { month: 'short' })}
+                      </span>
+                    )}
                   </div>
                   <div className="space-y-1">
                     {getBlocksForDate(day).map(block => {
                       console.log('Rendering block:', block);
                       const isUserProviding = block.parent_id === user?.id && block.care_type === 'provided';
-                      const isUserNeeding = block.parent_id === user?.id && block.care_type === 'needed';
                       const isUserChildNeeding = block.care_type === 'needed' && children.some(c => c.id === block.child_id);
                       
                       // Determine the visual style based on user context
@@ -1011,21 +1183,170 @@ export default function SchedulePage() {
                         // User is providing care for someone else's child
                         blockStyle = 'bg-green-100 text-green-800 border border-green-300';
                         blockText = `Providing care for ${block.children?.full_name || getChildName(block.child_id, undefined, block)}`;
-                      } else if (isUserNeeding) {
-                        // User's child needs care
-                        blockStyle = 'bg-red-100 text-red-800 border border-red-300';
-                        blockText = `Need: ${block.children?.full_name || getChildName(block.child_id, undefined, block)}`;
                       } else if (isUserChildNeeding) {
-                        // User's child needs care (but user is not the parent_id)
-                        blockStyle = 'bg-orange-100 text-orange-800 border border-orange-300';
-                        blockText = `Child: ${block.children?.full_name || getChildName(block.child_id, undefined, block)}`;
+                        // User's child needs care (someone else is providing)
+                        // For "needed" blocks, we need to find the providing parent from the related request/response
+                        const originalRequest = findOriginalRequestForBlock(block);
+                        console.log('DEBUG - isUserChildNeeding block:', {
+                          blockId: block.id,
+                          relatedRequestId: block.related_request_id,
+                          originalRequest: originalRequest,
+                          responsesCount: responses.length,
+                          responses: responses.map(r => ({ id: r.id, request_id: r.request_id, status: r.status, responder_id: r.responder_id }))
+                        });
+                        
+                        let providingParentName = 'Unknown Parent'; // Default to 'Unknown Parent'
+                        
+                        if (originalRequest) {
+                          console.log('DEBUG - responses array (red blocks):', {
+                            responsesCount: responses.length,
+                            responses: responses.map(r => ({ id: r.id, request_id: r.request_id, status: r.status, responder_id: r.responder_id }))
+                          });
+                          
+                          // Find the accepted response for this request
+                          const acceptedResponse = responses.find(r => 
+                            r.request_id === originalRequest.id && r.status === 'accepted'
+                          );
+                          console.log('DEBUG - acceptedResponse search (red blocks):', {
+                            originalRequestId: originalRequest.id,
+                            acceptedResponse: acceptedResponse,
+                            responderId: acceptedResponse?.responder_id,
+                            requesterId: originalRequest.requester_id,
+                            currentUserId: user?.id
+                          });
+                          
+                          if (acceptedResponse) {
+                            // Determine the providing parent based on who the logged-in user is
+                            let providingParentId: string;
+                            
+                            if (user?.id === acceptedResponse.responder_id) {
+                              // Logged-in user is the responder (accepted the request)
+                              // So the providing parent is the requester
+                              providingParentId = originalRequest.requester_id;
+                              console.log('DEBUG - User is responder, providing parent is requester:', {
+                                userId: user?.id,
+                                responderId: acceptedResponse.responder_id,
+                                requesterId: originalRequest.requester_id,
+                                providingParentId: providingParentId
+                              });
+                            } else if (user?.id === originalRequest.requester_id) {
+                              // Logged-in user is the requester (made the request)
+                              // So the providing parent is the responder
+                              providingParentId = acceptedResponse.responder_id;
+                              console.log('DEBUG - User is requester, providing parent is responder:', {
+                                userId: user?.id,
+                                requesterId: originalRequest.requester_id,
+                                responderId: acceptedResponse.responder_id,
+                                providingParentId: providingParentId
+                              });
+                            } else {
+                              // Fallback: use responder_id as providing parent
+                              providingParentId = acceptedResponse.responder_id;
+                              console.log('DEBUG - Fallback: using responder as providing parent:', {
+                                userId: user?.id,
+                                responderId: acceptedResponse.responder_id,
+                                providingParentId: providingParentId
+                              });
+                            }
+                            
+                            providingParentName = getParentName(providingParentId);
+                            console.log('DEBUG - getParentName result (red blocks):', {
+                              providingParentId: providingParentId,
+                              providingParentName: providingParentName,
+                              allProfilesCount: allProfiles.length,
+                              allProfiles: allProfiles.map(p => ({ id: p.id, full_name: p.full_name }))
+                            });
+                          } else {
+                            console.log('DEBUG - No accepted response found for request (red blocks):', originalRequest.id);
+                          }
+                        }
+                        
+                        blockStyle = 'bg-red-100 text-red-800 border border-red-300';
+                        blockText = `${providingParentName} providing care for ${block.children?.full_name || getChildName(block.child_id, undefined, block)}`;
+                        console.log('DEBUG - Final blockText (red blocks):', {
+                          providingParentName: providingParentName,
+                          blockText: blockText,
+                          blockId: block.id
+                        });
                       } else {
                         // Other care arrangements
                         if (block.care_type === 'needed') {
                           // For "needed" blocks, show who is providing care
-                          const providingParentName = getParentName(block.parent_id);
+                          const originalRequest = findOriginalRequestForBlock(block);
+                          console.log('DEBUG - block.care_type === needed:', {
+                            blockId: block.id,
+                            relatedRequestId: block.related_request_id,
+                            originalRequest: originalRequest,
+                            responsesCount: responses.length,
+                            responses: responses.map(r => ({ id: r.id, request_id: r.request_id, status: r.status, responder_id: r.responder_id }))
+                          });
+                          
+                          let providingParentName = 'Unknown Parent'; // Default to 'Unknown Parent'
+                          
+                          if (originalRequest) {
+                            // Find the accepted response for this request
+                            const acceptedResponse = responses.find(r => 
+                              r.request_id === originalRequest.id && r.status === 'accepted'
+                            );
+                            console.log('DEBUG - acceptedResponse search (blue blocks):', {
+                              originalRequestId: originalRequest.id,
+                              acceptedResponse: acceptedResponse,
+                              responderId: acceptedResponse?.responder_id,
+                              requesterId: originalRequest.requester_id,
+                              currentUserId: user?.id
+                            });
+                            
+                            if (acceptedResponse) {
+                              // Determine the providing parent based on who the logged-in user is
+                              let providingParentId: string;
+                              
+                              if (user?.id === acceptedResponse.responder_id) {
+                                // Logged-in user is the responder (accepted the request)
+                                // So the providing parent is the requester
+                                providingParentId = originalRequest.requester_id;
+                                console.log('DEBUG - User is responder, providing parent is requester (blue blocks):', {
+                                  userId: user?.id,
+                                  responderId: acceptedResponse.responder_id,
+                                  requesterId: originalRequest.requester_id,
+                                  providingParentId: providingParentId
+                                });
+                              } else if (user?.id === originalRequest.requester_id) {
+                                // Logged-in user is the requester (made the request)
+                                // So the providing parent is the responder
+                                providingParentId = acceptedResponse.responder_id;
+                                console.log('DEBUG - User is requester, providing parent is responder (blue blocks):', {
+                                  userId: user?.id,
+                                  requesterId: originalRequest.requester_id,
+                                  responderId: acceptedResponse.responder_id,
+                                  providingParentId: providingParentId
+                                });
+                              } else {
+                                // Fallback: use responder_id as providing parent
+                                providingParentId = acceptedResponse.responder_id;
+                                console.log('DEBUG - Fallback: using responder as providing parent (blue blocks):', {
+                                  userId: user?.id,
+                                  responderId: acceptedResponse.responder_id,
+                                  providingParentId: providingParentId
+                                });
+                              }
+                              
+                              providingParentName = getParentName(providingParentId);
+                              console.log('DEBUG - getParentName result (blue blocks):', {
+                                providingParentId: providingParentId,
+                                providingParentName: providingParentName,
+                                allProfilesCount: allProfiles.length,
+                                allProfiles: allProfiles.map(p => ({ id: p.id, full_name: p.full_name }))
+                              });
+                            }
+                          }
+                          
                           blockStyle = 'bg-blue-100 text-blue-800 border border-blue-300';
                           blockText = `${providingParentName} providing care for ${block.children?.full_name || getChildName(block.child_id, undefined, block)}`;
+                          console.log('DEBUG - Final blockText (blue blocks):', {
+                            providingParentName: providingParentName,
+                            blockText: blockText,
+                            blockId: block.id
+                          });
                         } else {
                           // For "provided" blocks
                           blockStyle = 'bg-gray-100 text-gray-800 border border-gray-300';
@@ -1458,6 +1779,154 @@ export default function SchedulePage() {
            </div>
          </div>
        )}
+
+      {/* Daily Schedule Modal */}
+      {showDailyScheduleModal && selectedDateForDailyView && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg p-6 w-full max-w-2xl max-h-[90vh] overflow-y-auto">
+            <div className="flex justify-between items-center mb-4">
+              <h3 className="text-lg font-medium">
+                Daily Schedule - {selectedDateForDailyView.toLocaleDateString('en-US', { 
+                  weekday: 'long', 
+                  year: 'numeric', 
+                  month: 'long', 
+                  day: 'numeric' 
+                })}
+              </h3>
+              <button
+                onClick={() => setShowDailyScheduleModal(false)}
+                className="text-gray-400 hover:text-gray-600"
+              >
+                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+            
+            <div className="space-y-4">
+              {getBlocksForDate(selectedDateForDailyView).map(block => {
+                const isUserProviding = block.parent_id === user?.id && block.care_type === 'provided';
+                const isUserChildNeeding = block.care_type === 'needed' && children.some(c => c.id === block.child_id);
+                
+                let blockStyle = '';
+                let blockText = '';
+                
+                if (isUserProviding) {
+                  blockStyle = 'bg-green-100 text-green-800 border border-green-300';
+                  blockText = `Providing care for ${block.children?.full_name || getChildName(block.child_id, undefined, block)}`;
+                } else if (isUserChildNeeding) {
+                  // For "needed" blocks, we need to find the providing parent from the related request/response
+                  const originalRequest = findOriginalRequestForBlock(block);
+                  console.log('DEBUG - Daily Modal isUserChildNeeding block:', {
+                    blockId: block.id,
+                    relatedRequestId: block.related_request_id,
+                    originalRequest: originalRequest,
+                    responsesCount: responses.length,
+                    responses: responses.map(r => ({ id: r.id, request_id: r.request_id, status: r.status, responder_id: r.responder_id }))
+                  });
+                  
+                  let providingParentName = 'Unknown Parent'; // Default to 'Unknown Parent'
+                  
+                  if (originalRequest) {
+                    // Find the accepted response for this request
+                    const acceptedResponse = responses.find(r => 
+                      r.request_id === originalRequest.id && r.status === 'accepted'
+                    );
+                    console.log('DEBUG - Daily Modal acceptedResponse search:', {
+                      originalRequestId: originalRequest.id,
+                      acceptedResponse: acceptedResponse,
+                      responderId: acceptedResponse?.responder_id
+                    });
+                    
+                    if (acceptedResponse) {
+                      providingParentName = getParentName(acceptedResponse.responder_id);
+                      console.log('DEBUG - Daily Modal getParentName result:', {
+                        responderId: acceptedResponse.responder_id,
+                        providingParentName: providingParentName,
+                        allProfilesCount: allProfiles.length,
+                        allProfiles: allProfiles.map(p => ({ id: p.id, full_name: p.full_name }))
+                      });
+                    }
+                  }
+                  
+                  blockStyle = 'bg-red-100 text-red-800 border border-red-300';
+                  blockText = `${providingParentName} providing care for ${block.children?.full_name || getChildName(block.child_id, undefined, block)}`;
+                } else {
+                  if (block.care_type === 'needed') {
+                    // For "needed" blocks, show who is providing care
+                    const originalRequest = findOriginalRequestForBlock(block);
+                    console.log('DEBUG - Daily Modal block.care_type === needed:', {
+                      blockId: block.id,
+                      relatedRequestId: block.related_request_id,
+                      originalRequest: originalRequest,
+                      responsesCount: responses.length,
+                      responses: responses.map(r => ({ id: r.id, request_id: r.request_id, status: r.status, responder_id: r.responder_id }))
+                    });
+                    
+                    let providingParentName = 'Unknown Parent'; // Default to 'Unknown Parent'
+                    
+                    if (originalRequest) {
+                      // Find the accepted response for this request
+                      const acceptedResponse = responses.find(r => 
+                        r.request_id === originalRequest.id && r.status === 'accepted'
+                      );
+                      console.log('DEBUG - Daily Modal acceptedResponse search (blue blocks):', {
+                        originalRequestId: originalRequest.id,
+                        acceptedResponse: acceptedResponse,
+                        responderId: acceptedResponse?.responder_id
+                      });
+                      
+                      if (acceptedResponse) {
+                        providingParentName = getParentName(acceptedResponse.responder_id);
+                        console.log('DEBUG - Daily Modal getParentName result (blue blocks):', {
+                          responderId: acceptedResponse.responder_id,
+                          providingParentName: providingParentName,
+                          allProfilesCount: allProfiles.length,
+                          allProfiles: allProfiles.map(p => ({ id: p.id, full_name: p.full_name }))
+                        });
+                      }
+                    }
+                    
+                    blockStyle = 'bg-blue-100 text-blue-800 border border-blue-300';
+                    blockText = `${providingParentName} providing care for ${block.children?.full_name || getChildName(block.child_id, undefined, block)}`;
+                  } else {
+                    blockStyle = 'bg-gray-100 text-gray-800 border border-gray-300';
+                    blockText = `Providing care for ${block.children?.full_name || getChildName(block.child_id, undefined, block)}`;
+                  }
+                }
+                
+                return (
+                  <div key={block.id} className={`p-4 rounded-lg ${blockStyle}`}>
+                    <div className="flex justify-between items-start">
+                      <div className="flex-1">
+                        <div className="font-medium text-sm mb-1">{blockText}</div>
+                        <div className="text-sm opacity-75">
+                          {formatTime(block.start_time)} - {formatTime(block.end_time)}
+                        </div>
+                        {block.notes && (
+                          <div className="text-sm mt-2 p-2 bg-white bg-opacity-50 rounded">
+                            Notes: {block.notes}
+                          </div>
+                        )}
+                      </div>
+                      <div className="text-xs opacity-75 ml-4">
+                        {block.care_type === 'needed' ? 'Care Needed' : 'Care Provided'}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+              
+              {getBlocksForDate(selectedDateForDailyView).length === 0 && (
+                <div className="text-center py-8 text-gray-500">
+                  No scheduled care for this date
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
     </div>
   );
 } 
