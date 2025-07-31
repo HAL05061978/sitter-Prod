@@ -134,6 +134,13 @@ interface AvailableGroupMember {
   email: string;
 }
 
+interface AvailableChild {
+  child_id: string;
+  child_name: string;
+  parent_id: string;
+  parent_name: string;
+}
+
 export default function SchedulePage() {
   const router = useRouter();
   const [loading, setLoading] = useState(true);
@@ -165,6 +172,7 @@ export default function SchedulePage() {
   const [responseType, setResponseType] = useState<'accept' | 'decline'>('accept');
   const [availableTimeBlocks, setAvailableTimeBlocks] = useState<InvitationTimeBlock[]>([]);
   const [availableGroupMembers, setAvailableGroupMembers] = useState<AvailableGroupMember[]>([]);
+  const [availableChildren, setAvailableChildren] = useState<AvailableChild[]>([]);
   const [userChildren, setUserChildren] = useState<Child[]>([]);
   const [selectedChildId, setSelectedChildId] = useState<string>('');
   
@@ -417,17 +425,7 @@ export default function SchedulePage() {
       index === self.findIndex(b => b.id === block.id)
     );
 
-    console.log('DEBUG - fetchScheduledCare - uniqueBlocks:', {
-      totalBlocks: uniqueBlocks.length,
-      blocks: uniqueBlocks.map(block => ({
-        id: block.id,
-        care_type: block.care_type,
-        parent_id: block.parent_id,
-        child_id: block.child_id,
-        related_request_id: block.related_request_id,
-        care_date: block.care_date
-      }))
-    });
+
     setScheduledCare(uniqueBlocks); // Updated variable name
   };
 
@@ -461,10 +459,7 @@ export default function SchedulePage() {
       .in("group_id", groupIds)
       .order("created_at", { ascending: false });
 
-    console.log('DEBUG - fetchRequestsAndResponses - requestsData:', {
-      requestsCount: requestsData?.length || 0,
-      requests: requestsData?.map(r => ({ id: r.id, status: r.status, requester_id: r.requester_id }))
-    });
+
 
     setRequests(requestsData || []);
 
@@ -477,10 +472,7 @@ export default function SchedulePage() {
         .in("request_id", requestIds)
         .order("created_at", { ascending: false });
 
-      console.log('DEBUG - fetchRequestsAndResponses - responsesData:', {
-        responsesCount: responsesData?.length || 0,
-        responses: responsesData?.map(r => ({ id: r.id, request_id: r.request_id, status: r.status, responder_id: r.responder_id }))
-      });
+
 
       setResponses(responsesData || []);
     } else {
@@ -701,23 +693,30 @@ export default function SchedulePage() {
     }
 
     try {
-      // Create open block requests for each selected member
+      // Create open block requests for each selected child
       for (let i = 0; i < inviteForm.selectedMembers.length; i++) {
-        const memberId = inviteForm.selectedMembers[i];
+        const childId = inviteForm.selectedMembers[i];
         const timeBlock = inviteForm.timeBlocks[i];
         
         if (!timeBlock.date || !timeBlock.startTime || !timeBlock.endTime) {
-          alert(`Please fill in all time slot details for member ${i + 1}`);
+          alert(`Please fill in all time slot details for child ${i + 1}`);
           return;
         }
 
-        // Create a new care request for this member
+        // Find the child details
+        const selectedChild = availableChildren.find(child => child.child_id === childId);
+        if (!selectedChild) {
+          alert(`Child not found for selection ${i + 1}`);
+          return;
+        }
+
+        // Create a new care request for this child
         const { error: createError } = await supabase
           .from('care_requests')
           .insert({
             group_id: selectedRequest.group_id,
             requester_id: user.id, // The care provider is requesting reciprocal care
-            child_id: selectedRequest.child_id, // Using the same child for now
+            child_id: childId, // Use the selected child's ID
             requested_date: timeBlock.date,
             start_time: timeBlock.startTime,
             end_time: timeBlock.endTime,
@@ -726,7 +725,7 @@ export default function SchedulePage() {
             open_block_parent_id: user.id,
             open_block_slots: 1,
             open_block_slots_used: 0,
-            notes: inviteForm.notes || `Reciprocal care request from ${getParentName(user.id)}`
+            notes: inviteForm.notes || `Reciprocal care request from ${getParentName(user.id)} for ${selectedChild.child_name}`
           });
 
         if (createError) {
@@ -743,11 +742,12 @@ export default function SchedulePage() {
         timeBlocks: [],
         notes: ''
       });
+      setAvailableChildren([]);
       
       // Refresh data to show new requests
       await fetchRequestsAndResponses(user.id);
       
-      alert('Invitations sent successfully! New care requests have been created for the selected members.');
+      alert('Invitations sent successfully! New care requests have been created for the selected children.');
     } catch (error) {
       console.error('Error sending invitations:', error);
       alert('Error sending invitations. Please try again.');
@@ -813,24 +813,24 @@ export default function SchedulePage() {
     }));
   };
 
-  const toggleMemberSelection = (memberId: string) => {
+  const toggleMemberSelection = (childId: string) => {
     setInviteForm(prev => {
-      const isCurrentlySelected = prev.selectedMembers.includes(memberId);
+      const isCurrentlySelected = prev.selectedMembers.includes(childId);
       const newSelectedMembers = isCurrentlySelected
-        ? prev.selectedMembers.filter(id => id !== memberId)
-        : [...prev.selectedMembers, memberId];
+        ? prev.selectedMembers.filter(id => id !== childId)
+        : [...prev.selectedMembers, childId];
       
       // Calculate how many time slots we need
       const requiredTimeSlots = newSelectedMembers.length;
       let newTimeBlocks = [...prev.timeBlocks];
       
       if (isCurrentlySelected) {
-        // Removing a member - remove the last time slot
+        // Removing a child - remove the last time slot
         if (newTimeBlocks.length > requiredTimeSlots) {
           newTimeBlocks = newTimeBlocks.slice(0, requiredTimeSlots);
         }
       } else {
-        // Adding a member - add a new time slot if needed
+        // Adding a child - add a new time slot if needed
         while (newTimeBlocks.length < requiredTimeSlots) {
           newTimeBlocks.push({
             date: '',
@@ -1059,34 +1059,17 @@ export default function SchedulePage() {
 
   const getResponderName = (responderId: string) => {
     const profile = allProfiles.find(p => p.id === responderId);
-    console.log('DEBUG - getResponderName:', {
-      responderId: responderId,
-      profileFound: !!profile,
-      profile: profile ? { id: profile.id, full_name: profile.full_name } : 'Not found'
-    });
     return profile?.full_name || `User (${responderId.slice(0, 8)}...)`;
   };
 
   const getParentName = (parentId: string) => {
-    console.log('DEBUG - getParentName:', {
-      parentId: parentId,
-      allProfilesCount: allProfiles.length,
-      allProfiles: allProfiles.map(p => ({ id: p.id, full_name: p.full_name }))
-    });
-    
     // If allProfiles is empty, try to fetch it again
     if (allProfiles.length === 0) {
-      console.log('DEBUG - allProfiles is empty, fetching profiles...');
       fetchAllProfiles();
       return `Parent (${parentId.slice(0, 8)}...)`;
     }
     
     const profile = allProfiles.find(p => p.id === parentId);
-    console.log('DEBUG - getParentName result:', {
-      parentId: parentId,
-      profileFound: !!profile,
-      profile: profile ? { id: profile.id, full_name: profile.full_name } : 'Not found'
-    });
     return profile?.full_name || `Parent (${parentId.slice(0, 8)}...)`;
   };
 
@@ -1094,21 +1077,11 @@ export default function SchedulePage() {
 
   // Updated function with new types
   const findOriginalRequestForBlock = (block: ScheduledCare): CareRequest | null => {
-    console.log('DEBUG - findOriginalRequestForBlock:', {
-      blockId: block.id,
-      relatedRequestId: block.related_request_id,
-      requestsCount: requests.length,
-      requests: requests.map(r => ({ id: r.id, status: r.status }))
-    });
-    
     const foundRequest = requests.find(request => request.id === block.related_request_id);
-    console.log('DEBUG - foundRequest:', foundRequest);
-    
     return foundRequest || null;
   };
 
   const handleBlockDoubleClick = async (block: ScheduledCare) => { // Updated type
-    console.log('Block double-clicked:', block);
     
     // Check if the logged-in user is the responder (care provider) of the original request
     const originalRequest = findOriginalRequestForBlock(block);
@@ -1125,17 +1098,33 @@ export default function SchedulePage() {
         );
         
         if (shouldInviteOthers) {
+          // For now, use all profiles except the current user and original requester
+          const availableProfiles = allProfiles.filter(profile => 
+            profile.id !== user?.id && profile.id !== originalRequest.requester_id
+          );
+          
+          if (availableProfiles.length === 0) {
+            alert('No other group members available to invite.');
+            return;
+          }
+          
           // Create an open block request based on this care block
           const openBlockRequest: CareRequest = {
             ...originalRequest,
             id: '', // Will be generated by the database
             request_type: 'open_block',
             open_block_parent_id: block.parent_id, // The care provider
-            open_block_slots: 3, // Default to 3 slots
+            open_block_slots: Math.min(availableProfiles.length, 3), // Limit to available profiles or 3, whichever is smaller
             open_block_slots_used: 0
           };
           
           setSelectedRequest(openBlockRequest);
+          setAvailableChildren(availableProfiles.map(profile => ({
+            child_id: profile.id, // Using profile ID as child ID for now
+            child_name: profile.full_name || 'Unknown',
+            parent_id: profile.id,
+            parent_name: profile.full_name || 'Unknown'
+          })));
           setShowInviteModal(true);
           return;
         }
@@ -1215,11 +1204,12 @@ export default function SchedulePage() {
         >
           Schedule
         </button>
+
         <button 
-          onClick={() => router.push('/groups')}
-          className="px-6 py-3 bg-orange-600 text-white rounded-lg hover:bg-orange-700 transition font-medium"
+          onClick={() => router.push('/chats')}
+          className="px-6 py-3 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition font-medium"
         >
-          Groups
+          Chats
         </button>
         <button 
           onClick={() => router.push('/activities')}
@@ -1307,7 +1297,7 @@ export default function SchedulePage() {
                   </div>
                   <div className="space-y-1">
                     {getBlocksForDate(day).map(block => {
-                      console.log('Rendering block:', block);
+  
                       const isUserProviding = block.parent_id === user?.id && block.care_type === 'provided';
                       const isUserChildNeeding = block.care_type === 'needed' && children.some(c => c.id === block.child_id);
                       
@@ -1323,34 +1313,15 @@ export default function SchedulePage() {
                         // User's child needs care (someone else is providing)
                         // For "needed" blocks, we need to find the providing parent from the related request/response
                         const originalRequest = findOriginalRequestForBlock(block);
-                        console.log('DEBUG - isUserChildNeeding block:', {
-                          blockId: block.id,
-                          relatedRequestId: block.related_request_id,
-                          originalRequest: originalRequest,
-                          responsesCount: responses.length,
-                          responses: responses.map(r => ({ id: r.id, request_id: r.request_id, status: r.status, responder_id: r.responder_id }))
-                        });
                         
                         let providingParentName = 'Unknown Parent'; // Default to 'Unknown Parent'
                         
                         if (originalRequest) {
-                          console.log('DEBUG - responses array (red blocks):', {
-                            responsesCount: responses.length,
-                            responses: responses.map(r => ({ id: r.id, request_id: r.request_id, status: r.status, responder_id: r.responder_id }))
-                          });
                           
                           // Find the accepted response for this request
                           const acceptedResponse = responses.find(r => 
                             r.request_id === originalRequest.id && r.status === 'accepted'
                           );
-                          console.log('DEBUG - acceptedResponse search (red blocks):', {
-                            originalRequestId: originalRequest.id,
-                            acceptedResponse: acceptedResponse,
-                            responderId: acceptedResponse?.responder_id,
-                            requesterId: originalRequest.requester_id,
-                            currentUserId: user?.id
-                          });
-                          
                           if (acceptedResponse) {
                             // Determine the providing parent based on who the logged-in user is
                             let providingParentId: string;
@@ -1359,63 +1330,28 @@ export default function SchedulePage() {
                               // Logged-in user is the responder (accepted the request)
                               // So the providing parent is the requester
                               providingParentId = originalRequest.requester_id;
-                              console.log('DEBUG - User is responder, providing parent is requester:', {
-                                userId: user?.id,
-                                responderId: acceptedResponse.responder_id,
-                                requesterId: originalRequest.requester_id,
-                                providingParentId: providingParentId
-                              });
-                            } else if (user?.id === originalRequest.requester_id) {
+                              } else if (user?.id === originalRequest.requester_id) {
                               // Logged-in user is the requester (made the request)
                               // So the providing parent is the responder
                               providingParentId = acceptedResponse.responder_id;
-                              console.log('DEBUG - User is requester, providing parent is responder:', {
-                                userId: user?.id,
-                                requesterId: originalRequest.requester_id,
-                                responderId: acceptedResponse.responder_id,
-                                providingParentId: providingParentId
-                              });
-                            } else {
+                              } else {
                               // Fallback: use responder_id as providing parent
                               providingParentId = acceptedResponse.responder_id;
-                              console.log('DEBUG - Fallback: using responder as providing parent:', {
-                                userId: user?.id,
-                                responderId: acceptedResponse.responder_id,
-                                providingParentId: providingParentId
-                              });
-                            }
+                              }
                             
                             providingParentName = getParentName(providingParentId);
-                            console.log('DEBUG - getParentName result (red blocks):', {
-                              providingParentId: providingParentId,
-                              providingParentName: providingParentName,
-                              allProfilesCount: allProfiles.length,
-                              allProfiles: allProfiles.map(p => ({ id: p.id, full_name: p.full_name }))
-                            });
                           } else {
-                            console.log('DEBUG - No accepted response found for request (red blocks):', originalRequest.id);
+                            // No accepted response found
                           }
                         }
                         
                         blockStyle = 'bg-red-100 text-red-800 border border-red-300';
                         blockText = `${providingParentName} providing care for ${block.children?.full_name || getChildName(block.child_id, undefined, block)}`;
-                        console.log('DEBUG - Final blockText (red blocks):', {
-                          providingParentName: providingParentName,
-                          blockText: blockText,
-                          blockId: block.id
-                        });
-                      } else {
+                        } else {
                         // Other care arrangements
                         if (block.care_type === 'needed') {
                           // For "needed" blocks, show who is providing care
                           const originalRequest = findOriginalRequestForBlock(block);
-                          console.log('DEBUG - block.care_type === needed:', {
-                            blockId: block.id,
-                            relatedRequestId: block.related_request_id,
-                            originalRequest: originalRequest,
-                            responsesCount: responses.length,
-                            responses: responses.map(r => ({ id: r.id, request_id: r.request_id, status: r.status, responder_id: r.responder_id }))
-                          });
                           
                           let providingParentName = 'Unknown Parent'; // Default to 'Unknown Parent'
                           
@@ -1424,14 +1360,6 @@ export default function SchedulePage() {
                             const acceptedResponse = responses.find(r => 
                               r.request_id === originalRequest.id && r.status === 'accepted'
                             );
-                            console.log('DEBUG - acceptedResponse search (blue blocks):', {
-                              originalRequestId: originalRequest.id,
-                              acceptedResponse: acceptedResponse,
-                              responderId: acceptedResponse?.responder_id,
-                              requesterId: originalRequest.requester_id,
-                              currentUserId: user?.id
-                            });
-                            
                             if (acceptedResponse) {
                               // Determine the providing parent based on who the logged-in user is
                               let providingParentId: string;
@@ -1440,49 +1368,21 @@ export default function SchedulePage() {
                                 // Logged-in user is the responder (accepted the request)
                                 // So the providing parent is the requester
                                 providingParentId = originalRequest.requester_id;
-                                console.log('DEBUG - User is responder, providing parent is requester (blue blocks):', {
-                                  userId: user?.id,
-                                  responderId: acceptedResponse.responder_id,
-                                  requesterId: originalRequest.requester_id,
-                                  providingParentId: providingParentId
-                                });
-                              } else if (user?.id === originalRequest.requester_id) {
+                                } else if (user?.id === originalRequest.requester_id) {
                                 // Logged-in user is the requester (made the request)
                                 // So the providing parent is the responder
                                 providingParentId = acceptedResponse.responder_id;
-                                console.log('DEBUG - User is requester, providing parent is responder (blue blocks):', {
-                                  userId: user?.id,
-                                  requesterId: originalRequest.requester_id,
-                                  responderId: acceptedResponse.responder_id,
-                                  providingParentId: providingParentId
-                                });
-                              } else {
+                                } else {
                                 // Fallback: use responder_id as providing parent
                                 providingParentId = acceptedResponse.responder_id;
-                                console.log('DEBUG - Fallback: using responder as providing parent (blue blocks):', {
-                                  userId: user?.id,
-                                  responderId: acceptedResponse.responder_id,
-                                  providingParentId: providingParentId
-                                });
-                              }
+                                }
                               
                               providingParentName = getParentName(providingParentId);
-                              console.log('DEBUG - getParentName result (blue blocks):', {
-                                providingParentId: providingParentId,
-                                providingParentName: providingParentName,
-                                allProfilesCount: allProfiles.length,
-                                allProfiles: allProfiles.map(p => ({ id: p.id, full_name: p.full_name }))
-                              });
                             }
                           }
                           
                           blockStyle = 'bg-blue-100 text-blue-800 border border-blue-300';
                           blockText = `${providingParentName} providing care for ${block.children?.full_name || getChildName(block.child_id, undefined, block)}`;
-                          console.log('DEBUG - Final blockText (blue blocks):', {
-                            providingParentName: providingParentName,
-                            blockText: blockText,
-                            blockId: block.id
-                          });
                         } else {
                           // For "provided" blocks
                           blockStyle = 'bg-gray-100 text-gray-800 border border-gray-300';
@@ -1534,7 +1434,7 @@ export default function SchedulePage() {
                  <label className="block text-sm font-medium text-gray-700">Request Type</label>
                                    <select
                     value={requestForm.requestType}
-                    onChange={(e: any) => setRequestForm(prev => ({ 
+                    onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setRequestForm(prev => ({ 
                       ...prev, 
                       requestType: e.target.value as 'simple' | 'reciprocal' | 'event' | 'open_block' 
                     }))}
@@ -1557,7 +1457,7 @@ export default function SchedulePage() {
                  <label className="block text-sm font-medium text-gray-700">Group</label>
                  <select
                    value={requestForm.groupId}
-                   onChange={(e: any) => setRequestForm(prev => ({ ...prev, groupId: e.target.value }))}
+                   onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setRequestForm(prev => ({ ...prev, groupId: e.target.value }))}
                    className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2"
                  >
                    <option value="">Select a group</option>
@@ -1571,7 +1471,7 @@ export default function SchedulePage() {
                  <label className="block text-sm font-medium text-gray-700">Child</label>
                  <select
                    value={requestForm.childId}
-                   onChange={(e: any) => setRequestForm(prev => ({ ...prev, childId: e.target.value }))}
+                   onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setRequestForm(prev => ({ ...prev, childId: e.target.value }))}
                    className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2"
                  >
                    <option value="">Select a child</option>
@@ -1947,13 +1847,6 @@ export default function SchedulePage() {
                 } else if (isUserChildNeeding) {
                   // For "needed" blocks, we need to find the providing parent from the related request/response
                   const originalRequest = findOriginalRequestForBlock(block);
-                  console.log('DEBUG - Daily Modal isUserChildNeeding block:', {
-                    blockId: block.id,
-                    relatedRequestId: block.related_request_id,
-                    originalRequest: originalRequest,
-                    responsesCount: responses.length,
-                    responses: responses.map(r => ({ id: r.id, request_id: r.request_id, status: r.status, responder_id: r.responder_id }))
-                  });
                   
                   let providingParentName = 'Unknown Parent'; // Default to 'Unknown Parent'
                   
@@ -1962,20 +1855,8 @@ export default function SchedulePage() {
                     const acceptedResponse = responses.find(r => 
                       r.request_id === originalRequest.id && r.status === 'accepted'
                     );
-                    console.log('DEBUG - Daily Modal acceptedResponse search:', {
-                      originalRequestId: originalRequest.id,
-                      acceptedResponse: acceptedResponse,
-                      responderId: acceptedResponse?.responder_id
-                    });
-                    
                     if (acceptedResponse) {
                       providingParentName = getParentName(acceptedResponse.responder_id);
-                      console.log('DEBUG - Daily Modal getParentName result:', {
-                        responderId: acceptedResponse.responder_id,
-                        providingParentName: providingParentName,
-                        allProfilesCount: allProfiles.length,
-                        allProfiles: allProfiles.map(p => ({ id: p.id, full_name: p.full_name }))
-                      });
                     }
                   }
                   
@@ -1985,13 +1866,6 @@ export default function SchedulePage() {
                   if (block.care_type === 'needed') {
                     // For "needed" blocks, show who is providing care
                     const originalRequest = findOriginalRequestForBlock(block);
-                    console.log('DEBUG - Daily Modal block.care_type === needed:', {
-                      blockId: block.id,
-                      relatedRequestId: block.related_request_id,
-                      originalRequest: originalRequest,
-                      responsesCount: responses.length,
-                      responses: responses.map(r => ({ id: r.id, request_id: r.request_id, status: r.status, responder_id: r.responder_id }))
-                    });
                     
                     let providingParentName = 'Unknown Parent'; // Default to 'Unknown Parent'
                     
@@ -2000,20 +1874,8 @@ export default function SchedulePage() {
                       const acceptedResponse = responses.find(r => 
                         r.request_id === originalRequest.id && r.status === 'accepted'
                       );
-                      console.log('DEBUG - Daily Modal acceptedResponse search (blue blocks):', {
-                        originalRequestId: originalRequest.id,
-                        acceptedResponse: acceptedResponse,
-                        responderId: acceptedResponse?.responder_id
-                      });
-                      
                       if (acceptedResponse) {
                         providingParentName = getParentName(acceptedResponse.responder_id);
-                        console.log('DEBUG - Daily Modal getParentName result (blue blocks):', {
-                          responderId: acceptedResponse.responder_id,
-                          providingParentName: providingParentName,
-                          allProfilesCount: allProfiles.length,
-                          allProfiles: allProfiles.map(p => ({ id: p.id, full_name: p.full_name }))
-                        });
                       }
                     }
                     
@@ -2095,30 +1957,31 @@ export default function SchedulePage() {
               </div>
 
               <div>
-                <h4 className="font-medium text-gray-900 mb-2">Select Group Members to Invite</h4>
+                <h4 className="font-medium text-gray-900 mb-2">Select Children to Invite</h4>
                 <div className="space-y-2">
-                  {allProfiles
-                    .filter(profile => {
-                      // Exclude the original requester and the current user (care provider)
-                      return profile.id !== selectedRequest.requester_id && profile.id !== user?.id;
-                    })
-                    .map(profile => (
-                      <label key={profile.id} className="flex items-center space-x-3">
+                  {availableChildren.length > 0 ? (
+                    availableChildren.map(child => (
+                      <label key={child.child_id} className="flex items-center space-x-3">
                         <input
                           type="checkbox"
-                          checked={inviteForm.selectedMembers.includes(profile.id)}
-                          onChange={() => toggleMemberSelection(profile.id)}
+                          checked={inviteForm.selectedMembers.includes(child.child_id)}
+                          onChange={() => toggleMemberSelection(child.child_id)}
                           className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
                         />
-                        <span className="text-sm text-gray-700">{profile.full_name}</span>
+                        <span className="text-sm text-gray-700">
+                          {child.child_name} (Parent: {child.parent_name})
+                        </span>
                       </label>
-                    ))}
+                    ))
+                  ) : (
+                    <p className="text-sm text-gray-500">No children available for this time slot.</p>
+                  )}
                 </div>
               </div>
 
               <div>
                 <h4 className="font-medium text-gray-900 mb-2">
-                  Available Time Slots ({inviteForm.selectedMembers.length} selected members = {inviteForm.selectedMembers.length} time slots)
+                  Available Time Slots ({inviteForm.selectedMembers.length} selected children = {inviteForm.selectedMembers.length} time slots)
                 </h4>
                 <div className="space-y-2">
                   {inviteForm.timeBlocks.map((block, index) => (

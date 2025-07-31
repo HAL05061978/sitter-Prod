@@ -48,16 +48,17 @@ export default function ActivitiesPage() {
           Messages
         </button>
         <button 
-          onClick={() => router.push('/chat')}
+          onClick={() => router.push('/schedule')}
           className="px-6 py-3 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition font-medium"
         >
-          Chat
+          Schedule
         </button>
+
         <button 
-          onClick={() => router.push('/groups')}
-          className="px-6 py-3 bg-orange-600 text-white rounded-lg hover:bg-orange-700 transition font-medium"
+          onClick={() => router.push('/chats')}
+          className="px-6 py-3 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition font-medium"
         >
-          Groups
+          Chats
         </button>
         <button className="px-6 py-3 bg-red-600 text-white rounded-lg hover:bg-red-700 transition font-medium">
           Activities
