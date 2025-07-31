@@ -73,6 +73,15 @@ interface CareRequest {
   // Event fields
   event_title?: string;
   event_description?: string;
+  event_rsvp_deadline?: string;
+  event_location?: string;
+  event_is_editable?: boolean;
+  event_edit_deadline?: string;
+  // Recurring event fields
+  is_recurring?: boolean;
+  recurrence_pattern?: 'weekly' | 'monthly' | 'yearly';
+  recurrence_end_date?: string;
+  parent_event_id?: string;
   // Open block fields
   open_block_slots?: number;
   open_block_slots_used?: number;
@@ -141,6 +150,30 @@ interface AvailableChild {
   parent_name: string;
 }
 
+// Event-specific interfaces
+interface EventResponse {
+  id: string;
+  event_request_id: string;
+  responder_id: string;
+  response_type: 'going' | 'maybe' | 'not_going';
+  response_notes?: string;
+  created_at: string;
+  updated_at: string;
+  responder?: {
+    full_name: string;
+  };
+}
+
+interface EventNotification {
+  id: string;
+  event_request_id: string;
+  notification_type: 'event_created' | 'event_updated' | 'event_cancelled' | 'rsvp_reminder';
+  recipient_id: string;
+  message: string;
+  is_read: boolean;
+  created_at: string;
+}
+
 export default function SchedulePage() {
   const router = useRouter();
   const [loading, setLoading] = useState(true);
@@ -187,6 +220,13 @@ export default function SchedulePage() {
     requestType: 'simple' as 'simple' | 'reciprocal' | 'event' | 'open_block',
     eventTitle: '',
     eventDescription: '',
+    eventLocation: '',
+    eventRSVPDeadline: '',
+    eventEditDeadline: '',
+    // Recurring event fields
+    isRecurring: false,
+    recurrencePattern: 'weekly' as 'weekly' | 'monthly' | 'yearly',
+    recurrenceEndDate: '',
     openBlockSlots: 1
   });
 
@@ -209,6 +249,24 @@ export default function SchedulePage() {
   });
 
   const [childrenInCareBlocks, setChildrenInCareBlocks] = useState<{[blockId: string]: {child_name: string}[]}>({});
+
+  // Event-specific state
+  const [eventResponses, setEventResponses] = useState<EventResponse[]>([]);
+  const [eventNotifications, setEventNotifications] = useState<EventNotification[]>([]);
+  const [showEventRSVPModal, setShowEventRSVPModal] = useState(false);
+  const [selectedEventRequest, setSelectedEventRequest] = useState<CareRequest | null>(null);
+  const [eventRSVPForm, setEventRSVPForm] = useState({
+    responseType: 'going' as 'going' | 'maybe' | 'not_going',
+    notes: ''
+  });
+  const [showEventEditModal, setShowEventEditModal] = useState(false);
+  const [eventEditForm, setEventEditForm] = useState({
+    eventTitle: '',
+    eventDescription: '',
+            eventLocation: '',
+        eventRSVPDeadline: '',
+    eventEditDeadline: ''
+  });
 
   // Load children data for care blocks
   useEffect(() => {
@@ -305,6 +363,9 @@ export default function SchedulePage() {
 
         // Fetch invitations
         await fetchInvitations(data.user.id);
+
+        // Fetch all event responses for the current user
+        await fetchAllEventResponses(data.user.id);
 
         // Fetch all profiles for name resolution
         await fetchAllProfiles();
@@ -504,6 +565,105 @@ export default function SchedulePage() {
     // This would need to be updated based on your invitation system
   };
 
+  // Event-specific functions
+  const fetchEventResponses = async (eventRequestId: string) => {
+    const { data: responsesData } = await supabase
+      .from("event_responses")
+      .select(`
+        *,
+        responder:profiles(full_name)
+      `)
+      .eq("event_request_id", eventRequestId);
+    setEventResponses(responsesData || []);
+  };
+
+  const fetchAllEventResponses = async (userId: string) => {
+    const { data: responsesData } = await supabase
+      .from("event_responses")
+      .select(`
+        *,
+        responder:profiles(full_name)
+      `)
+      .eq("responder_id", userId);
+    setEventResponses(responsesData || []);
+  };
+
+  const fetchEventNotifications = async (userId: string) => {
+    const { data: notificationsData } = await supabase
+      .from("event_notifications")
+      .select("*")
+      .eq("recipient_id", userId)
+      .eq("is_read", false)
+      .order("created_at", { ascending: false });
+    setEventNotifications(notificationsData || []);
+  };
+
+  const submitEventRSVP = async () => {
+    if (!user || !selectedEventRequest) {
+      alert('User or event not found');
+      return;
+    }
+
+    try {
+      const { error } = await supabase.rpc('update_event_response', {
+        p_event_request_id: selectedEventRequest.id,
+        p_responder_id: user.id,
+        p_response_type: eventRSVPForm.responseType,
+        p_response_notes: eventRSVPForm.notes || null
+      });
+
+      if (error) {
+        console.error('Error submitting event RSVP:', error);
+        alert('Error submitting RSVP: ' + error.message);
+        return;
+      }
+
+      // Refresh event responses
+      await fetchEventResponses(selectedEventRequest.id);
+      setShowEventRSVPModal(false);
+      setEventRSVPForm({
+        responseType: 'going',
+        notes: ''
+      });
+      alert('RSVP submitted successfully!');
+    } catch (error) {
+      console.error('Error submitting event RSVP:', error);
+      alert('Error submitting RSVP. Please try again.');
+    }
+  };
+
+  const handleEventBlockDoubleClick = async (block: ScheduledCare) => {
+    // Find the original event request for this block
+    const eventRequest = requests.find(req => 
+      req.id === block.related_request_id && 
+      req.request_type === 'event'
+    );
+
+    if (eventRequest) {
+      setSelectedEventRequest(eventRequest);
+      await fetchEventResponses(eventRequest.id);
+      setShowEventRSVPModal(true);
+    }
+  };
+
+  const canEditEvent = (eventRequest: CareRequest): boolean => {
+    if (!user) return false;
+    if (eventRequest.requester_id !== user.id) return false;
+    if (!eventRequest.event_is_editable) return false;
+    
+    // Check if event date has passed
+    const eventDate = new Date(eventRequest.requested_date);
+    if (eventDate < new Date()) return false;
+    
+    // Check edit deadline if set
+    if (eventRequest.event_edit_deadline) {
+      const editDeadline = new Date(eventRequest.event_edit_deadline);
+      if (new Date() > editDeadline) return false;
+    }
+    
+    return true;
+  };
+
   const getActiveChildrenForGroup = (groupId: string) => {
     return activeChildrenPerGroup[groupId] || [];
   };
@@ -547,6 +707,21 @@ export default function SchedulePage() {
       if (requestForm.requestType === 'event') {
         requestData.event_title = requestForm.eventTitle;
         requestData.event_description = requestForm.eventDescription;
+        // Add additional event fields if they exist in the form
+        if (requestForm.eventLocation) {
+          requestData.event_location = requestForm.eventLocation;
+        }
+
+
+        
+        // Add recurring event fields if this is a recurring event
+        if (requestForm.isRecurring) {
+          requestData.is_recurring = true;
+          requestData.recurrence_pattern = requestForm.recurrencePattern;
+          if (requestForm.recurrenceEndDate) {
+            requestData.recurrence_end_date = requestForm.recurrenceEndDate;
+          }
+        }
       }
 
       if (requestForm.requestType === 'open_block') {
@@ -558,14 +733,39 @@ export default function SchedulePage() {
         requestData.is_reciprocal = true;
       }
 
-      const { error } = await supabase
+      const { data: newRequest, error } = await supabase
         .from("care_requests")
-        .insert(requestData);
+        .insert(requestData)
+        .select()
+        .single();
 
       if (error) {
         console.error('Error creating care request:', error);
         alert('Error creating request: ' + error.message);
         return;
+      }
+
+      // For events, create scheduled care blocks for all group members
+      if (requestForm.requestType === 'event' && newRequest) {
+        try {
+          // Use the database function to create event blocks (bypasses RLS)
+          const { error: blocksError } = await supabase
+            .rpc('create_event_blocks', {
+              p_group_id: requestForm.groupId,
+              p_event_request_id: newRequest.id,
+              p_child_id: requestForm.childId,
+              p_care_date: utcDate,
+              p_start_time: requestForm.startTime,
+              p_end_time: requestForm.endTime,
+              p_event_title: requestForm.eventTitle
+            });
+
+          if (blocksError) {
+            console.error('Error creating event blocks:', blocksError);
+          }
+        } catch (error) {
+          console.error('Error creating event blocks:', error);
+        }
       }
 
       // Refresh data
@@ -581,6 +781,13 @@ export default function SchedulePage() {
         requestType: 'simple',
         eventTitle: '',
         eventDescription: '',
+        eventLocation: '',
+        eventRSVPDeadline: '',
+        eventEditDeadline: '',
+        // Recurring event fields
+        isRecurring: false,
+        recurrencePattern: 'weekly',
+        recurrenceEndDate: '',
         openBlockSlots: 1
       });
       alert('Care request created successfully!');
@@ -664,6 +871,29 @@ export default function SchedulePage() {
     setSelectedRequest(request);
     setResponseType('decline');
     setShowResponseModal(true);
+  };
+
+  const handleEventRSVP = async (request: CareRequest, responseType: 'going' | 'maybe' | 'not_going') => {
+    if (!user) return;
+    
+    try {
+      // Use the database function to update event response
+      const { data, error } = await supabase
+        .rpc('update_event_response', {
+          p_event_request_id: request.id,
+          p_responder_id: user.id,
+          p_response_type: responseType
+        });
+      
+      if (error) throw error;
+      
+      // Refresh data
+      await fetchRequestsAndResponses(user.id);
+      await fetchAllEventResponses(user.id);
+      await fetchEventResponses(request.id);
+    } catch (error) {
+      console.error('Error submitting event RSVP:', error);
+    }
   };
 
   const handleInviteOthers = async (request: CareRequest) => {
@@ -1082,6 +1312,12 @@ export default function SchedulePage() {
   };
 
   const handleBlockDoubleClick = async (block: ScheduledCare) => { // Updated type
+    
+    // Check if this is an event block
+    if (block.care_type === 'event') {
+      await handleEventBlockDoubleClick(block);
+      return;
+    }
     
     // Check if the logged-in user is the responder (care provider) of the original request
     const originalRequest = findOriginalRequestForBlock(block);
@@ -1536,6 +1772,57 @@ export default function SchedulePage() {
                        placeholder="Describe the event or activity..."
                      />
                    </div>
+                   <div>
+                     <label className="block text-sm font-medium text-gray-700">Event Location</label>
+                     <input
+                       type="text"
+                       value={requestForm.eventLocation}
+                       onChange={(e: any) => setRequestForm(prev => ({ ...prev, eventLocation: e.target.value }))}
+                       className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2"
+                       placeholder="e.g., Central Park, Community Center"
+                     />
+                   </div>
+
+                   
+                   {/* Recurring Event Options */}
+                   <div>
+                     <label className="flex items-center">
+                       <input
+                         type="checkbox"
+                         checked={requestForm.isRecurring}
+                         onChange={(e: any) => setRequestForm(prev => ({ ...prev, isRecurring: e.target.checked }))}
+                         className="mr-2"
+                       />
+                       <span className="text-sm font-medium text-gray-700">Make this a recurring event</span>
+                     </label>
+                   </div>
+                   
+                   {requestForm.isRecurring && (
+                     <>
+                       <div>
+                         <label className="block text-sm font-medium text-gray-700">Recurrence Pattern</label>
+                         <select
+                           value={requestForm.recurrencePattern}
+                           onChange={(e: any) => setRequestForm(prev => ({ ...prev, recurrencePattern: e.target.value as 'weekly' | 'monthly' | 'yearly' }))}
+                           className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2"
+                         >
+                           <option value="weekly">Weekly</option>
+                           <option value="monthly">Monthly</option>
+                           <option value="yearly">Yearly</option>
+                         </select>
+                       </div>
+                       <div>
+                         <label className="block text-sm font-medium text-gray-700">End Date</label>
+                         <input
+                           type="date"
+                           value={requestForm.recurrenceEndDate}
+                           onChange={(e: any) => setRequestForm(prev => ({ ...prev, recurrenceEndDate: e.target.value }))}
+                           className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2"
+                           min={requestForm.requestedDate}
+                         />
+                       </div>
+                     </>
+                   )}
                  </>
                )}
 
@@ -1710,6 +1997,17 @@ export default function SchedulePage() {
                    {request.request_type === 'event' && request.event_description && (
                      <p className="text-sm text-gray-600 mt-1">{request.event_description}</p>
                    )}
+                   {request.request_type === 'event' && request.event_location && (
+                     <p className="text-sm text-gray-600 mt-1">
+                       <span className="font-medium">Location:</span> {request.event_location}
+                     </p>
+                   )}
+
+                   {request.request_type === 'event' && request.event_rsvp_deadline && (
+                     <p className="text-sm text-gray-600 mt-1">
+                       <span className="font-medium">RSVP Deadline:</span> {new Date(request.event_rsvp_deadline).toLocaleString()}
+                     </p>
+                   )}
                    {request.request_type === 'open_block' && request.open_block_slots && (
                      <p className="text-sm text-gray-600 mt-1">
                        Available slots: {request.open_block_slots - (request.open_block_slots_used || 0)}/{request.open_block_slots}
@@ -1720,24 +2018,77 @@ export default function SchedulePage() {
                    )}
                  </div>
                  <div className="flex space-x-2 ml-4">
-                   {/* Only show Agree/Reject buttons if the logged-in user is not the creator AND no response has been submitted */}
-                   {request.requester_id !== user?.id && !responses.some(r => r.request_id === request.id) && (
+                   {/* Show different buttons based on request type */}
+                   {request.requester_id !== user?.id && (
                      <>
-                       <button
-                         onClick={() => handleAgreeToRequest(request)}
-                         className="px-3 py-1 text-sm bg-green-600 text-white rounded hover:bg-green-700"
-                       >
-                         Agree
-                       </button>
-                       <button
-                         onClick={() => handleRejectRequest(request)}
-                         className="px-3 py-1 text-sm bg-red-600 text-white rounded hover:bg-red-700"
-                       >
-                         Reject
-                       </button>
+                       {request.request_type === 'event' ? (
+                         <>
+                           {(() => {
+                             const userResponse = eventResponses.find(r => r.event_request_id === request.id && r.responder_id === user?.id);
+                             return (
+                               <>
+                                 <button
+                                   onClick={() => handleEventRSVP(request, 'going')}
+                                   className={`px-3 py-1 text-sm rounded ${
+                                     userResponse?.response_type === 'going' 
+                                       ? 'bg-green-600 text-white' 
+                                       : userResponse?.response_type === 'maybe' || userResponse?.response_type === 'not_going'
+                                       ? 'bg-gray-300 text-gray-700 hover:bg-green-600 hover:text-white'
+                                       : 'bg-green-600 text-white hover:bg-green-700'
+                                   }`}
+                                 >
+                                   Going
+                                 </button>
+                                 <button
+                                   onClick={() => handleEventRSVP(request, 'maybe')}
+                                   className={`px-3 py-1 text-sm rounded ${
+                                     userResponse?.response_type === 'maybe' 
+                                       ? 'bg-yellow-600 text-white' 
+                                       : userResponse?.response_type === 'going' || userResponse?.response_type === 'not_going'
+                                       ? 'bg-gray-300 text-gray-700 hover:bg-yellow-600 hover:text-white'
+                                       : 'bg-yellow-600 text-white hover:bg-yellow-700'
+                                   }`}
+                                 >
+                                   Maybe
+                                 </button>
+                                 <button
+                                   onClick={() => handleEventRSVP(request, 'not_going')}
+                                   className={`px-3 py-1 text-sm rounded ${
+                                     userResponse?.response_type === 'not_going' 
+                                       ? 'bg-red-600 text-white' 
+                                       : userResponse?.response_type === 'going' || userResponse?.response_type === 'maybe'
+                                       ? 'bg-gray-300 text-gray-700 hover:bg-red-600 hover:text-white'
+                                       : 'bg-red-600 text-white hover:bg-red-700'
+                                   }`}
+                                 >
+                                   Not Going
+                                 </button>
+                               </>
+                             );
+                           })()}
+                         </>
+                       ) : (
+                         <>
+                           {!responses.some(r => r.request_id === request.id) && (
+                             <>
+                               <button
+                                 onClick={() => handleAgreeToRequest(request)}
+                                 className="px-3 py-1 text-sm bg-green-600 text-white rounded hover:bg-green-700"
+                               >
+                                 Agree
+                               </button>
+                               <button
+                                 onClick={() => handleRejectRequest(request)}
+                                 className="px-3 py-1 text-sm bg-red-600 text-white rounded hover:bg-red-700"
+                               >
+                                 Reject
+                               </button>
+                             </>
+                           )}
+                         </>
+                       )}
                      </>
                    )}
-
                  </div>
                </div>
              </div>
@@ -2061,6 +2412,77 @@ export default function SchedulePage() {
               </button>
             </div>
           </div>
+        </div>
+      )}
+
+      {/* Event RSVP Modal */}
+      {showEventRSVPModal && selectedEventRequest && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg p-6 w-full max-w-2xl max-h-[90vh] overflow-y-auto">
+            <h3 className="text-lg font-medium mb-4">Event RSVP</h3>
+            
+            {/* Event Details */}
+            <div className="mb-6 p-4 bg-gray-50 rounded-lg">
+              <h4 className="font-medium text-gray-900 mb-2">{selectedEventRequest.event_title}</h4>
+              {selectedEventRequest.event_description && (
+                <p className="text-sm text-gray-600 mb-2">{selectedEventRequest.event_description}</p>
+              )}
+              <div className="grid grid-cols-2 gap-4 text-sm">
+                <div>
+                  <span className="font-medium">Date:</span> {selectedEventRequest.requested_date}
+                </div>
+                <div>
+                  <span className="font-medium">Time:</span> {formatTime(selectedEventRequest.start_time)} - {formatTime(selectedEventRequest.end_time)}
+                </div>
+                {selectedEventRequest.event_location && (
+                  <div>
+                    <span className="font-medium">Location:</span> {selectedEventRequest.event_location}
+                  </div>
+                )}
+
+              </div>
+            </div>
+
+
+
+                        {/* Current Responses */}
+            {eventResponses.length > 0 && (
+              <div className="mb-6">
+                <h4 className="font-medium text-gray-900 mb-3">Current Responses</h4>
+                <div className="space-y-2">
+                  {eventResponses.map(response => (
+                    <div key={response.id} className="flex items-center justify-between p-2 bg-gray-50 rounded">
+                      <div>
+                        <span className="font-medium text-sm">{response.responder?.full_name || 'Unknown'}</span>
+                                               <span className={`ml-2 px-2 py-1 text-xs rounded-full ${
+                         response.response_type === 'going' ? 'bg-green-100 text-green-800' :
+                         response.response_type === 'maybe' ? 'bg-yellow-100 text-yellow-800' :
+                         'bg-red-100 text-red-800'
+                       }`}>
+                         {response.response_type === 'going' ? 'Going' :
+                          response.response_type === 'maybe' ? 'Maybe' : 'Not Going'}
+                       </span>
+                      </div>
+                      {response.response_notes && (
+                        <span className="text-xs text-gray-600">{response.response_notes}</span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Close Button */}
+            <div className="flex justify-end mt-6">
+              <button
+                onClick={() => setShowEventRSVPModal(false)}
+                className="px-4 py-2 bg-gray-500 text-white rounded-md hover:bg-gray-600"
+              >
+                Close
+              </button>
+            </div>
+ 
+            </div>
         </div>
       )}
 
