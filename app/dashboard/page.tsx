@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "../lib/supabaseClient";
+import Header from "../components/Header";
 import LogoutButton from "../components/LogoutButton";
 import type { User } from "@supabase/supabase-js";
 import { v4 as uuidv4 } from 'uuid';
@@ -36,6 +37,7 @@ interface ChildGroupMember {
   group_id: string;
   added_by: string;
   added_at: string;
+  active: boolean;
 }
 
 
@@ -53,6 +55,13 @@ export default function ClientDashboard() {
   const [allChildrenInGroups, setAllChildrenInGroups] = useState<Record<string, Child[]>>({});
   const [activeTab, setActiveTab] = useState<TabType>('profile');
   
+  // Profile state
+  const [editingProfile, setEditingProfile] = useState(false);
+  const [editFullName, setEditFullName] = useState("");
+  const [editEmail, setEditEmail] = useState("");
+  const [editPhone, setEditPhone] = useState("");
+  const [profileEditError, setProfileEditError] = useState("");
+
   // Children state
   const [editingChildId, setEditingChildId] = useState<string | null>(null);
   const [editChildName, setEditChildName] = useState("");
@@ -81,8 +90,6 @@ export default function ClientDashboard() {
   const [addingGroup, setAddingGroup] = useState(false);
   const [groupError, setGroupError] = useState("");
   const [groupManagementError, setGroupManagementError] = useState("");
-
-
 
   useEffect(() => {
     supabase.auth.getUser().then(async ({ data }) => {
@@ -162,7 +169,8 @@ export default function ClientDashboard() {
       const { data: membershipsData, error: membershipsError } = await supabase
         .from("child_group_members")
         .select("*")
-        .in("child_id", childIds);
+        .in("child_id", childIds)
+        .eq("active", true); // Only fetch active memberships
       
       if (membershipsError) {
         console.error('Error loading memberships:', membershipsError);
@@ -178,7 +186,8 @@ export default function ClientDashboard() {
       const { data: allMemberships } = await supabase
         .from("child_group_members")
         .select("*")
-        .in("group_id", groupIds);
+        .in("group_id", groupIds)
+        .eq("active", true); // Only fetch active memberships
       
       if (allMemberships && allMemberships.length > 0) {
         const allChildIds = Array.from(new Set(allMemberships.map(m => m.child_id)));
@@ -235,7 +244,7 @@ export default function ClientDashboard() {
   // Helper to check if a child is a member of a group
   function isChildInGroup(childId: string, groupId: string) {
     const membership = memberships.find(
-      (m) => m.child_id === childId && m.group_id === groupId
+      (m) => m.child_id === childId && m.group_id === groupId && m.active !== false
     );
     console.log(`Checking membership for child ${childId} in group ${groupId}:`, membership);
     return membership;
@@ -461,6 +470,13 @@ export default function ClientDashboard() {
       setInviteError("Email is required");
       return;
     }
+
+    // Check if the user is trying to invite themselves
+    if (profile?.email && inviteEmail.trim().toLowerCase() === profile.email.toLowerCase()) {
+      setInviteError("You cannot invite yourself to your own group");
+      return;
+    }
+
     const { data: existingProfile, error: profileError } = await supabase
       .from("profiles")
       .select("id, full_name, email")
@@ -564,75 +580,48 @@ export default function ClientDashboard() {
     );
 
     if (!membership) {
+      // Activate child in group
       try {
-        const { data, error } = await supabase
-          .from("child_group_members")
-          .insert([
-            { 
-              child_id: child.id, 
-              group_id: group.id, 
-              added_by: user!.id 
-            },
-          ])
-          .select();
+        const { data, error } = await supabase.rpc('activate_child_in_group', {
+          p_child_id: child.id,
+          p_group_id: group.id,
+          p_added_by: user!.id
+        });
         
         if (error) {
-          if (error.message.includes('added_by')) {
-            const { data: data2, error: error2 } = await supabase
-              .from("child_group_members")
-              .insert([
-                { 
-                  child_id: child.id, 
-                  group_id: group.id
-                },
-              ])
-              .select();
-            
-            if (error2) {
-              setGroupManagementError(error2.message);
-              return;
-            }
-            
-            if (data2 && data2.length > 0) {
-              setMemberships([...memberships, data2[0]]);
-              setAllChildrenInGroups(prev => ({
-                ...prev,
-                [group.id]: [...(prev[group.id] || []), child]
-              }));
-            }
-          } else {
-            setGroupManagementError(error.message);
-            return;
-          }
-        } else {
-          if (data && data.length > 0) {
-            setMemberships([...memberships, data[0]]);
-            setAllChildrenInGroups(prev => ({
-              ...prev,
-              [group.id]: [...(prev[group.id] || []), child]
-            }));
-          }
+          console.error('Error activating child in group:', error);
+          setGroupManagementError('Failed to add child to group');
+          return;
         }
+        
+        // Refresh memberships to get the updated data
+        await loadGroups(user!.id, children);
+        
       } catch (err) {
         console.error('Error adding child to group:', err);
         setGroupManagementError('Failed to add child to group');
       }
     } else {
-      const { error } = await supabase
-        .from("child_group_members")
-        .delete()
-        .eq("id", membership.id);
-      
-      if (error) {
-        setGroupManagementError(error.message);
-        return;
+      // Deactivate child in group
+      try {
+        const { data, error } = await supabase.rpc('deactivate_child_in_group', {
+          p_child_id: child.id,
+          p_group_id: group.id
+        });
+        
+        if (error) {
+          console.error('Error deactivating child in group:', error);
+          setGroupManagementError('Failed to remove child from group');
+          return;
+        }
+        
+        // Refresh memberships to get the updated data
+        await loadGroups(user!.id, children);
+        
+      } catch (err) {
+        console.error('Error removing child from group:', err);
+        setGroupManagementError('Failed to remove child from group');
       }
-      
-      setMemberships(memberships.filter((m) => m.id !== membership.id));
-      setAllChildrenInGroups(prev => ({
-        ...prev,
-        [group.id]: (prev[group.id] || []).filter(c => c.id !== child.id)
-      }));
     }
   }
 
@@ -643,43 +632,11 @@ export default function ClientDashboard() {
   }
 
   return (
-    <div className="p-6 max-w-6xl mx-auto">
-      <div className="flex justify-end mb-6">
-        <LogoutButton />
-      </div>
+    <div>
+      <Header currentPage="dashboard" />
       
-      {/* Navigation Buttons */}
-      <div className="flex flex-wrap gap-4 mb-8">
-        <button className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition font-medium">
-          Profile
-        </button>
-        <button 
-          onClick={() => router.push('/messages')}
-          className="px-6 py-3 bg-green-600 text-white rounded-lg hover:bg-green-700 transition font-medium"
-        >
-          Messages
-        </button>
-        <button 
-          onClick={() => router.push('/schedule')}
-          className="px-6 py-3 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition font-medium"
-        >
-          Schedule
-        </button>
-        <button 
-          onClick={() => router.push('/chats')}
-          className="px-6 py-3 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition font-medium"
-        >
-          Chats
-        </button>
-        <button 
-          onClick={() => router.push('/activities')}
-          className="px-6 py-3 bg-red-600 text-white rounded-lg hover:bg-red-700 transition font-medium"
-        >
-          Activities
-        </button>
-      </div>
-
-      {/* Tab Navigation */}
+      <div className="p-6 max-w-6xl mx-auto">
+        {/* Tab Navigation */}
       <div className="flex border-b border-gray-200 mb-6">
         <button
           onClick={() => setActiveTab('profile')}
@@ -1157,8 +1114,7 @@ export default function ClientDashboard() {
           </div>
         </div>
       )}
-
-
+      </div>
     </div>
   );
 } 

@@ -28,97 +28,169 @@ export default function SignupPage() {
     e.preventDefault();
     setLoading(true);
     setError("");
-    // Sign up user
-    const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
-      email,
-      password,
-    });
-    if (signUpError) {
-      setError(signUpError.message);
-      setLoading(false);
-      return;
-    }
-    // Insert profile for the new user
-    const userId = signUpData.user?.id;
-    if (!userId) {
-      setError("User creation failed.");
-      setLoading(false);
-      return;
-    }
-    const { error: insertError } = await supabase.from("profiles").insert([
-      {
-        id: userId,
-        full_name: fullName,
+
+    try {
+      // Sign up user with metadata
+      const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
         email,
-        phone,
-        role: "parent",
-      },
-    ]);
-    setLoading(false);
-    if (insertError) {
-      setError(insertError.message);
-    } else {
+        password,
+        options: {
+          data: {
+            full_name: fullName,
+            phone: phone,
+          }
+        }
+      });
+
+      if (signUpError) {
+        setError(signUpError.message);
+        setLoading(false);
+        return;
+      }
+
+      if (!signUpData.user?.id) {
+        setError("User creation failed.");
+        setLoading(false);
+        return;
+      }
+
+      console.log("User created with ID:", signUpData.user.id);
+      console.log("User metadata:", signUpData.user.user_metadata);
+
+      // The trigger will automatically create the profile
+      // We just need to wait a moment for it to complete
+      await new Promise(resolve => setTimeout(resolve, 2000));
+
+      // Verify the profile was created
+      const { data: profileData, error: profileError } = await supabase
+        .from("profiles")
+        .select("*")
+        .eq("id", signUpData.user.id)
+        .single();
+
+      if (profileError) {
+        console.error("Profile fetch error:", profileError);
+        setError("Profile creation failed. Please try again.");
+        setLoading(false);
+        return;
+      }
+
+      console.log("Profile created:", profileData);
+
+      // Update the profile with the user's data if needed
+      if (profileData.full_name !== fullName || profileData.phone !== phone) {
+        const { error: updateError } = await supabase
+          .from("profiles")
+          .update({
+            full_name: fullName,
+            phone: phone,
+          })
+          .eq("id", signUpData.user.id);
+
+        if (updateError) {
+          console.error("Profile update error:", updateError);
+          // Don't show error to user as profile was created by trigger
+        }
+      }
+
+      setLoading(false);
       router.replace("/dashboard");
+
+    } catch (error) {
+      console.error("Signup error:", error);
+      setError("An unexpected error occurred. Please try again.");
+      setLoading(false);
     }
   };
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-gray-50">
-      <form
-        onSubmit={handleSubmit}
-        className="bg-white p-8 rounded shadow-md w-full max-w-md"
-      >
-        <h2 className="text-2xl font-bold mb-6 text-center">Sign Up</h2>
-        <div className="mb-4">
-          <label className="block mb-1 font-medium">Full Name</label>
-          <input
-            type="text"
-            value={fullName}
-            onChange={(e: React.ChangeEvent<HTMLInputElement>) => setFullName(e.target.value)}
-            className="w-full px-3 py-2 border rounded"
-            required
-          />
+      <div className="w-full max-w-md space-y-8">
+        <div>
+          <h2 className="mt-6 text-center text-3xl font-bold tracking-tight text-gray-900">
+            Create your account
+          </h2>
         </div>
-        <div className="mb-4">
-          <label className="block mb-1 font-medium">Email</label>
-          <input
-            type="email"
-            value={email}
-            onChange={(e: React.ChangeEvent<HTMLInputElement>) => setEmail(e.target.value)}
-            className="w-full px-3 py-2 border rounded"
-            required
-          />
-        </div>
-        <div className="mb-4">
-          <label className="block mb-1 font-medium">Phone</label>
-          <input
-            type="tel"
-            value={phone}
-            onChange={(e: React.ChangeEvent<HTMLInputElement>) => setPhone(formatPhoneInput(e.target.value))}
-            className="w-full px-3 py-2 border rounded"
-            placeholder="(555) 123-4567"
-            required
-          />
-        </div>
-        <div className="mb-4">
-          <label className="block mb-1 font-medium">Password</label>
-          <input
-            type="password"
-            value={password}
-            onChange={(e: React.ChangeEvent<HTMLInputElement>) => setPassword(e.target.value)}
-            className="w-full px-3 py-2 border rounded"
-            required
-          />
-        </div>
-        {error && <div className="mb-4 text-red-600">{error}</div>}
-        <button
-          type="submit"
-          className="w-full py-2 px-4 bg-green-600 text-white rounded hover:bg-green-700 transition"
-          disabled={loading}
-        >
-          {loading ? "Creating..." : "Sign Up"}
-        </button>
-      </form>
+        <form className="mt-8 space-y-6" onSubmit={handleSubmit}>
+          <div className="space-y-4">
+            <div>
+              <label htmlFor="fullName" className="block text-sm font-medium text-gray-700">
+                Full Name
+              </label>
+              <input
+                id="fullName"
+                name="fullName"
+                type="text"
+                required
+                value={fullName}
+                onChange={(e) => setFullName(e.target.value)}
+                className="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-indigo-500"
+                placeholder="Enter your full name"
+              />
+            </div>
+            <div>
+              <label htmlFor="email" className="block text-sm font-medium text-gray-700">
+                Email address
+              </label>
+              <input
+                id="email"
+                name="email"
+                type="email"
+                autoComplete="email"
+                required
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                className="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-indigo-500"
+                placeholder="Enter your email"
+              />
+            </div>
+            <div>
+              <label htmlFor="phone" className="block text-sm font-medium text-gray-700">
+                Phone Number
+              </label>
+              <input
+                id="phone"
+                name="phone"
+                type="tel"
+                value={phone}
+                onChange={(e) => setPhone(formatPhoneInput(e.target.value))}
+                className="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-indigo-500"
+                placeholder="(555) 123-4567"
+              />
+            </div>
+            <div>
+              <label htmlFor="password" className="block text-sm font-medium text-gray-700">
+                Password
+              </label>
+              <input
+                id="password"
+                name="password"
+                type="password"
+                autoComplete="new-password"
+                required
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                className="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-indigo-500"
+                placeholder="Enter your password"
+              />
+            </div>
+          </div>
+
+          {error && (
+            <div className="text-red-600 text-sm text-center">{error}</div>
+          )}
+
+          <div>
+            <button
+              type="submit"
+              disabled={loading}
+              className="group relative flex w-full justify-center rounded-md border border-transparent bg-indigo-600 py-2 px-4 text-sm font-medium text-white hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 disabled:opacity-50"
+            >
+              {loading ? "Creating account..." : "Sign up"}
+            </button>
+          </div>
+        </form>
+      </div>
     </div>
   );
 } 

@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "../lib/supabaseClient";
+import Header from "../components/Header";
 import LogoutButton from "../components/LogoutButton";
 import type { User } from "@supabase/supabase-js";
 import { v4 as uuidv4 } from 'uuid';
@@ -118,6 +119,9 @@ export default function MessagesPage() {
       }
       console.log('Successfully updated group_invites');
 
+      // Trigger a custom event to notify Header component to refresh
+      window.dispatchEvent(new CustomEvent('invitationAccepted'));
+      
       // Debug: Let's check what's in group_members BEFORE updating the current user
       const { data: membersBeforeUpdate, error: beforeError } = await supabase
         .from('group_members')
@@ -293,8 +297,8 @@ export default function MessagesPage() {
 
       console.log('Accept invite process completed successfully');
       
-      // Navigate to groups page to show the new group
-      router.push('/groups');
+      // Navigate to dashboard to show the new group
+      router.push('/dashboard');
     } catch (error) {
       console.error('Error accepting invite:', error);
       alert('Error accepting invitation. Please try again.');
@@ -323,6 +327,9 @@ export default function MessagesPage() {
         return;
       }
       console.log('Successfully updated group_invites to rejected');
+
+      // Trigger a custom event to notify Header component to refresh
+      window.dispatchEvent(new CustomEvent('invitationAccepted'));
 
       // Update group_members status to 'rejected'
       const { error: memberError } = await supabase
@@ -476,21 +483,10 @@ export default function MessagesPage() {
   }
 
   return (
-    <div className="p-6 max-w-4xl mx-auto">
-      <div className="flex justify-between items-center mb-6">
-        <h1 className="text-3xl font-bold">Messages</h1>
-        <LogoutButton />
-      </div>
-      {/* Navigation Buttons */}
-      <div className="flex flex-wrap gap-4 mb-8">
-        <button onClick={() => router.push('/dashboard')} className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition font-medium">Profile</button>
-        <button className="px-6 py-3 bg-green-600 text-white rounded-lg hover:bg-green-700 transition font-medium">Messages</button>
-        <button onClick={() => router.push('/schedule')} className="px-6 py-3 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition font-medium">Schedule</button>
-
-        <button onClick={() => router.push('/chats')} className="px-6 py-3 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition font-medium">Chats</button>
-        <button onClick={() => router.push('/activities')} className="px-6 py-3 bg-red-600 text-white rounded-lg hover:bg-red-700 transition font-medium">Activities</button>
-      </div>
-      <div className="bg-white rounded-lg shadow-md p-6">
+    <div>
+      <Header currentPage="messages" />
+      <div className="p-6 max-w-4xl mx-auto">
+        <div className="bg-white rounded-lg shadow-md p-6">
         <h2 className="text-xl font-semibold mb-4">Inbox</h2>
         {messages.length === 0 ? (
           <div className="text-gray-500">No messages yet.</div>
@@ -565,6 +561,7 @@ export default function MessagesPage() {
             })}
           </div>
         )}
+        </div>
       </div>
     </div>
   );

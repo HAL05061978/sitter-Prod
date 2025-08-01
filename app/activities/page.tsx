@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "../lib/supabaseClient";
+import Header from "../components/Header";
 import LogoutButton from "../components/LogoutButton";
 import type { User } from "@supabase/supabase-js";
 
@@ -27,47 +28,13 @@ export default function ActivitiesPage() {
   }
 
   return (
-    <div className="p-6 max-w-4xl mx-auto">
-      <div className="flex justify-between items-center mb-6">
-        <h1 className="text-3xl font-bold">Activities</h1>
-        <LogoutButton />
-      </div>
-      
-      {/* Navigation Buttons */}
-      <div className="flex flex-wrap gap-4 mb-8">
-        <button 
-          onClick={() => router.push('/dashboard')}
-          className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition font-medium"
-        >
-          Profile
-        </button>
-        <button 
-          onClick={() => router.push('/messages')}
-          className="px-6 py-3 bg-green-600 text-white rounded-lg hover:bg-green-700 transition font-medium"
-        >
-          Messages
-        </button>
-        <button 
-          onClick={() => router.push('/schedule')}
-          className="px-6 py-3 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition font-medium"
-        >
-          Schedule
-        </button>
-
-        <button 
-          onClick={() => router.push('/chats')}
-          className="px-6 py-3 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition font-medium"
-        >
-          Chats
-        </button>
-        <button className="px-6 py-3 bg-red-600 text-white rounded-lg hover:bg-red-700 transition font-medium">
-          Activities
-        </button>
-      </div>
-
-      <div className="bg-white rounded-lg shadow-md p-6">
+    <div>
+      <Header currentPage="activities" />
+      <div className="p-6 max-w-4xl mx-auto">
+        <div className="bg-white rounded-lg shadow-md p-6">
         <h2 className="text-xl font-semibold mb-4">Activities</h2>
         <p className="text-gray-600">Activities functionality coming soon...</p>
+        </div>
       </div>
     </div>
   );

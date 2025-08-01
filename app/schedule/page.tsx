@@ -6,6 +6,7 @@
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { supabase } from '../lib/supabaseClient';
+import Header from '../components/Header';
 import LogoutButton from '../components/LogoutButton';
 
 import type { User as SupabaseUser } from '@supabase/supabase-js';
@@ -1466,45 +1467,9 @@ export default function SchedulePage() {
   ];
 
   return (
-    <div className="p-6 max-w-7xl mx-auto">
-      <div className="flex justify-end mb-6">
-        <LogoutButton />
-      </div>
-      
-      {/* Navigation Buttons */}
-      <div className="flex flex-wrap gap-4 mb-8">
-        <button 
-          onClick={() => router.push('/dashboard')}
-          className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition font-medium"
-        >
-          Profile
-        </button>
-        <button 
-          onClick={() => router.push('/messages')}
-          className="px-6 py-3 bg-green-600 text-white rounded-lg hover:bg-green-700 transition font-medium"
-        >
-          Messages
-        </button>
-        <button 
-          onClick={() => router.push('/schedule')}
-          className="px-6 py-3 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition font-medium"
-        >
-          Schedule
-        </button>
-
-        <button 
-          onClick={() => router.push('/chats')}
-          className="px-6 py-3 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition font-medium"
-        >
-          Chats
-        </button>
-        <button 
-          onClick={() => router.push('/activities')}
-          className="px-6 py-3 bg-red-600 text-white rounded-lg hover:bg-red-700 transition font-medium"
-        >
-          Activities
-        </button>
-      </div>
+    <div>
+      <Header currentPage="schedule" />
+      <div className="p-6 max-w-7xl mx-auto">
       
       <div className="mb-6">
         <h1 className="text-3xl font-bold text-gray-900">Schedule</h1>
@@ -2853,7 +2818,7 @@ export default function SchedulePage() {
           </div>
         </div>
       )}
-
+      </div>
     </div>
   );
 } 
