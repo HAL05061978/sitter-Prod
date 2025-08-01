@@ -199,11 +199,12 @@ export default function SchedulePage() {
   const [showCreateCareRequest, setShowCreateCareRequest] = useState(false);
   const [showCreateEventRequest, setShowCreateEventRequest] = useState(false);
   const [showResponseModal, setShowResponseModal] = useState(false);
+  const [showEditModal, setShowEditModal] = useState(false);
   const [showInviteModal, setShowInviteModal] = useState(false);
   const [showAcceptInvitationModal, setShowAcceptInvitationModal] = useState(false);
+  const [showDailyScheduleModal, setShowDailyScheduleModal] = useState(false);
   const [selectedRequest, setSelectedRequest] = useState<CareRequest | null>(null); // Updated type
   const [selectedInvitation, setSelectedInvitation] = useState<GroupInvitation | null>(null);
-  const [showDailyScheduleModal, setShowDailyScheduleModal] = useState(false);
   const [selectedDateForDailyView, setSelectedDateForDailyView] = useState<Date | null>(null);
 
   const [responseType, setResponseType] = useState<'accept' | 'decline'>('accept');
@@ -299,7 +300,8 @@ export default function SchedulePage() {
       const { data: childGroupMembers } = await supabase
         .from("child_group_members")
         .select("child_id")
-        .eq("group_id", group.id);
+        .eq("group_id", group.id)
+        .eq("active", true); // Only include active children
 
       if (childGroupMembers) {
         const childIds = childGroupMembers.map(cgm => cgm.child_id);
@@ -820,6 +822,10 @@ export default function SchedulePage() {
 
       // Refresh data
       await fetchRequestsAndResponses(user.id);
+      
+      // Dispatch custom event to update header count
+      window.dispatchEvent(new CustomEvent('careRequestUpdated'));
+      
       setShowCreateCareRequest(false);
       setShowCreateEventRequest(false);
       setRequestForm({
@@ -884,6 +890,10 @@ export default function SchedulePage() {
 
       // Refresh data
       await fetchRequestsAndResponses(user.id);
+      
+      // Dispatch custom event to update header count
+      window.dispatchEvent(new CustomEvent('careRequestUpdated'));
+      
       setShowResponseModal(false);
       setResponseForm({
         reciprocalDate: '',
@@ -922,6 +932,179 @@ export default function SchedulePage() {
     setSelectedRequest(request);
     setResponseType('decline');
     setShowResponseModal(true);
+  };
+
+  const handleEditRequest = async (request: CareRequest) => {
+    // Only allow creators to edit their own requests
+    if (request.requester_id !== user?.id) {
+      alert('You can only edit your own requests');
+      return;
+    }
+    
+    // Populate the form with existing request data
+    setRequestForm({
+      groupId: request.group_id,
+      childId: request.child_id,
+      requestedDate: request.requested_date,
+      startTime: request.start_time,
+      endTime: request.end_time,
+      notes: request.notes || '',
+      requestType: request.request_type,
+      eventTitle: request.event_title || '',
+      eventDescription: request.event_description || '',
+      eventLocation: request.event_location || '',
+      eventRSVPDeadline: request.event_rsvp_deadline || '',
+      eventEditDeadline: request.event_edit_deadline || '',
+      isRecurring: request.is_recurring || false,
+      recurrencePattern: request.recurrence_pattern || 'weekly',
+      recurrenceEndDate: request.recurrence_end_date || '',
+      openBlockSlots: request.open_block_slots || 1
+    });
+    
+    setSelectedRequest(request);
+    setShowEditModal(true);
+  };
+
+  const handleCancelRequest = async (request: CareRequest) => {
+    // Only allow creators to cancel their own requests
+    if (request.requester_id !== user?.id) {
+      alert('You can only cancel your own requests');
+      return;
+    }
+    
+    if (!confirm('Are you sure you want to cancel this request? This action cannot be undone.')) {
+      return;
+    }
+    
+    try {
+      console.log('Attempting to cancel request:', request.id);
+      
+      const { data, error } = await supabase
+        .from('care_requests')
+        .update({ status: 'cancelled' })
+        .eq('id', request.id)
+        .select();
+      
+      if (error) {
+        console.error('Database error cancelling request:', error);
+        alert('Error cancelling request: ' + error.message);
+        return;
+      }
+      
+      console.log('Request cancelled successfully:', data);
+      
+      // Refresh data
+      if (user) {
+        await fetchRequestsAndResponses(user.id);
+      }
+      
+      // Dispatch custom event to update header count
+      window.dispatchEvent(new CustomEvent('careRequestUpdated'));
+      
+      alert('Request cancelled successfully');
+    } catch (error) {
+      console.error('Error cancelling request:', error);
+      alert('Error cancelling request: ' + (error as any).message);
+    }
+  };
+
+  const updateCareRequest = async () => {
+    if (!user || !selectedRequest || !requestForm.groupId || !requestForm.childId || !requestForm.requestedDate || !requestForm.startTime || !requestForm.endTime) {
+      alert('Please fill in all required fields');
+      return;
+    }
+
+    try {
+      // Convert local date to UTC for database storage
+      const localDate = new Date(requestForm.requestedDate + 'T00:00:00');
+      const utcDate = localDate.toISOString().split('T')[0];
+
+      const updateData: any = {
+        group_id: requestForm.groupId,
+        child_id: requestForm.childId,
+        requested_date: utcDate,
+        start_time: requestForm.startTime,
+        end_time: requestForm.endTime,
+        notes: requestForm.notes,
+        request_type: requestForm.requestType
+      };
+
+      // Add request type specific fields
+      if (requestForm.requestType === 'event') {
+        updateData.event_title = requestForm.eventTitle;
+        updateData.event_description = requestForm.eventDescription;
+        if (requestForm.eventLocation) {
+          updateData.event_location = requestForm.eventLocation;
+        }
+        if (requestForm.eventRSVPDeadline) {
+          updateData.event_rsvp_deadline = requestForm.eventRSVPDeadline;
+        }
+        if (requestForm.eventEditDeadline) {
+          updateData.event_edit_deadline = requestForm.eventEditDeadline;
+        }
+        
+        // Add recurring event fields if this is a recurring event
+        if (requestForm.isRecurring) {
+          updateData.is_recurring = true;
+          updateData.recurrence_pattern = requestForm.recurrencePattern;
+          if (requestForm.recurrenceEndDate) {
+            updateData.recurrence_end_date = requestForm.recurrenceEndDate;
+          }
+        }
+      }
+
+      if (requestForm.requestType === 'open_block') {
+        updateData.open_block_slots = requestForm.openBlockSlots;
+      }
+
+      if (requestForm.requestType === 'reciprocal') {
+        updateData.is_reciprocal = true;
+      }
+
+      const { error } = await supabase
+        .from("care_requests")
+        .update(updateData)
+        .eq('id', selectedRequest.id);
+
+      if (error) {
+        console.error('Error updating care request:', error);
+        alert('Error updating request: ' + error.message);
+        return;
+      }
+
+      // Refresh data
+      await fetchRequestsAndResponses(user.id);
+      
+      // Dispatch custom event to update header count
+      window.dispatchEvent(new CustomEvent('careRequestUpdated'));
+      
+      // Close modal and reset form
+      setShowEditModal(false);
+      setSelectedRequest(null);
+      setRequestForm({
+        groupId: '',
+        childId: '',
+        requestedDate: '',
+        startTime: '',
+        endTime: '',
+        notes: '',
+        requestType: 'simple',
+        eventTitle: '',
+        eventDescription: '',
+        eventLocation: '',
+        eventRSVPDeadline: '',
+        eventEditDeadline: '',
+        isRecurring: false,
+        recurrencePattern: 'weekly',
+        recurrenceEndDate: '',
+        openBlockSlots: 1
+      });
+
+      alert('Request updated successfully');
+    } catch (error) {
+      console.error('Error updating care request:', error);
+      alert('Error updating request: ' + (error as any).message);
+    }
   };
 
   const handleEventRSVP = async (request: CareRequest, responseType: 'going' | 'maybe' | 'not_going') => {
@@ -2176,7 +2359,7 @@ export default function SchedulePage() {
                  </button>
                </div>
          <div className="space-y-4">
-                 {requests.filter(request => request.request_type !== 'event').map(request => (
+                 {requests.filter(request => request.request_type !== 'event' && request.status !== 'cancelled').map(request => (
              <div key={request.id} className="bg-white rounded-lg border p-4">
                <div className="flex justify-between items-start">
                  <div className="flex-1">
@@ -2228,8 +2411,9 @@ export default function SchedulePage() {
                    )}
                  </div>
                  <div className="flex space-x-2 ml-4">
-                   {/* Show different buttons based on request type */}
-                   {request.requester_id !== user?.id && (
+                   {/* Show different buttons based on request type and user role */}
+                   {request.requester_id !== user?.id ? (
+                     // Non-creators can accept/reject requests
                      <>
                        {request.request_type === 'event' ? (
                          <>
@@ -2280,23 +2464,39 @@ export default function SchedulePage() {
                        ) : (
                          <>
                            {!responses.some(r => r.request_id === request.id) && (
-                     <>
-                       <button
-                         onClick={() => handleAgreeToRequest(request)}
-                         className="px-3 py-1 text-sm bg-green-600 text-white rounded hover:bg-green-700"
-                       >
-                         Agree
-                       </button>
-                       <button
-                         onClick={() => handleRejectRequest(request)}
-                         className="px-3 py-1 text-sm bg-red-600 text-white rounded hover:bg-red-700"
-                       >
-                         Reject
-                       </button>
-                     </>
-                   )}
+                             <>
+                               <button
+                                 onClick={() => handleAgreeToRequest(request)}
+                                 className="px-3 py-1 text-sm bg-green-600 text-white rounded hover:bg-green-700"
+                               >
+                                 Agree
+                               </button>
+                               <button
+                                 onClick={() => handleRejectRequest(request)}
+                                 className="px-3 py-1 text-sm bg-red-600 text-white rounded hover:bg-red-700"
+                               >
+                                 Reject
+                               </button>
+                             </>
+                           )}
                          </>
                        )}
+                     </>
+                   ) : (
+                     // Creators can edit/cancel their own requests
+                     <>
+                       <button
+                         onClick={() => handleEditRequest(request)}
+                         className="px-3 py-1 text-sm bg-blue-600 text-white rounded hover:bg-blue-700"
+                       >
+                         Edit
+                       </button>
+                       <button
+                         onClick={() => handleCancelRequest(request)}
+                         className="px-3 py-1 text-sm bg-red-600 text-white rounded hover:bg-red-700"
+                       >
+                         Cancel
+                       </button>
                      </>
                    )}
                  </div>
@@ -2338,7 +2538,7 @@ export default function SchedulePage() {
            </button>
                  </div>
          <div className="space-y-4">
-           {requests.filter(request => request.request_type === 'event').map(request => (
+           {requests.filter(request => request.request_type === 'event' && request.status !== 'cancelled').map(request => (
              <div key={request.id} className="bg-white rounded-lg border p-4">
                <div className="flex justify-between items-start">
                  <div className="flex-1">
@@ -2369,49 +2569,70 @@ export default function SchedulePage() {
                    )}
                  </div>
                  <div className="flex space-x-2 ml-4">
-                   {(() => {
-                     const userResponse = eventResponses.find(r => r.event_request_id === request.id && r.responder_id === user?.id);
-                     return (
-                       <>
-                         <button
-                           onClick={() => handleEventRSVP(request, 'going')}
-                           className={`px-3 py-1 text-sm rounded ${
-                             userResponse?.response_type === 'going' 
-                               ? 'bg-green-600 text-white' 
-                               : userResponse?.response_type === 'maybe' || userResponse?.response_type === 'not_going'
-                               ? 'bg-gray-300 text-gray-700 hover:bg-green-600 hover:text-white'
-                               : 'bg-green-600 text-white hover:bg-green-700'
-                           }`}
-                         >
-                           Going
-                         </button>
-                         <button
-                           onClick={() => handleEventRSVP(request, 'maybe')}
-                           className={`px-3 py-1 text-sm rounded ${
-                             userResponse?.response_type === 'maybe' 
-                               ? 'bg-yellow-600 text-white' 
-                               : userResponse?.response_type === 'going' || userResponse?.response_type === 'not_going'
-                               ? 'bg-gray-300 text-gray-700 hover:bg-yellow-600 hover:text-white'
-                               : 'bg-yellow-600 text-white hover:bg-yellow-700'
-                           }`}
-                         >
-                           Maybe
-                         </button>
-                         <button
-                           onClick={() => handleEventRSVP(request, 'not_going')}
-                           className={`px-3 py-1 text-sm rounded ${
-                             userResponse?.response_type === 'not_going' 
-                               ? 'bg-red-600 text-white' 
-                               : userResponse?.response_type === 'going' || userResponse?.response_type === 'maybe'
-                               ? 'bg-gray-300 text-gray-700 hover:bg-red-600 hover:text-white'
-                               : 'bg-red-600 text-white hover:bg-red-700'
-                           }`}
-                         >
-                           Not Going
-                         </button>
-                       </>
-                     );
-                   })()}
+                   {request.requester_id !== user?.id ? (
+                     // Non-creators can RSVP to events
+                     <>
+                       {(() => {
+                         const userResponse = eventResponses.find(r => r.event_request_id === request.id && r.responder_id === user?.id);
+                         return (
+                           <>
+                             <button
+                               onClick={() => handleEventRSVP(request, 'going')}
+                               className={`px-3 py-1 text-sm rounded ${
+                                 userResponse?.response_type === 'going' 
+                                   ? 'bg-green-600 text-white' 
+                                   : userResponse?.response_type === 'maybe' || userResponse?.response_type === 'not_going'
+                                   ? 'bg-gray-300 text-gray-700 hover:bg-green-600 hover:text-white'
+                                   : 'bg-green-600 text-white hover:bg-green-700'
+                               }`}
+                             >
+                               Going
+                             </button>
+                             <button
+                               onClick={() => handleEventRSVP(request, 'maybe')}
+                               className={`px-3 py-1 text-sm rounded ${
+                                 userResponse?.response_type === 'maybe' 
+                                   ? 'bg-yellow-600 text-white' 
+                                   : userResponse?.response_type === 'going' || userResponse?.response_type === 'not_going'
+                                   ? 'bg-gray-300 text-gray-700 hover:bg-yellow-600 hover:text-white'
+                                   : 'bg-yellow-600 text-white hover:bg-yellow-700'
+                               }`}
+                             >
+                               Maybe
+                             </button>
+                             <button
+                               onClick={() => handleEventRSVP(request, 'not_going')}
+                               className={`px-3 py-1 text-sm rounded ${
+                                 userResponse?.response_type === 'not_going' 
+                                   ? 'bg-red-600 text-white' 
+                                   : userResponse?.response_type === 'going' || userResponse?.response_type === 'maybe'
+                                   ? 'bg-gray-300 text-gray-700 hover:bg-red-600 hover:text-white'
+                                   : 'bg-red-600 text-white hover:bg-red-700'
+                               }`}
+                             >
+                               Not Going
+                             </button>
+                           </>
+                         );
+                       })()}
+                     </>
+                   ) : (
+                     // Creators can edit/cancel their own events
+                     <>
+                       <button
+                         onClick={() => handleEditRequest(request)}
+                         className="px-3 py-1 text-sm bg-blue-600 text-white rounded hover:bg-blue-700"
+                       >
+                         Edit
+                       </button>
+                       <button
+                         onClick={() => handleCancelRequest(request)}
+                         className="px-3 py-1 text-sm bg-red-600 text-white rounded hover:bg-red-700"
+                       >
+                         Cancel
+                       </button>
+                     </>
+                   )}
                  </div>
                </div>
              </div>
@@ -2815,6 +3036,194 @@ export default function SchedulePage() {
               </button>
             </div>
  
+          </div>
+        </div>
+      )}
+
+      {/* Edit Care Request Modal */}
+      {showEditModal && selectedRequest && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg p-6 w-full max-w-2xl max-h-[90vh] overflow-y-auto">
+            <h3 className="text-lg font-medium mb-4">Edit Care Request</h3>
+            
+            <div className="space-y-4">
+              {/* Group Selection */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700">Group</label>
+                <select
+                  value={requestForm.groupId}
+                  onChange={(e: any) => setRequestForm(prev => ({ ...prev, groupId: e.target.value }))}
+                  className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2"
+                >
+                  <option value="">Select a group</option>
+                  {getGroupsByType('care').map(group => (
+                    <option key={group.id} value={group.id}>{group.name}</option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Child Selection */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700">Child</label>
+                <select
+                  value={requestForm.childId}
+                  onChange={(e: any) => setRequestForm(prev => ({ ...prev, childId: e.target.value }))}
+                  className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2"
+                >
+                  <option value="">Select a child</option>
+                  {requestForm.groupId && getActiveChildrenForGroup(requestForm.groupId).map(child => (
+                    <option key={child.id} value={child.id}>{child.full_name}</option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Request Type */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700">Request Type</label>
+                <select
+                  value={requestForm.requestType}
+                  onChange={(e: any) => setRequestForm(prev => ({ 
+                    ...prev, 
+                    requestType: e.target.value as 'simple' | 'reciprocal' | 'event' | 'open_block' 
+                  }))}
+                  className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2"
+                >
+                  <option value="simple">Simple Care Request</option>
+                  <option value="reciprocal">Reciprocal Care Request</option>
+                  <option value="event">Event</option>
+                  <option value="open_block">Open Block</option>
+                </select>
+              </div>
+
+              {/* Date and Time */}
+              <div className="grid grid-cols-3 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700">Date</label>
+                  <input
+                    type="date"
+                    value={requestForm.requestedDate}
+                    onChange={(e: any) => setRequestForm(prev => ({ ...prev, requestedDate: e.target.value }))}
+                    className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700">Start Time</label>
+                  <input
+                    type="time"
+                    value={requestForm.startTime}
+                    onChange={(e: any) => setRequestForm(prev => ({ ...prev, startTime: e.target.value }))}
+                    className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700">End Time</label>
+                  <input
+                    type="time"
+                    value={requestForm.endTime}
+                    onChange={(e: any) => setRequestForm(prev => ({ ...prev, endTime: e.target.value }))}
+                    className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2"
+                  />
+                </div>
+              </div>
+
+              {/* Event-specific fields */}
+              {requestForm.requestType === 'event' && (
+                <>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700">Event Title</label>
+                    <input
+                      type="text"
+                      value={requestForm.eventTitle}
+                      onChange={(e: any) => setRequestForm(prev => ({ ...prev, eventTitle: e.target.value }))}
+                      className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2"
+                      placeholder="Enter event title"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700">Event Description</label>
+                    <textarea
+                      value={requestForm.eventDescription}
+                      onChange={(e: any) => setRequestForm(prev => ({ ...prev, eventDescription: e.target.value }))}
+                      className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2"
+                      rows={3}
+                      placeholder="Enter event description"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700">Event Location</label>
+                    <input
+                      type="text"
+                      value={requestForm.eventLocation}
+                      onChange={(e: any) => setRequestForm(prev => ({ ...prev, eventLocation: e.target.value }))}
+                      className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2"
+                      placeholder="e.g., Central Park, Community Center"
+                    />
+                  </div>
+                </>
+              )}
+
+              {/* Open Block fields */}
+              {requestForm.requestType === 'open_block' && (
+                <div>
+                  <label className="block text-sm font-medium text-gray-700">Number of Slots</label>
+                  <input
+                    type="number"
+                    min="1"
+                    value={requestForm.openBlockSlots}
+                    onChange={(e: any) => setRequestForm(prev => ({ ...prev, openBlockSlots: parseInt(e.target.value) }))}
+                    className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2"
+                  />
+                </div>
+              )}
+
+              {/* Notes */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700">Notes</label>
+                <textarea
+                  value={requestForm.notes}
+                  onChange={(e: any) => setRequestForm(prev => ({ ...prev, notes: e.target.value }))}
+                  className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2"
+                  rows={3}
+                  placeholder="Additional notes..."
+                />
+              </div>
+            </div>
+
+            <div className="mt-6 flex space-x-3">
+              <button
+                onClick={updateCareRequest}
+                className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700"
+              >
+                Update Request
+              </button>
+              <button
+                onClick={() => {
+                  setShowEditModal(false);
+                  setSelectedRequest(null);
+                  setRequestForm({
+                    groupId: '',
+                    childId: '',
+                    requestedDate: '',
+                    startTime: '',
+                    endTime: '',
+                    notes: '',
+                    requestType: 'simple',
+                    eventTitle: '',
+                    eventDescription: '',
+                    eventLocation: '',
+                    eventRSVPDeadline: '',
+                    eventEditDeadline: '',
+                    isRecurring: false,
+                    recurrencePattern: 'weekly',
+                    recurrenceEndDate: '',
+                    openBlockSlots: 1
+                  });
+                }}
+                className="flex-1 px-4 py-2 bg-gray-300 text-gray-700 rounded-md hover:bg-gray-400"
+              >
+                Cancel
+              </button>
+            </div>
           </div>
         </div>
       )}

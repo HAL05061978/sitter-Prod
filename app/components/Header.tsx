@@ -72,7 +72,8 @@ export default function Header({ currentPage = "dashboard" }: HeaderProps) {
         .from("care_requests")
         .select("id")
         .in("group_id", groupIds)
-        .neq("requester_id", userId); // Exclude requests created by current user
+        .neq("requester_id", userId) // Exclude requests created by current user
+        .neq("status", "cancelled"); // Exclude cancelled requests
 
       if (careRequests && careRequests.length > 0) {
         const requestIds = careRequests.map(r => r.id);
@@ -172,12 +173,20 @@ export default function Header({ currentPage = "dashboard" }: HeaderProps) {
       }
     };
 
+    const handleCareRequestUpdated = () => {
+      if (user) {
+        fetchPendingScheduleItems(user.id);
+      }
+    };
+
     window.addEventListener('invitationAccepted', handleInvitationAccepted);
     window.addEventListener('messagesViewed', handleMessagesViewed);
+    window.addEventListener('careRequestUpdated', handleCareRequestUpdated);
 
     return () => {
       window.removeEventListener('invitationAccepted', handleInvitationAccepted);
       window.removeEventListener('messagesViewed', handleMessagesViewed);
+      window.removeEventListener('careRequestUpdated', handleCareRequestUpdated);
     };
   }, [user]);
 
