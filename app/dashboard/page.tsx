@@ -27,6 +27,7 @@ interface Group {
   description: string | null;
   created_by: string;
   created_at: string;
+  group_type: 'care' | 'event';
 }
 
 interface ChildGroupMember {
@@ -71,10 +72,12 @@ export default function ClientDashboard() {
   const [inviteError, setInviteError] = useState("");
   const [editGroupName, setEditGroupName] = useState("");
   const [editGroupDescription, setEditGroupDescription] = useState("");
+  const [editGroupType, setEditGroupType] = useState<'care' | 'event'>('care');
   const [groupEditError, setGroupEditError] = useState("");
   const [showAddGroup, setShowAddGroup] = useState(false);
   const [groupName, setGroupName] = useState("");
   const [groupDescription, setGroupDescription] = useState("");
+  const [groupType, setGroupType] = useState<'care' | 'event'>('care');
   const [addingGroup, setAddingGroup] = useState(false);
   const [groupError, setGroupError] = useState("");
   const [groupManagementError, setGroupManagementError] = useState("");
@@ -359,6 +362,7 @@ export default function ClientDashboard() {
           name: groupName.trim(),
           description: groupDescription.trim() || null,
           created_by: user.id,
+          group_type: groupType,
         },
       ])
       .select();
@@ -391,6 +395,7 @@ export default function ClientDashboard() {
     await loadGroups(user.id, children);
     setGroupName("");
     setGroupDescription("");
+    setGroupType('care');
     setShowAddGroup(false);
   };
 
@@ -398,6 +403,7 @@ export default function ClientDashboard() {
     setEditingGroupId(group.id);
     setEditGroupName(group.name);
     setEditGroupDescription(group.description || "");
+    setEditGroupType(group.group_type);
     setGroupEditError("");
   }
 
@@ -409,7 +415,11 @@ export default function ClientDashboard() {
     }
     const { error } = await supabase
       .from("groups")
-      .update({ name: editGroupName.trim(), description: editGroupDescription.trim() })
+      .update({ 
+        name: editGroupName.trim(), 
+        description: editGroupDescription.trim(),
+        group_type: editGroupType
+      })
       .eq("id", group.id)
       .eq("created_by", user?.id)
       .select();
@@ -420,7 +430,7 @@ export default function ClientDashboard() {
     setGroups((prev) =>
       prev.map((g) =>
         g.id === group.id
-          ? { ...g, name: editGroupName.trim(), description: editGroupDescription.trim() }
+          ? { ...g, name: editGroupName.trim(), description: editGroupDescription.trim(), group_type: editGroupType }
           : g
       )
     );
@@ -863,6 +873,17 @@ export default function ClientDashboard() {
                 <h3 className="text-lg font-medium mb-4">Create New Group</h3>
                 <div className="space-y-4 mb-4">
                   <div>
+                    <label className="block text-sm font-medium mb-1">Group Type</label>
+                    <select
+                      value={groupType}
+                      onChange={(e) => setGroupType(e.target.value as 'care' | 'event')}
+                      className="w-full px-3 py-2 border rounded focus:outline-none focus:ring-2 focus:ring-purple-500"
+                    >
+                      <option value="care">Care Group (Network members only)</option>
+                      <option value="event">Event Group (Can include external attendees)</option>
+                    </select>
+                  </div>
+                  <div>
                     <label className="block text-sm font-medium mb-1">Group Name</label>
                     <input
                       type="text"
@@ -907,6 +928,14 @@ export default function ClientDashboard() {
                   <div key={group.id} className="border rounded p-4 flex flex-col gap-2 bg-gray-50">
                     {editingGroupId === group.id ? (
                       <>
+                        <select
+                          value={editGroupType}
+                          onChange={(e) => setEditGroupType(e.target.value as 'care' | 'event')}
+                          className="px-3 py-2 border rounded mb-2"
+                        >
+                          <option value="care">Care Group (Network members only)</option>
+                          <option value="event">Event Group (Can include external attendees)</option>
+                        </select>
                         <input
                           type="text"
                           value={editGroupName}
@@ -942,6 +971,13 @@ export default function ClientDashboard() {
                       <>
                         <div className="flex items-center gap-2">
                           <span className="font-medium text-lg">{group.name}</span>
+                          <span className={`px-2 py-1 text-xs rounded ${
+                            group.group_type === 'care' 
+                              ? 'bg-blue-100 text-blue-800' 
+                              : 'bg-purple-100 text-purple-800'
+                          }`}>
+                            {group.group_type === 'care' ? 'Care Group' : 'Event Group'}
+                          </span>
                           <button
                             onClick={() => handleEditGroup(group)}
                             className="px-2 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700 transition"

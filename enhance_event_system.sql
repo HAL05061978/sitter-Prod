@@ -410,3 +410,15 @@ COMMENT ON FUNCTION can_edit_event IS 'Checks if a user has permission to edit a
 COMMENT ON FUNCTION create_recurring_events IS 'Creates recurring events based on pattern and end date';
 COMMENT ON FUNCTION reset_recurring_event_responses IS 'Resets responses for passed recurring events';
 COMMENT ON FUNCTION create_event_blocks IS 'Creates scheduled care blocks for all group members for an event (bypasses RLS)'; 
+
+-- Add group types to support different requirements for care vs events
+ALTER TABLE public.groups ADD COLUMN group_type TEXT NOT NULL DEFAULT 'care' CHECK (group_type IN ('care', 'event'));
+
+-- Add index for group_type
+CREATE INDEX idx_groups_group_type ON public.groups(group_type);
+
+-- Update existing groups to be 'care' type (default)
+UPDATE public.groups SET group_type = 'care' WHERE group_type IS NULL;
+
+-- Add comment for clarity
+COMMENT ON COLUMN public.groups.group_type IS 'Type of group: care (limited to network members) or event (can include external attendees)'; 

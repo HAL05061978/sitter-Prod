@@ -29,6 +29,7 @@ interface Group {
   name: string;
   description: string | null;
   created_by: string;
+  group_type: 'care' | 'event';
 }
 
 // Updated interface for new scheduled_care table
@@ -194,6 +195,8 @@ export default function SchedulePage() {
 
   // State for modals
   const [showCreateRequest, setShowCreateRequest] = useState(false);
+  const [showCreateCareRequest, setShowCreateCareRequest] = useState(false);
+  const [showCreateEventRequest, setShowCreateEventRequest] = useState(false);
   const [showResponseModal, setShowResponseModal] = useState(false);
   const [showInviteModal, setShowInviteModal] = useState(false);
   const [showAcceptInvitationModal, setShowAcceptInvitationModal] = useState(false);
@@ -480,13 +483,40 @@ export default function SchedulePage() {
       }
     }
 
+    // Also fetch event blocks for all group members (since events create blocks for everyone)
+    const { data: eventBlocks, error: eventError } = await supabase
+      .from("scheduled_care")
+      .select(`
+        *,
+        children:child_id (
+          id,
+          full_name,
+          parent_id
+        )
+      `)
+      .gte("care_date", formatDateForDB(startDate))
+      .lte("care_date", formatDateForDB(endDate))
+      .in("group_id", groupIds)
+      .eq("status", "confirmed")
+      .eq("care_type", "event");
+
+    if (eventError) {
+      console.error('Error fetching event blocks:', eventError);
+    }
+
     // Combine and deduplicate the results
-    const allBlocks = [...(userBlocks || []), ...childCareNeededBlocks];
+    const allBlocks = [...(userBlocks || []), ...childCareNeededBlocks, ...(eventBlocks || [])];
     const uniqueBlocks = allBlocks.filter((block, index, self) => 
       index === self.findIndex(b => b.id === block.id)
     );
 
-
+    console.log('Fetched scheduled care blocks:', {
+      userBlocks: userBlocks?.length || 0,
+      childCareNeededBlocks: childCareNeededBlocks.length,
+      eventBlocks: eventBlocks?.length || 0,
+      totalUnique: uniqueBlocks.length,
+      blocks: uniqueBlocks
+    });
     setScheduledCare(uniqueBlocks); // Updated variable name
   };
 
@@ -640,7 +670,18 @@ export default function SchedulePage() {
     );
 
     if (eventRequest) {
-      setSelectedEventRequest(eventRequest);
+      // Add child data from the block to the event request for display
+      const eventRequestWithChild = {
+        ...eventRequest,
+        children: block.children
+      };
+      console.log('Event block clicked:', {
+        block,
+        eventRequest,
+        eventRequestWithChild,
+        childName: getChildName(eventRequest.child_id, eventRequestWithChild)
+      });
+      setSelectedEventRequest(eventRequestWithChild);
       await fetchEventResponses(eventRequest.id);
       setShowEventRSVPModal(true);
     }
@@ -668,6 +709,10 @@ export default function SchedulePage() {
     return activeChildrenPerGroup[groupId] || [];
   };
 
+  const getGroupsByType = (type: 'care' | 'event') => {
+    return groups.filter(group => group.group_type === type);
+  };
+
   // Updated function names and types
   const createCareRequest = async () => {
     if (!user || !requestForm.groupId || !requestForm.childId || !requestForm.requestedDate || !requestForm.startTime || !requestForm.endTime) {
@@ -675,8 +720,12 @@ export default function SchedulePage() {
       return;
     }
 
+    // Determine request type based on which modal is open
+    const isEventRequest = showCreateEventRequest;
+    const requestType = isEventRequest ? 'event' : requestForm.requestType;
+
     // Validate request type specific fields
-    if (requestForm.requestType === 'event' && (!requestForm.eventTitle || !requestForm.eventDescription)) {
+    if (requestType === 'event' && (!requestForm.eventTitle || !requestForm.eventDescription)) {
       alert('Please fill in event title and description for event requests');
       return;
     }
@@ -699,12 +748,12 @@ export default function SchedulePage() {
         start_time: requestForm.startTime,
         end_time: requestForm.endTime,
         notes: requestForm.notes,
-        request_type: requestForm.requestType,
+        request_type: requestType,
         status: 'pending'
       };
 
       // Add request type specific fields
-      if (requestForm.requestType === 'event') {
+      if (requestType === 'event') {
         requestData.event_title = requestForm.eventTitle;
         requestData.event_description = requestForm.eventDescription;
         // Add additional event fields if they exist in the form
@@ -746,7 +795,7 @@ export default function SchedulePage() {
       }
 
       // For events, create scheduled care blocks for all group members
-      if (requestForm.requestType === 'event' && newRequest) {
+      if (requestType === 'event' && newRequest) {
         try {
           // Use the database function to create event blocks (bypasses RLS)
           const { error: blocksError } = await supabase
@@ -770,7 +819,8 @@ export default function SchedulePage() {
 
       // Refresh data
       await fetchRequestsAndResponses(user.id);
-      setShowCreateRequest(false);
+      setShowCreateCareRequest(false);
+      setShowCreateEventRequest(false);
       setRequestForm({
         groupId: '',
         childId: '',
@@ -1279,7 +1329,8 @@ export default function SchedulePage() {
 
   const getGroupName = (groupId: string) => {
     const group = groups.find(g => g.id === groupId);
-    return group?.name || 'Unknown Group';
+    if (!group) return 'Unknown Group';
+    return `${group.name} (${group.group_type === 'care' ? 'Care' : 'Event'} Group)`;
   };
 
   const getInitiatorName = (initiatorId: string) => {
@@ -1651,20 +1702,23 @@ export default function SchedulePage() {
       </div>
 
       {/* Action Buttons */}
-      <div className="mt-6 flex space-x-4">
-        <button
-          onClick={() => setShowCreateRequest(true)}
-          className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700"
-        >
-          Create Care Request
-        </button>
-      </div>
 
-             {/* Create Request Modal */}
-       {showCreateRequest && (
+
+             {/* Create Care Request Modal */}
+       {showCreateCareRequest && (
          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
            <div className="bg-white rounded-lg p-6 w-full max-w-md max-h-[90vh] overflow-y-auto">
-             <h3 className="text-lg font-medium mb-4">Create Care Request</h3>
+             <div className="flex justify-between items-center mb-4">
+              <h3 className="text-lg font-medium">Create Care Request</h3>
+        <button
+                onClick={() => setShowCreateCareRequest(false)}
+                className="text-gray-400 hover:text-gray-600"
+        >
+                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+        </button>
+      </div>
              <div className="space-y-4">
                <div>
                  <label className="block text-sm font-medium text-gray-700">Request Type</label>
@@ -1672,13 +1726,12 @@ export default function SchedulePage() {
                     value={requestForm.requestType}
                     onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setRequestForm(prev => ({ 
                       ...prev, 
-                      requestType: e.target.value as 'simple' | 'reciprocal' | 'event' | 'open_block' 
+                     requestType: e.target.value as 'simple' | 'reciprocal' | 'open_block' 
                     }))}
                     className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2"
                   >
                    <option value="simple">Simple Request</option>
                    <option value="reciprocal">Reciprocal Request</option>
-                   <option value="event">Event Request</option>
                    <option value="open_block">Open Block Request</option>
                  </select>
                  <p className="text-xs text-gray-500 mt-1">
@@ -1697,10 +1750,13 @@ export default function SchedulePage() {
                    className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2"
                  >
                    <option value="">Select a group</option>
-                   {groups.map(group => (
-                     <option key={group.id} value={group.id}>{group.name}</option>
+                   {getGroupsByType('care').map(group => (
+                     <option key={group.id} value={group.id}>{group.name} (Care Group)</option>
                    ))}
                  </select>
+                 {getGroupsByType('care').length === 0 && (
+                   <p className="text-xs text-red-500 mt-1">No care groups available. Create a care group first.</p>
+                 )}
                </div>
                
                <div>
@@ -1819,8 +1875,8 @@ export default function SchedulePage() {
                            onChange={(e: any) => setRequestForm(prev => ({ ...prev, recurrenceEndDate: e.target.value }))}
                            className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2"
                            min={requestForm.requestedDate}
-                         />
-                       </div>
+                     />
+                   </div>
                      </>
                    )}
                  </>
@@ -1861,7 +1917,188 @@ export default function SchedulePage() {
                  Create Request
                </button>
                <button
-                 onClick={() => setShowCreateRequest(false)}
+                 onClick={() => setShowCreateCareRequest(false)}
+                 className="flex-1 px-4 py-2 bg-gray-300 text-gray-700 rounded-md hover:bg-gray-400"
+               >
+                 Cancel
+               </button>
+             </div>
+           </div>
+         </div>
+       )}
+
+      {/* Create Event Request Modal */}
+      {showCreateEventRequest && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg p-6 w-full max-w-md max-h-[90vh] overflow-y-auto">
+            <div className="flex justify-between items-center mb-4">
+              <h3 className="text-lg font-medium">Create Event</h3>
+              <button
+                onClick={() => setShowCreateEventRequest(false)}
+                className="text-gray-400 hover:text-gray-600"
+              >
+                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700">Group</label>
+                <select
+                  value={requestForm.groupId}
+                  onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setRequestForm(prev => ({ ...prev, groupId: e.target.value }))}
+                  className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2"
+                >
+                  <option value="">Select a group</option>
+                  {getGroupsByType('event').map(group => (
+                    <option key={group.id} value={group.id}>{group.name} (Event Group)</option>
+                  ))}
+                </select>
+                {getGroupsByType('event').length === 0 && (
+                  <p className="text-xs text-red-500 mt-1">No event groups available. Create an event group first.</p>
+                )}
+              </div>
+              
+              <div>
+                <label className="block text-sm font-medium text-gray-700">Child</label>
+                <select
+                  value={requestForm.childId}
+                  onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setRequestForm(prev => ({ ...prev, childId: e.target.value }))}
+                  className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2"
+                >
+                  <option value="">Select a child</option>
+                  {children.map(child => (
+                    <option key={child.id} value={child.id}>{child.full_name}</option>
+                  ))}
+                </select>
+              </div>
+              
+              <div>
+                <label className="block text-sm font-medium text-gray-700">Date (Local Time)</label>
+                <input
+                  type="date"
+                  value={requestForm.requestedDate}
+                  onChange={(e: any) => setRequestForm(prev => ({ ...prev, requestedDate: e.target.value }))}
+                  className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2"
+                />
+                <p className="text-xs text-gray-500 mt-1">Date will be stored in your local timezone</p>
+              </div>
+              
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700">Start Time</label>
+                  <input
+                    type="time"
+                    value={requestForm.startTime}
+                    onChange={(e: any) => setRequestForm(prev => ({ ...prev, startTime: e.target.value }))}
+                    className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700">End Time</label>
+                  <input
+                    type="time"
+                    value={requestForm.endTime}
+                    onChange={(e: any) => setRequestForm(prev => ({ ...prev, endTime: e.target.value }))}
+                    className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2"
+                  />
+                </div>
+              </div>
+
+              {/* Event-specific fields */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700">Event Title</label>
+                <input
+                  type="text"
+                  value={requestForm.eventTitle}
+                  onChange={(e: any) => setRequestForm(prev => ({ ...prev, eventTitle: e.target.value }))}
+                  className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2"
+                  placeholder="e.g., Basketball Game, Park Playdate"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700">Event Description</label>
+                <textarea
+                  value={requestForm.eventDescription}
+                  onChange={(e: any) => setRequestForm(prev => ({ ...prev, eventDescription: e.target.value }))}
+                  className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2"
+                  rows={3}
+                  placeholder="Describe the event or activity..."
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700">Event Location</label>
+                <input
+                  type="text"
+                  value={requestForm.eventLocation}
+                  onChange={(e: any) => setRequestForm(prev => ({ ...prev, eventLocation: e.target.value }))}
+                  className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2"
+                  placeholder="e.g., Central Park, Community Center"
+                />
+              </div>
+
+              {/* Recurring event options */}
+              <div>
+                <label className="flex items-center">
+                  <input
+                    type="checkbox"
+                    checked={requestForm.isRecurring}
+                    onChange={(e: any) => setRequestForm(prev => ({ ...prev, isRecurring: e.target.checked }))}
+                    className="mr-2"
+                  />
+                  <span className="text-sm font-medium text-gray-700">Make this a recurring event</span>
+                </label>
+              </div>
+
+              {requestForm.isRecurring && (
+                <>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700">Recurrence Pattern</label>
+                    <select
+                      value={requestForm.recurrencePattern}
+                      onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setRequestForm(prev => ({ 
+                        ...prev, 
+                        recurrencePattern: e.target.value as 'weekly' | 'monthly' | 'yearly' 
+                      }))}
+                      className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2"
+                    >
+                      <option value="weekly">Weekly</option>
+                      <option value="monthly">Monthly</option>
+                      <option value="yearly">Yearly</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700">End Date</label>
+                    <input
+                      type="date"
+                      value={requestForm.recurrenceEndDate}
+                      onChange={(e: any) => setRequestForm(prev => ({ ...prev, recurrenceEndDate: e.target.value }))}
+                      className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2"
+                    />
+                  </div>
+                </>
+              )}
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700">Notes</label>
+                <textarea
+                  value={requestForm.notes}
+                  onChange={(e: any) => setRequestForm(prev => ({ ...prev, notes: e.target.value }))}
+                  className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2"
+                  rows={3}
+                />
+              </div>
+            </div>
+            <div className="mt-6 flex space-x-3">
+              <button
+                onClick={createCareRequest}
+                className="flex-1 px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700"
+              >
+                Create Event
+              </button>
+              <button
+                onClick={() => setShowCreateEventRequest(false)}
                  className="flex-1 px-4 py-2 bg-gray-300 text-gray-700 rounded-md hover:bg-gray-400"
                >
                  Cancel
@@ -1962,11 +2199,19 @@ export default function SchedulePage() {
         </div>
       )}
 
-             {/* Requests List */}
+             {/* Care Requests Section */}
        <div className="mt-8">
-         <h3 className="text-lg font-medium text-gray-900 mb-4">Active Care Requests</h3>
+               <div className="flex justify-between items-center mb-4">
+                 <h3 className="text-lg font-medium text-gray-900">Care Requests</h3>
+                 <button
+                   onClick={() => setShowCreateCareRequest(true)}
+                   className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 text-sm"
+                 >
+                   Create Care Request
+                 </button>
+               </div>
          <div className="space-y-4">
-           {requests.map(request => (
+                 {requests.filter(request => request.request_type !== 'event').map(request => (
              <div key={request.id} className="bg-white rounded-lg border p-4">
                <div className="flex justify-between items-start">
                  <div className="flex-1">
@@ -2070,25 +2315,138 @@ export default function SchedulePage() {
                        ) : (
                          <>
                            {!responses.some(r => r.request_id === request.id) && (
-                             <>
-                               <button
-                                 onClick={() => handleAgreeToRequest(request)}
-                                 className="px-3 py-1 text-sm bg-green-600 text-white rounded hover:bg-green-700"
-                               >
-                                 Agree
-                               </button>
-                               <button
-                                 onClick={() => handleRejectRequest(request)}
-                                 className="px-3 py-1 text-sm bg-red-600 text-white rounded hover:bg-red-700"
-                               >
-                                 Reject
-                               </button>
-                             </>
-                           )}
+                     <>
+                       <button
+                         onClick={() => handleAgreeToRequest(request)}
+                         className="px-3 py-1 text-sm bg-green-600 text-white rounded hover:bg-green-700"
+                       >
+                         Agree
+                       </button>
+                       <button
+                         onClick={() => handleRejectRequest(request)}
+                         className="px-3 py-1 text-sm bg-red-600 text-white rounded hover:bg-red-700"
+                       >
+                         Reject
+                       </button>
+                     </>
+                   )}
                          </>
                        )}
                      </>
                    )}
+                 </div>
+               </div>
+             </div>
+           ))}
+         </div>
+       </div>
+
+       {/* Events Section */}
+       <div className="mt-8">
+         <div className="flex justify-between items-center mb-4">
+           <h3 className="text-lg font-medium text-gray-900">Events</h3>
+           <button
+             onClick={() => {
+               setShowCreateEventRequest(true);
+               setRequestForm({
+                 groupId: '',
+                 childId: '',
+                 requestedDate: '',
+                 startTime: '',
+                 endTime: '',
+                 notes: '',
+                 requestType: 'event',
+                 eventTitle: '',
+                 eventDescription: '',
+                 eventLocation: '',
+                 eventRSVPDeadline: '',
+                 eventEditDeadline: '',
+                 isRecurring: false,
+                 recurrencePattern: 'weekly',
+                 recurrenceEndDate: '',
+                 openBlockSlots: 1
+               });
+             }}
+             className="px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 text-sm"
+           >
+             Create Event
+           </button>
+                 </div>
+         <div className="space-y-4">
+           {requests.filter(request => request.request_type === 'event').map(request => (
+             <div key={request.id} className="bg-white rounded-lg border p-4">
+               <div className="flex justify-between items-start">
+                 <div className="flex-1">
+                   <div className="flex items-center gap-2 mb-2">
+                     <h4 className="font-medium text-gray-900">
+                       {request.event_title || `Event for ${getChildName(request.child_id, request)}`}
+                     </h4>
+                     <span className="px-2 py-1 text-xs rounded-full bg-green-100 text-green-800">
+                       Event
+                     </span>
+                   </div>
+                   <p className="text-sm text-gray-600">
+                     {request.requested_date} • {formatTime(request.start_time)} - {formatTime(request.end_time)}
+                   </p>
+                   <p className="text-sm text-gray-600">
+                     Group: {getGroupName(request.group_id)} • Created by: {getInitiatorName(request.requester_id)}
+                   </p>
+                   {request.event_description && (
+                     <p className="text-sm text-gray-600 mt-1">{request.event_description}</p>
+                   )}
+                   {request.event_location && (
+                     <p className="text-sm text-gray-600 mt-1">
+                       <span className="font-medium">Location:</span> {request.event_location}
+                     </p>
+                   )}
+                   {request.notes && (
+                     <p className="text-sm text-gray-600 mt-1">{request.notes}</p>
+                   )}
+                 </div>
+                 <div className="flex space-x-2 ml-4">
+                   {(() => {
+                     const userResponse = eventResponses.find(r => r.event_request_id === request.id && r.responder_id === user?.id);
+                     return (
+                       <>
+                         <button
+                           onClick={() => handleEventRSVP(request, 'going')}
+                           className={`px-3 py-1 text-sm rounded ${
+                             userResponse?.response_type === 'going' 
+                               ? 'bg-green-600 text-white' 
+                               : userResponse?.response_type === 'maybe' || userResponse?.response_type === 'not_going'
+                               ? 'bg-gray-300 text-gray-700 hover:bg-green-600 hover:text-white'
+                               : 'bg-green-600 text-white hover:bg-green-700'
+                           }`}
+                         >
+                           Going
+                         </button>
+                         <button
+                           onClick={() => handleEventRSVP(request, 'maybe')}
+                           className={`px-3 py-1 text-sm rounded ${
+                             userResponse?.response_type === 'maybe' 
+                               ? 'bg-yellow-600 text-white' 
+                               : userResponse?.response_type === 'going' || userResponse?.response_type === 'not_going'
+                               ? 'bg-gray-300 text-gray-700 hover:bg-yellow-600 hover:text-white'
+                               : 'bg-yellow-600 text-white hover:bg-yellow-700'
+                           }`}
+                         >
+                           Maybe
+                         </button>
+                         <button
+                           onClick={() => handleEventRSVP(request, 'not_going')}
+                           className={`px-3 py-1 text-sm rounded ${
+                             userResponse?.response_type === 'not_going' 
+                               ? 'bg-red-600 text-white' 
+                               : userResponse?.response_type === 'going' || userResponse?.response_type === 'maybe'
+                               ? 'bg-gray-300 text-gray-700 hover:bg-red-600 hover:text-white'
+                               : 'bg-red-600 text-white hover:bg-red-700'
+                           }`}
+                         >
+                           Not Going
+                         </button>
+                       </>
+                     );
+                   })()}
                  </div>
                </div>
              </div>
@@ -2445,32 +2803,42 @@ export default function SchedulePage() {
 
 
 
-                        {/* Current Responses */}
-            {eventResponses.length > 0 && (
-              <div className="mb-6">
-                <h4 className="font-medium text-gray-900 mb-3">Current Responses</h4>
-                <div className="space-y-2">
-                  {eventResponses.map(response => (
-                    <div key={response.id} className="flex items-center justify-between p-2 bg-gray-50 rounded">
-                      <div>
-                        <span className="font-medium text-sm">{response.responder?.full_name || 'Unknown'}</span>
-                                               <span className={`ml-2 px-2 py-1 text-xs rounded-full ${
-                         response.response_type === 'going' ? 'bg-green-100 text-green-800' :
-                         response.response_type === 'maybe' ? 'bg-yellow-100 text-yellow-800' :
-                         'bg-red-100 text-red-800'
-                       }`}>
-                         {response.response_type === 'going' ? 'Going' :
-                          response.response_type === 'maybe' ? 'Maybe' : 'Not Going'}
-                       </span>
-                      </div>
-                      {response.response_notes && (
-                        <span className="text-xs text-gray-600">{response.response_notes}</span>
-                      )}
-                    </div>
-                  ))}
+            
+
+            {/* Child Attendance */}
+            <div className="mb-6">
+              <h4 className="font-medium text-gray-900 mb-3">Child Attendance</h4>
+              <div className="space-y-2">
+                <div className="flex items-center justify-between p-2 bg-gray-50 rounded">
+                  <div>
+                    <span className="font-medium text-sm">{getChildName(selectedEventRequest.child_id, selectedEventRequest)}</span>
+                    <span className={`ml-2 px-2 py-1 text-xs rounded-full ${
+                      (() => {
+                        const userResponse = eventResponses.find(r => r.responder_id === user?.id);
+                        if (!userResponse) return 'bg-gray-100 text-gray-800';
+                        switch (userResponse.response_type) {
+                          case 'going': return 'bg-green-100 text-green-800';
+                          case 'maybe': return 'bg-yellow-100 text-yellow-800';
+                          case 'not_going': return 'bg-red-100 text-red-800';
+                          default: return 'bg-gray-100 text-gray-800';
+                        }
+                      })()
+                    }`}>
+                      {(() => {
+                        const userResponse = eventResponses.find(r => r.responder_id === user?.id);
+                        if (!userResponse) return 'Not Responded';
+                        switch (userResponse.response_type) {
+                          case 'going': return 'Going';
+                          case 'maybe': return 'Maybe';
+                          case 'not_going': return 'Not Going';
+                          default: return 'Not Responded';
+                        }
+                      })()}
+                    </span>
+                  </div>
                 </div>
               </div>
-            )}
+            </div>
 
             {/* Close Button */}
             <div className="flex justify-end mt-6">
@@ -2482,7 +2850,7 @@ export default function SchedulePage() {
               </button>
             </div>
  
-            </div>
+          </div>
         </div>
       )}
 
