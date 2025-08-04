@@ -412,59 +412,65 @@ BEGIN
         v_reciprocal_duration_minutes := v_request.duration_minutes;
     END IF;
     
-    -- Create scheduled care blocks for the original request
-    -- For reciprocal requests, this represents the initial care exchange
-    -- For regular requests, this is the main care exchange
-    INSERT INTO public.scheduled_care (
-        group_id,
-        parent_id,
-        child_id,
-        care_date,
-        start_time,
-        end_time,
-        care_type,
-        status,
-        related_request_id,
-        notes
-    ) VALUES (
-        v_request.group_id,
-        v_request.requester_id, -- Parent A needs care
-        v_request.child_id,
-        v_request.requested_date,
-        v_request.start_time,
-        v_request.end_time,
-        'needed',
-        'confirmed',
-        v_request.id,
-        COALESCE(v_request.notes, 'Initial care needed')
-    );
-    
-    -- Create scheduled care block for Parent B providing care (original request)
-    INSERT INTO public.scheduled_care (
-        group_id,
-        parent_id,
-        child_id,
-        care_date,
-        start_time,
-        end_time,
-        care_type,
-        status,
-        related_request_id,
-        notes
-    ) VALUES (
-        v_request.group_id,
-        v_response.responder_id, -- Parent B provides care
-        v_request.child_id,
-        v_request.requested_date,
-        v_request.start_time,
-        v_request.end_time,
-        'provided',
-        'confirmed',
-        v_request.id,
-        COALESCE(v_response.response_notes, 'Initial care provided')
-    );
-    
-    RAISE NOTICE 'Created initial care blocks: Parent A needs care, Parent B provides care';
+    -- For reciprocal requests, only create the reciprocal blocks (initial blocks already exist)
+    -- For regular requests, create both initial and reciprocal blocks
+    IF v_request.request_type = 'reciprocal' THEN
+        RAISE NOTICE 'Reciprocal request: Only creating reciprocal blocks (initial blocks already exist)';
+    ELSE
+        BEGIN
+            -- Create scheduled care blocks for the original request (only for non-reciprocal requests)
+            INSERT INTO public.scheduled_care (
+                group_id,
+                parent_id,
+                child_id,
+                care_date,
+                start_time,
+                end_time,
+                care_type,
+                status,
+                related_request_id,
+                notes
+            ) VALUES (
+                v_request.group_id,
+                v_request.requester_id, -- Parent A needs care
+                v_request.child_id,
+                v_request.requested_date,
+                v_request.start_time,
+                v_request.end_time,
+                'needed',
+                'confirmed',
+                v_request.id,
+                COALESCE(v_request.notes, 'Initial care needed')
+            );
+            
+            -- Create scheduled care block for Parent B providing care (original request)
+            INSERT INTO public.scheduled_care (
+                group_id,
+                parent_id,
+                child_id,
+                care_date,
+                start_time,
+                end_time,
+                care_type,
+                status,
+                related_request_id,
+                notes
+            ) VALUES (
+                v_request.group_id,
+                v_response.responder_id, -- Parent B provides care
+                v_request.child_id,
+                v_request.requested_date,
+                v_request.start_time,
+                v_request.end_time,
+                'provided',
+                'confirmed',
+                v_request.id,
+                COALESCE(v_response.response_notes, 'Initial care provided')
+            );
+            
+            RAISE NOTICE 'Created initial care blocks: Parent A needs care, Parent B provides care';
+        END;
+    END IF;
     
     -- If this is a reciprocal response, create the reciprocal care blocks
     -- FIXED: Check for pending reciprocal responses (not just accept)

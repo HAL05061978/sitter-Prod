@@ -809,6 +809,8 @@ export default function SchedulePage() {
 
   // Updated function names and types
   const createCareRequest = async () => {
+    console.log('createCareRequest called');
+    
     if (!user || !requestForm.groupId || !requestForm.childId || !requestForm.requestedDate || !requestForm.startTime || !requestForm.endTime) {
       alert('Please fill in all required fields');
       return;
@@ -946,15 +948,18 @@ export default function SchedulePage() {
   };
 
   // Updated function names and types
-  const respondToCareRequest = async () => {
+  const respondToCareRequest = async (request?: CareRequest) => {
+    const requestToUse = request || selectedRequest;
+    console.log('respondToCareRequest called with request type:', requestToUse?.request_type);
+    
     // For open block requests, no reciprocal times are needed
-    if (selectedRequest?.request_type === 'open_block') {
-      if (!user || !selectedRequest) {
+    if (requestToUse?.request_type === 'open_block') {
+      if (!user || !requestToUse) {
         return;
       }
 
       // Prevent users from responding to their own requests
-      if (selectedRequest.requester_id === user.id) {
+      if (requestToUse.requester_id === user.id) {
         return;
       }
 
@@ -963,24 +968,24 @@ export default function SchedulePage() {
         // Parent B caring for Parent C's child + Parent C caring for Parent B's child
         
         // Get Parent B's child and original care block details from reciprocal fields
-        const parentBChildId = selectedRequest.reciprocal_child_id;
+        const parentBChildId = requestToUse.reciprocal_child_id;
         const originalCareBlock = {
-          care_date: selectedRequest.reciprocal_date,
-          start_time: selectedRequest.reciprocal_start_time,
-          end_time: selectedRequest.reciprocal_end_time
+          care_date: requestToUse.reciprocal_date,
+          start_time: requestToUse.reciprocal_start_time,
+          end_time: requestToUse.reciprocal_end_time
         };
         
         // Debug logging
         console.log('Open block request details:', {
-          selectedRequest: selectedRequest,
+          selectedRequest: requestToUse,
           parentBChildId: parentBChildId,
           originalCareBlock: originalCareBlock,
           reciprocal_fields: {
-            reciprocal_parent_id: selectedRequest.reciprocal_parent_id,
-            reciprocal_child_id: selectedRequest.reciprocal_child_id,
-            reciprocal_date: selectedRequest.reciprocal_date,
-            reciprocal_start_time: selectedRequest.reciprocal_start_time,
-            reciprocal_end_time: selectedRequest.reciprocal_end_time
+            reciprocal_parent_id: requestToUse.reciprocal_parent_id,
+            reciprocal_child_id: requestToUse.reciprocal_child_id,
+            reciprocal_date: requestToUse.reciprocal_date,
+            reciprocal_start_time: requestToUse.reciprocal_start_time,
+            reciprocal_end_time: requestToUse.reciprocal_end_time
           }
         });
 
@@ -988,28 +993,28 @@ export default function SchedulePage() {
         const careBlocksToInsert = [
           {
             // Parent B caring for Parent C's child during the original care block time (same time as Parent A's child)
-            group_id: selectedRequest.group_id,
-            parent_id: selectedRequest.requester_id,
-            child_id: selectedRequest.child_id,
-            care_date: originalCareBlock?.care_date || selectedRequest.requested_date,
-            start_time: originalCareBlock?.start_time || selectedRequest.start_time,
-            end_time: originalCareBlock?.end_time || selectedRequest.end_time,
+            group_id: requestToUse.group_id,
+            parent_id: requestToUse.requester_id,
+            child_id: requestToUse.child_id,
+            care_date: originalCareBlock?.care_date || requestToUse.requested_date,
+            start_time: originalCareBlock?.start_time || requestToUse.start_time,
+            end_time: originalCareBlock?.end_time || requestToUse.end_time,
             care_type: 'provided',
             status: 'confirmed',
-            related_request_id: selectedRequest.id,
-            notes: `Open block: ${getParentName(selectedRequest.requester_id)} caring for ${getChildName(selectedRequest.child_id, selectedRequest)} during original care block time`
+            related_request_id: requestToUse.id,
+            notes: `Open block: ${getParentName(requestToUse.requester_id)} caring for ${getChildName(requestToUse.child_id, requestToUse)} during original care block time`
           },
           {
             // Parent C caring for Parent B's child during the open block time (new time offered by Parent B)
-            group_id: selectedRequest.group_id,
+            group_id: requestToUse.group_id,
             parent_id: user.id,
             child_id: parentBChildId,
-            care_date: selectedRequest.requested_date,
-            start_time: selectedRequest.start_time,
-            end_time: selectedRequest.end_time,
+            care_date: requestToUse.requested_date,
+            start_time: requestToUse.start_time,
+            end_time: requestToUse.end_time,
             care_type: 'provided',
             status: 'confirmed',
-            related_request_id: selectedRequest.id,
+            related_request_id: requestToUse.id,
             notes: `Reciprocal care: ${getParentName(user.id)} caring for Parent B's child during open block time`
           }
         ];
@@ -1027,19 +1032,44 @@ export default function SchedulePage() {
         }
         
         console.log('Successfully inserted care blocks');
+        console.log('About to update open block request status...');
 
         // Update the open block request to mark it as accepted
+        console.log('Updating open block request:', {
+          requestId: requestToUse.id,
+          newStatus: 'accepted',
+          responderId: user.id
+        });
+        
         const { error: updateError } = await supabase
           .from("care_requests")
           .update({ 
             status: 'accepted',
             responder_id: user.id
           })
-          .eq('id', selectedRequest.id);
+          .eq('id', requestToUse.id);
 
         if (updateError) {
           console.error('Error updating request:', updateError);
           return;
+        }
+        
+        console.log('Successfully updated open block request status to accepted');
+
+        // Create a care_response record for open block requests so UI can track responses
+        const { error: responseError } = await supabase
+          .from("care_responses")
+          .insert({
+            request_id: requestToUse.id,
+            responder_id: user.id,
+            response_type: 'accept',
+            status: 'accepted',
+            response_notes: 'Open block request accepted'
+          });
+
+        if (responseError) {
+          console.error('Error creating care response record:', responseError);
+          // Don't return here - the main functionality worked
         }
 
         // Refresh data
@@ -1076,6 +1106,19 @@ export default function SchedulePage() {
     }
 
     try {
+      console.log('Creating care response for request type:', selectedRequest.request_type);
+      console.log('Response data:', {
+        request_id: selectedRequest.id,
+        responder_id: user.id,
+        response_type: selectedRequest.request_type === 'reciprocal' ? 'pending' : responseType,
+        reciprocal_date: responseForm.reciprocalDate,
+        reciprocal_start_time: responseForm.reciprocalStartTime,
+        reciprocal_end_time: responseForm.reciprocalEndTime,
+        reciprocal_child_id: responseForm.reciprocalChildId,
+        response_notes: responseForm.notes,
+        status: 'pending'
+      });
+      
       const { error } = await supabase
         .from("care_responses") // Updated table name
         .insert({
@@ -1121,6 +1164,21 @@ export default function SchedulePage() {
     // Prevent users from responding to their own requests
     if (request.requester_id === user?.id) {
       alert('You cannot respond to your own request');
+      return;
+    }
+    
+    // For open block requests, process directly without modal
+    if (request.request_type === 'open_block') {
+      console.log('handleAgreeToRequest: Processing open block request directly');
+      setSelectedRequest(request);
+      setResponseType('accept');
+      // Call respondToCareRequest directly for open block requests
+      try {
+        await respondToCareRequest(request);
+        console.log('handleAgreeToRequest: respondToCareRequest completed');
+      } catch (error) {
+        console.error('handleAgreeToRequest: Error calling respondToCareRequest:', error);
+      }
       return;
     }
     
@@ -1958,18 +2016,112 @@ export default function SchedulePage() {
     setShowDailyScheduleModal(true);
   };
 
+  const handleOpenBlock = async (block: ScheduledCare) => {
+    // Only allow the parent who created the block to open it
+    if (block.parent_id !== user?.id) {
+      alert('You can only open your own care blocks');
+      return;
+    }
+    
+    // Check if this is a provided care block
+    if (block.care_type !== 'provided') {
+      alert('You can only open blocks where you are providing care');
+      return;
+    }
+    
+    // Find the original request for this block
+    const originalRequest = findOriginalRequestForBlock(block);
+    if (!originalRequest) {
+      alert('Could not find the original request for this block');
+      return;
+    }
+    
+    // Create an open block request based on this care block
+    const openBlockRequest: CareRequest = {
+      ...originalRequest,
+      id: '', // Will be generated by the database
+      request_type: 'open_block',
+      open_block_parent_id: block.parent_id, // The care provider
+      open_block_slots: 3, // Default to 3 slots
+      open_block_slots_used: 0,
+      // Store the original care block information in reciprocal fields
+      reciprocal_parent_id: block.parent_id,
+      reciprocal_child_id: block.child_id,
+      reciprocal_date: block.care_date,
+      reciprocal_start_time: block.start_time,
+      reciprocal_end_time: block.end_time,
+      reciprocal_status: 'pending'
+    };
+    
+    setSelectedRequest(openBlockRequest);
+    
+    // Fetch available children from other group members
+    const { data: groupMembers, error: groupError } = await supabase
+      .from('profiles')
+      .select('id, full_name')
+      .neq('id', user?.id)
+      .neq('id', originalRequest.requester_id);
+    
+    if (groupError) {
+      console.error('Error fetching group members:', groupError);
+      alert('Error fetching group members');
+      return;
+    }
+    
+    // Fetch children for each group member
+    const childrenPromises = groupMembers.map(async (profile) => {
+      const { data: profileChildren, error } = await supabase
+        .from('children')
+        .select('id, full_name, parent_id')
+        .eq('parent_id', profile.id);
+      
+      if (error) {
+        console.error('Error fetching children for profile:', profile.id, error);
+        return [];
+      }
+      
+      return (profileChildren || []).map(child => ({
+        child_id: child.id,
+        child_name: child.full_name,
+        parent_id: child.parent_id,
+        parent_name: profile.full_name || 'Unknown'
+      }));
+    });
+    
+    const allChildren = await Promise.all(childrenPromises);
+    const flatChildren = allChildren.flat();
+    
+    if (flatChildren.length === 0) {
+      alert('No children found for the available group members.');
+      return;
+    }
+    
+    setAvailableChildren(flatChildren);
+    setShowInviteModal(true);
+  };
+
   const acceptResponse = async (responseId: string, requestId: string) => {
+    console.log('acceptResponse called with:', { responseId, requestId, userId: user?.id });
+    
     if (!user) {
       alert('User not found');
       return;
     }
 
+    // Prevent multiple acceptances of the same response
+    const response = responses.find(r => r.id === responseId);
+    if (response && response.status !== 'pending') {
+      console.log('Response already accepted, ignoring duplicate call');
+      return;
+    }
+
     try {
-      // Call the create_care_exchange function to accept the response and create blocks
-      const { error: exchangeError } = await supabase.rpc('create_care_exchange', {
-        p_request_id: requestId,
-        p_response_id: responseId
-      });
+                  // Call the simple_care_exchange function to accept the response and create blocks
+            console.log('Calling simple_care_exchange RPC...');
+            const { error: exchangeError } = await supabase.rpc('simple_care_exchange', {
+              p_request_id: requestId,
+              p_response_id: responseId
+            });
 
       if (exchangeError) {
         console.error('Error creating care exchange:', exchangeError);
@@ -1977,10 +2129,14 @@ export default function SchedulePage() {
         return;
       }
 
+      console.log('create_care_exchange completed successfully');
+
       // Refresh data to show the new scheduled blocks
+      console.log('Refreshing data...');
       await fetchRequestsAndResponses(user.id);
       await fetchScheduledCare(user.id, currentDate); // Updated function name
       
+      console.log('Data refresh completed');
       alert('Response accepted successfully! Care blocks have been created.');
     } catch (error) {
       console.error('Error accepting response:', error);
@@ -2183,7 +2339,7 @@ export default function SchedulePage() {
                       return (
                         <div
                           key={block.id}
-                          className={`text-xs p-1 rounded cursor-pointer ${blockStyle}`}
+                          className={`text-xs p-1 rounded cursor-pointer ${blockStyle} relative`}
                           onDoubleClick={() => handleBlockDoubleClick(block)}
                           title={`${block.care_type === 'needed' ? 'Care Needed' : 'Care Provided'} - ${formatTime(block.start_time)} to ${formatTime(block.end_time)} - ${block.children?.full_name || getChildName(block.child_id, undefined, block)}`}
                         >
@@ -2193,6 +2349,20 @@ export default function SchedulePage() {
                           <div className="text-xs opacity-75">
                             {formatTime(block.start_time)} - {formatTime(block.end_time)}
                           </div>
+                          
+                          {/* Open button for blocks where user is providing care */}
+                          {block.parent_id === user?.id && block.care_type === 'provided' && (
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleOpenBlock(block);
+                              }}
+                              className="absolute top-0 right-0 text-xs bg-green-500 text-white px-1 py-0.5 rounded hover:bg-green-600"
+                              title="Open this block to invite others"
+                            >
+                              Open
+                            </button>
+                          )}
                         </div>
                       );
                     })}
@@ -2902,7 +3072,23 @@ export default function SchedulePage() {
                          </>
                        ) : (
                          <>
-                           {!responses.some(r => r.request_id === request.id && r.responder_id === user?.id) && (
+                           {(() => {
+                             const shouldShowButtons = !responses.some(r => r.request_id === request.id && r.responder_id === user?.id) && 
+                               request.status !== 'accepted';
+                             
+                             // Debug logging for open block requests
+                             if (request.request_type === 'open_block') {
+                               console.log('Open block request button visibility:', {
+                                 requestId: request.id,
+                                 status: request.status,
+                                 responderId: request.responder_id,
+                                 shouldShowButtons: shouldShowButtons,
+                                 userResponses: responses.filter(r => r.request_id === request.id)
+                               });
+                             }
+                             
+                             return shouldShowButtons;
+                           })() && (
                              <>
                                <button
                                  onClick={() => handleAgreeToRequest(request)}
@@ -3084,12 +3270,21 @@ export default function SchedulePage() {
          <div className="mt-8">
            <h3 className="text-lg font-medium text-gray-900 mb-4">Responses to Your Requests</h3>
            <div className="space-y-4">
-             {responses
-               .filter(response => {
+             {(() => {
+               const filteredResponses = responses.filter(response => {
                  const request = requests.find(r => r.id === response.request_id);
                  return request && request.requester_id === user?.id;
-               })
-               .map(response => {
+               });
+               
+               console.log('Filtered responses for user requests:', filteredResponses.map(r => ({
+                 id: r.id,
+                 request_id: r.request_id,
+                 responder_id: r.responder_id,
+                 response_type: r.response_type,
+                 status: r.status
+               })));
+               
+               return filteredResponses.map(response => {
                  const request = requests.find(r => r.id === response.request_id);
                  if (!request) return null;
                  
@@ -3140,7 +3335,8 @@ export default function SchedulePage() {
                      </div>
                    </div>
                  );
-               })}
+               });
+             })()}
            </div>
          </div>
        )}
