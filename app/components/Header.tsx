@@ -15,6 +15,7 @@ export default function Header({ currentPage = "dashboard" }: HeaderProps) {
   const [pendingInvitations, setPendingInvitations] = useState<number>(0);
   const [pendingScheduleItems, setPendingScheduleItems] = useState<number>(0);
   const [unreadChatMessages, setUnreadChatMessages] = useState<number>(0);
+  const [unreadMessages, setUnreadMessages] = useState<number>(0);
 
   // Function to fetch pending invitations count
   const fetchPendingInvitations = async (userId: string) => {
@@ -67,7 +68,9 @@ export default function Header({ currentPage = "dashboard" }: HeaderProps) {
 
       const groupIds = userGroups.map(g => g.group_id);
 
-      // Count care requests that need responses (not responded to by current user)
+      let totalPendingItems = 0;
+
+      // 1. Count care requests that need responses (not responded to by current user)
       const { data: careRequests } = await supabase
         .from("care_requests")
         .select("id")
@@ -88,10 +91,33 @@ export default function Header({ currentPage = "dashboard" }: HeaderProps) {
         const respondedRequestIds = (userResponses || []).map(r => r.request_id);
         const pendingRequests = careRequests.filter(r => !respondedRequestIds.includes(r.id));
         
-        setPendingScheduleItems(pendingRequests.length);
-      } else {
-        setPendingScheduleItems(0);
+        totalPendingItems += pendingRequests.length;
       }
+
+      // 2. Count pending responses that need approval (responses to user's requests)
+      // First get the user's request IDs
+      const { data: userRequests } = await supabase
+        .from("care_requests")
+        .select("id")
+        .eq("requester_id", userId)
+        .neq("status", "cancelled");
+
+      if (userRequests && userRequests.length > 0) {
+        const requestIds = userRequests.map(r => r.id);
+        
+        // Then count pending responses for those requests
+        const { data: pendingResponses } = await supabase
+          .from("care_responses")
+          .select("id")
+          .eq("status", "pending")
+          .in("request_id", requestIds);
+
+        if (pendingResponses) {
+          totalPendingItems += pendingResponses.length;
+        }
+      }
+
+      setPendingScheduleItems(totalPendingItems);
     } catch (error) {
       console.error('Error fetching pending schedule items:', error);
     }
@@ -100,7 +126,6 @@ export default function Header({ currentPage = "dashboard" }: HeaderProps) {
   // Function to fetch unread chat messages
   const fetchUnreadChatMessages = async (userId: string) => {
     try {
-      // Get groups the user is a member of
       const { data: userGroups } = await supabase
         .from("group_members")
         .select("group_id")
@@ -138,10 +163,49 @@ export default function Header({ currentPage = "dashboard" }: HeaderProps) {
       const viewedMessageIds = (viewedMessages || []).map(v => v.message_id);
       
       // Count total unviewed messages across all groups
-      const totalUnviewedCount = messageIds.filter(id => !viewedMessageIds.includes(id)).length;
-      setUnreadChatMessages(totalUnviewedCount);
+      const unviewedChatCount = messageIds.filter(id => !viewedMessageIds.includes(id)).length;
+      setUnreadChatMessages(unviewedChatCount);
     } catch (error) {
       console.error('Error fetching unread chat messages:', error);
+    }
+  };
+
+  const fetchUnreadMessages = async (userId: string) => {
+    try {
+      // Get all regular messages for the user
+      const { data: regularMessages, error: messagesError } = await supabase
+        .from("messages")
+        .select("id")
+        .eq("recipient_id", userId);
+
+      if (messagesError) {
+        console.error('Error fetching messages for count:', messagesError);
+        setUnreadMessages(0);
+        return;
+      }
+
+      if (!regularMessages || regularMessages.length === 0) {
+        setUnreadMessages(0);
+        return;
+      }
+
+      const messageIds = regularMessages.map(m => m.id);
+
+      // Get messages that the user has viewed
+      const { data: viewedMessages } = await supabase
+        .from("message_views")
+        .select("message_id")
+        .eq("user_id", userId)
+        .in("message_id", messageIds);
+
+      const viewedMessageIds = (viewedMessages || []).map(v => v.message_id);
+      
+      // Count unviewed messages
+      const unviewedCount = messageIds.filter(id => !viewedMessageIds.includes(id)).length;
+      setUnreadMessages(unviewedCount);
+    } catch (error) {
+      console.error('Error fetching unread messages:', error);
+      setUnreadMessages(0);
     }
   };
 
@@ -152,7 +216,8 @@ export default function Header({ currentPage = "dashboard" }: HeaderProps) {
       await Promise.all([
         fetchPendingInvitations(user.id),
         fetchPendingScheduleItems(user.id),
-        fetchUnreadChatMessages(user.id)
+        fetchUnreadChatMessages(user.id),
+        fetchUnreadMessages(user.id)
       ]);
       console.log('Manual refresh completed');
     }
@@ -166,7 +231,8 @@ export default function Header({ currentPage = "dashboard" }: HeaderProps) {
         await Promise.all([
           fetchPendingInvitations(data.user.id),
           fetchPendingScheduleItems(data.user.id),
-          fetchUnreadChatMessages(data.user.id)
+          fetchUnreadChatMessages(data.user.id),
+          fetchUnreadMessages(data.user.id)
         ]);
       }
     });
@@ -183,6 +249,7 @@ export default function Header({ currentPage = "dashboard" }: HeaderProps) {
     const handleMessagesViewed = () => {
       if (user) {
         fetchUnreadChatMessages(user.id);
+        fetchUnreadMessages(user.id);
       }
     };
 
@@ -192,14 +259,26 @@ export default function Header({ currentPage = "dashboard" }: HeaderProps) {
       }
     };
 
+    const handleResponseStatusUpdated = () => {
+      if (user) {
+        fetchPendingScheduleItems(user.id);
+        fetchUnreadChatMessages(user.id);
+        fetchUnreadMessages(user.id); // Refresh regular messages count
+      }
+    };
+
     window.addEventListener('invitationAccepted', handleInvitationAccepted);
     window.addEventListener('messagesViewed', handleMessagesViewed);
     window.addEventListener('careRequestUpdated', handleCareRequestUpdated);
+    window.addEventListener('responseStatusUpdated', handleResponseStatusUpdated);
+    window.addEventListener('newMessageSent', handleMessagesViewed); // Refresh when new messages are sent
 
     return () => {
       window.removeEventListener('invitationAccepted', handleInvitationAccepted);
       window.removeEventListener('messagesViewed', handleMessagesViewed);
       window.removeEventListener('careRequestUpdated', handleCareRequestUpdated);
+      window.removeEventListener('responseStatusUpdated', handleResponseStatusUpdated);
+      window.removeEventListener('newMessageSent', handleMessagesViewed);
     };
   }, [user]);
 
@@ -354,11 +433,11 @@ export default function Header({ currentPage = "dashboard" }: HeaderProps) {
             className={`${getButtonClass('messages')} relative`}
           >
             Messages
-                         {pendingInvitations > 0 && (
-               <span className="absolute -top-2 -right-2 bg-red-500 text-white text-xs rounded-full h-6 w-6 flex items-center justify-center font-bold shadow-medium">
-                 {pendingInvitations}
-               </span>
-             )}
+            {unreadMessages > 0 && (
+              <span className="absolute -top-2 -right-2 bg-red-500 text-white text-xs rounded-full h-6 w-6 flex items-center justify-center font-bold shadow-medium">
+                {unreadMessages}
+              </span>
+            )}
           </button>
           <button 
             onClick={() => router.push('/schedule')}

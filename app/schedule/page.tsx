@@ -227,7 +227,7 @@ export default function SchedulePage() {
     startTime: '',
     endTime: '',
     notes: '',
-    requestType: 'simple' as 'simple' | 'reciprocal' | 'event' | 'open_block',
+    requestType: 'reciprocal' as 'simple' | 'reciprocal' | 'event' | 'open_block',
     eventTitle: '',
     eventDescription: '',
     eventLocation: '',
@@ -298,19 +298,41 @@ export default function SchedulePage() {
   }, [scheduledCare]); // Updated dependency
 
   // Function to refresh active children data
-  const refreshActiveChildren = async (userId: string, childrenData: Child[]) => {
+  const refreshActiveChildren = async (userId: string, childrenData: Child[], groupsData?: Group[]) => {
     const newActiveChildren: {[groupId: string]: Child[]} = {};
     
-    for (const group of groups) {
-      const { data: childGroupMembers } = await supabase
+    // Use passed groups data or fall back to state
+    const groupsToUse = groupsData || groups;
+    
+    for (const group of groupsToUse) {
+      // Get all active children in this group that belong to the logged-in user
+      const { data: childGroupMembers, error } = await supabase
         .from("child_group_members")
-        .select("child_id")
+        .select(`
+          child_id,
+          parent_id,
+          children(
+            id,
+            full_name,
+            parent_id
+          )
+        `)
         .eq("group_id", group.id)
-        .eq("active", true); // Only include active children
+        .eq("active", true)
+        .eq("parent_id", userId); // Use the new parent_id column directly
 
+      if (error) {
+        console.error('Error fetching child group members:', error);
+        continue;
+      }
+      
       if (childGroupMembers) {
-        const childIds = childGroupMembers.map(cgm => cgm.child_id);
-        const groupChildren = childrenData.filter(child => childIds.includes(child.id));
+        // Extract the children data from the joined query and flatten the array
+        const groupChildren = childGroupMembers
+          .map(cgm => cgm.children)
+          .flat()
+          .filter(Boolean) as Child[];
+        
         newActiveChildren[group.id] = groupChildren;
       }
     }
@@ -362,8 +384,8 @@ export default function SchedulePage() {
             .in("id", groupIds);
           setGroups(groupsData || []);
 
-          // Fetch active children for each group
-          await refreshActiveChildren(data.user.id, childrenData || []);
+          // Fetch active children for each group - pass groupsData directly
+          await refreshActiveChildren(data.user.id, childrenData || [], groupsData || []);
         }
 
         // Fetch scheduled care for the current month
@@ -545,14 +567,7 @@ export default function SchedulePage() {
       index === self.findIndex(b => b.id === block.id)
     );
 
-    console.log('Fetched scheduled care blocks:', {
-      userBlocks: userBlocks?.length || 0,
-      childCareNeededBlocks: childCareNeededBlocks.length,
-      childCareProvidedBlocks: childCareProvidedBlocks.length,
-      eventBlocks: eventBlocks?.length || 0,
-      totalUnique: uniqueBlocks.length,
-      blocks: uniqueBlocks
-    });
+
     setScheduledCare(uniqueBlocks); // Updated variable name
   };
 
@@ -573,7 +588,7 @@ export default function SchedulePage() {
     const groupIds = userGroups.map(g => g.group_id);
 
     // Fetch all requests from user's groups with child data (including all statuses)
-    const { data: requestsData } = await supabase
+    const { data: allRequestsData } = await supabase
       .from("care_requests") // Updated table name
       .select(`
         *,
@@ -586,13 +601,21 @@ export default function SchedulePage() {
       .in("group_id", groupIds)
       .order("created_at", { ascending: false });
 
+    // Filter out completed reciprocal requests (accepted/rejected) since they're already handled
+    const filteredRequests = (allRequestsData || []).filter(request => {
+      // Keep all non-reciprocal requests
+      if (request.request_type !== 'reciprocal') {
+        return true;
+      }
+      // For reciprocal requests, only keep if they're not completed (not accepted/rejected)
+      return request.status !== 'accepted' && request.status !== 'rejected';
+    });
 
-
-    setRequests(requestsData || []);
+    setRequests(filteredRequests);
 
     // Fetch responses for these requests (including all statuses)
-    if (requestsData && requestsData.length > 0) {
-      const requestIds = requestsData.map(r => r.id);
+    if (filteredRequests && filteredRequests.length > 0) {
+      const requestIds = filteredRequests.map((r: CareRequest) => r.id);
       const { data: responsesData } = await supabase
         .from("care_responses") // Updated table name
         .select("*")
@@ -800,7 +823,9 @@ export default function SchedulePage() {
   };
 
   const getActiveChildrenForGroup = (groupId: string) => {
-    return activeChildrenPerGroup[groupId] || [];
+    const children = activeChildrenPerGroup[groupId] || [];
+    console.log(`getActiveChildrenForGroup(${groupId}):`, children);
+    return children;
   };
 
   const getGroupsByType = (type: 'care' | 'event') => {
@@ -818,7 +843,7 @@ export default function SchedulePage() {
 
     // Determine request type based on which modal is open
     const isEventRequest = showCreateEventRequest;
-    const requestType = isEventRequest ? 'event' : requestForm.requestType;
+    const requestType = isEventRequest ? 'event' : (showCreateCareRequest ? 'reciprocal' : requestForm.requestType);
 
     // Validate request type specific fields
     if (requestType === 'event' && (!requestForm.eventTitle || !requestForm.eventDescription)) {
@@ -869,12 +894,12 @@ export default function SchedulePage() {
         }
       }
 
-      if (requestForm.requestType === 'open_block') {
+      if (requestType === 'open_block') {
         requestData.open_block_slots = requestForm.openBlockSlots;
         requestData.open_block_parent_id = user.id;
       }
 
-      if (requestForm.requestType === 'reciprocal') {
+      if (requestType === 'reciprocal') {
         requestData.is_reciprocal = true;
       }
 
@@ -928,7 +953,7 @@ export default function SchedulePage() {
         startTime: '',
         endTime: '',
         notes: '',
-        requestType: 'simple',
+        requestType: 'reciprocal',
         eventTitle: '',
         eventDescription: '',
         eventLocation: '',
@@ -1359,7 +1384,7 @@ export default function SchedulePage() {
         startTime: '',
         endTime: '',
         notes: '',
-        requestType: 'simple',
+        requestType: 'reciprocal',
         eventTitle: '',
         eventDescription: '',
         eventLocation: '',
@@ -2053,6 +2078,18 @@ export default function SchedulePage() {
       reciprocal_status: 'pending'
     };
     
+    // Set the request form to open_block type for the invitation modal
+    setRequestForm(prev => ({
+      ...prev,
+      requestType: 'open_block',
+      groupId: block.group_id,
+      childId: block.child_id,
+      requestedDate: block.care_date,
+      startTime: block.start_time,
+      endTime: block.end_time,
+      openBlockSlots: 3
+    }));
+    
     setSelectedRequest(openBlockRequest);
     
     // Fetch available children from other group members
@@ -2100,6 +2137,82 @@ export default function SchedulePage() {
     setShowInviteModal(true);
   };
 
+  // Function to send notifications to responders about their response status
+  const sendResponseNotifications = async (requestId: string, acceptedResponseId: string, acceptedResponderId?: string) => {
+    try {
+      // Get the request details
+                 const { data: requestData } = await supabase
+             .from("care_requests")
+             .select("id, requester_id, child_id, requested_date, start_time, end_time, notes, group_id")
+             .eq("id", requestId)
+             .single();
+
+      if (!requestData) return;
+
+      // Get the requester's name
+      const { data: requesterData } = await supabase
+        .from("profiles")
+        .select("full_name")
+        .eq("id", requestData.requester_id)
+        .single();
+
+      const requesterName = requesterData?.full_name || "Unknown Parent";
+
+      // Get all responses for this request
+      const { data: allResponses } = await supabase
+        .from("care_responses")
+        .select("id, responder_id, status, response_type")
+        .eq("request_id", requestId);
+
+      if (!allResponses) return;
+
+      // Send notifications to each responder
+      for (const response of allResponses) {
+        const isAccepted = response.id === acceptedResponseId;
+        const status = isAccepted ? 'accepted' : 'rejected';
+        
+        // Get responder's name
+        const { data: responderData } = await supabase
+          .from("profiles")
+          .select("full_name")
+          .eq("id", response.responder_id)
+          .single();
+
+        const responderName = responderData?.full_name || "Unknown Parent";
+
+        // Create notification message
+                     const messageContent = isAccepted
+               ? `Your response to ${requesterName}'s care request has been accepted! The care exchange has been scheduled for ${requestData.requested_date} from ${requestData.start_time} to ${requestData.end_time}.`
+               : `Your response to ${requesterName}'s care request was not selected. The request for ${requestData.requested_date} from ${requestData.start_time} to ${requestData.end_time} has been fulfilled by another parent.`;
+
+        const messageSubject = isAccepted 
+          ? "Care Request Response Accepted"
+          : "Care Request Response Not Selected";
+
+        // Insert notification message
+                                        const { error: messageError } = await supabase
+                   .from("messages")
+                   .insert({
+                     group_id: requestData.group_id, // Use the group from the original request
+                     sender_id: requestData.requester_id, // From the requester
+                     recipient_id: response.responder_id, // To the responder
+                     subject: messageSubject,
+                     content: messageContent,
+                     role: 'notification'
+                   });
+
+        if (messageError) {
+          console.error('Error sending notification to responder:', messageError);
+        }
+               }
+         
+         // Dispatch event to update message count in header
+         window.dispatchEvent(new CustomEvent('newMessageSent'));
+       } catch (error) {
+         console.error('Error sending response notifications:', error);
+       }
+     };
+
   const acceptResponse = async (responseId: string, requestId: string) => {
     console.log('acceptResponse called with:', { responseId, requestId, userId: user?.id });
     
@@ -2116,12 +2229,12 @@ export default function SchedulePage() {
     }
 
     try {
-                  // Call the simple_care_exchange function to accept the response and create blocks
-            console.log('Calling simple_care_exchange RPC...');
-            const { error: exchangeError } = await supabase.rpc('simple_care_exchange', {
-              p_request_id: requestId,
-              p_response_id: responseId
-            });
+      // Call the simple_care_exchange function to accept the response and create blocks
+      console.log('Calling simple_care_exchange RPC...');
+      const { error: exchangeError } = await supabase.rpc('simple_care_exchange', {
+        p_request_id: requestId,
+        p_response_id: responseId
+      });
 
       if (exchangeError) {
         console.error('Error creating care exchange:', exchangeError);
@@ -2131,12 +2244,60 @@ export default function SchedulePage() {
 
       console.log('create_care_exchange completed successfully');
 
-      // Refresh data to show the new scheduled blocks
-      console.log('Refreshing data...');
-      await fetchRequestsAndResponses(user.id);
-      await fetchScheduledCare(user.id, currentDate); // Updated function name
+      // Update the accepted response status
+      const { data: responseUpdateData, error: responseUpdateError } = await supabase
+        .from("care_responses")
+        .update({ 
+          status: 'accepted',
+          response_type: 'accept'
+        })
+        .eq('id', responseId)
+        .select();
+
+      if (responseUpdateError) {
+        console.error('Error updating response status:', responseUpdateError);
+      }
       
-      console.log('Data refresh completed');
+      // Update the request status to accepted
+      const { error: requestUpdateError } = await supabase
+        .from("care_requests")
+        .update({ 
+          status: 'accepted',
+          responder_id: response?.responder_id
+        })
+        .eq('id', requestId);
+
+      if (requestUpdateError) {
+        console.error('Error updating request status:', requestUpdateError);
+      }
+
+      // Reject all other pending responses for this request
+      const { error: rejectOthersError } = await supabase
+        .from("care_responses")
+        .update({ 
+          status: 'rejected',
+          response_type: 'decline'
+        })
+        .eq('request_id', requestId)
+        .neq('id', responseId)
+        .eq('status', 'pending');
+
+      if (rejectOthersError) {
+        console.error('Error rejecting other responses:', rejectOthersError);
+      }
+
+      // Send notifications to all responders about their response status
+      await sendResponseNotifications(requestId, responseId, response?.responder_id);
+
+      // Refresh data to show the new scheduled blocks and updated statuses
+      await fetchRequestsAndResponses(user.id);
+      await fetchScheduledCare(user.id, currentDate);
+      
+      // The completed reciprocal request will now be filtered out and won't show in the UI
+      
+      // Dispatch event to update header count
+      window.dispatchEvent(new CustomEvent('responseStatusUpdated'));
+      
       alert('Response accepted successfully! Care blocks have been created.');
     } catch (error) {
       console.error('Error accepting response:', error);
@@ -2449,25 +2610,11 @@ export default function SchedulePage() {
         </button>
       </div>
              <div className="space-y-4">
-               <div>
-                 <label className="block text-sm font-medium text-gray-700">Request Type</label>
-                                   <select
-                    value={requestForm.requestType}
-                    onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setRequestForm(prev => ({ 
-                      ...prev, 
-                     requestType: e.target.value as 'simple' | 'reciprocal' | 'open_block' 
-                    }))}
-                    className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2"
-                  >
-                   <option value="simple">Simple Request</option>
-                   <option value="reciprocal">Reciprocal Request</option>
-                   <option value="open_block">Open Block Request</option>
-                 </select>
-                 <p className="text-xs text-gray-500 mt-1">
-                   {requestForm.requestType === 'simple' && 'Direct request for care'}
-                   {requestForm.requestType === 'reciprocal' && 'Request with reciprocal care exchange'}
-                   {requestForm.requestType === 'event' && 'Group event or activity'}
-                   {requestForm.requestType === 'open_block' && 'Open time block to other group members'}
+               {/* Request Type - Hidden, defaults to reciprocal */}
+               <input type="hidden" value="reciprocal" />
+               <div className="p-3 bg-blue-50 rounded-md">
+                 <p className="text-sm text-blue-900">
+                   <strong>Reciprocal Care Request:</strong> This will create a request for reciprocal care exchange.
                  </p>
                </div>
                
@@ -2496,7 +2643,7 @@ export default function SchedulePage() {
                    className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2"
                  >
                    <option value="">Select a child</option>
-                   {children.map(child => (
+                   {requestForm.groupId && getActiveChildrenForGroup(requestForm.groupId).map(child => (
                      <option key={child.id} value={child.id}>{child.full_name}</option>
                    ))}
                  </select>
@@ -2534,99 +2681,7 @@ export default function SchedulePage() {
                  </div>
                </div>
 
-               {/* Event-specific fields */}
-               {requestForm.requestType === 'event' && (
-                 <>
-                   <div>
-                     <label className="block text-sm font-medium text-gray-700">Event Title</label>
-                     <input
-                       type="text"
-                       value={requestForm.eventTitle}
-                       onChange={(e: any) => setRequestForm(prev => ({ ...prev, eventTitle: e.target.value }))}
-                       className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2"
-                       placeholder="e.g., Basketball Game, Park Playdate"
-                     />
-                   </div>
-                   <div>
-                     <label className="block text-sm font-medium text-gray-700">Event Description</label>
-                     <textarea
-                       value={requestForm.eventDescription}
-                       onChange={(e: any) => setRequestForm(prev => ({ ...prev, eventDescription: e.target.value }))}
-                       className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2"
-                       rows={3}
-                       placeholder="Describe the event or activity..."
-                     />
-                   </div>
-                   <div>
-                     <label className="block text-sm font-medium text-gray-700">Event Location</label>
-                     <input
-                       type="text"
-                       value={requestForm.eventLocation}
-                       onChange={(e: any) => setRequestForm(prev => ({ ...prev, eventLocation: e.target.value }))}
-                       className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2"
-                       placeholder="e.g., Central Park, Community Center"
-                     />
-                   </div>
-
-                   
-                   {/* Recurring Event Options */}
-                   <div>
-                     <label className="flex items-center">
-                       <input
-                         type="checkbox"
-                         checked={requestForm.isRecurring}
-                         onChange={(e: any) => setRequestForm(prev => ({ ...prev, isRecurring: e.target.checked }))}
-                         className="mr-2"
-                       />
-                       <span className="text-sm font-medium text-gray-700">Make this a recurring event</span>
-                     </label>
-                   </div>
-                   
-                   {requestForm.isRecurring && (
-                     <>
-                       <div>
-                         <label className="block text-sm font-medium text-gray-700">Recurrence Pattern</label>
-                         <select
-                           value={requestForm.recurrencePattern}
-                           onChange={(e: any) => setRequestForm(prev => ({ ...prev, recurrencePattern: e.target.value as 'weekly' | 'monthly' | 'yearly' }))}
-                           className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2"
-                         >
-                           <option value="weekly">Weekly</option>
-                           <option value="monthly">Monthly</option>
-                           <option value="yearly">Yearly</option>
-                         </select>
-                       </div>
-                       <div>
-                         <label className="block text-sm font-medium text-gray-700">End Date</label>
-                         <input
-                           type="date"
-                           value={requestForm.recurrenceEndDate}
-                           onChange={(e: any) => setRequestForm(prev => ({ ...prev, recurrenceEndDate: e.target.value }))}
-                           className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2"
-                           min={requestForm.requestedDate}
-                     />
-                   </div>
-                     </>
-                   )}
-                 </>
-               )}
-
-               {/* Open Block specific fields */}
-               {requestForm.requestType === 'open_block' && (
-                 <div>
-                   <label className="block text-sm font-medium text-gray-700">Available Slots</label>
-                   <input
-                     type="number"
-                     min="1"
-                     max="10"
-                     value={requestForm.openBlockSlots}
-                     onChange={(e: any) => setRequestForm(prev => ({ ...prev, openBlockSlots: parseInt(e.target.value) || 1 }))}
-                     className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2"
-                   />
-                   <p className="text-xs text-gray-500 mt-1">How many additional children can join this time block</p>
-                 </div>
-               )}
-
+               {/* Notes */}
                <div>
                  <label className="block text-sm font-medium text-gray-700">Notes</label>
                  <textarea
@@ -2634,7 +2689,7 @@ export default function SchedulePage() {
                    onChange={(e: any) => setRequestForm(prev => ({ ...prev, notes: e.target.value }))}
                    className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2"
                    rows={3}
-                   placeholder="Additional notes or special instructions..."
+                   placeholder="Additional notes..."
                  />
                </div>
              </div>
@@ -2646,7 +2701,27 @@ export default function SchedulePage() {
                  Create Request
                </button>
                <button
-                 onClick={() => setShowCreateCareRequest(false)}
+                 onClick={() => {
+                   setShowCreateCareRequest(false);
+                   setRequestForm({
+                     groupId: '',
+                     childId: '',
+                     requestedDate: '',
+                     startTime: '',
+                     endTime: '',
+                     notes: '',
+                     requestType: 'reciprocal',
+                     eventTitle: '',
+                     eventDescription: '',
+                     eventLocation: '',
+                     eventRSVPDeadline: '',
+                     eventEditDeadline: '',
+                     isRecurring: false,
+                     recurrencePattern: 'weekly',
+                     recurrenceEndDate: '',
+                     openBlockSlots: 1
+                   });
+                 }}
                  className="flex-1 px-4 py-2 bg-gray-300 text-gray-700 rounded-md hover:bg-gray-400"
                >
                  Cancel
@@ -2909,7 +2984,7 @@ export default function SchedulePage() {
                        className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2"
                      >
                        <option value="">Select a child</option>
-                       {children.map(child => (
+                       {selectedRequest && getActiveChildrenForGroup(selectedRequest.group_id).map(child => (
                          <option key={child.id} value={child.id}>{child.full_name}</option>
                        ))}
                      </select>
@@ -3857,24 +3932,24 @@ export default function SchedulePage() {
                 onClick={() => {
                   setShowEditModal(false);
                   setSelectedRequest(null);
-                  setRequestForm({
-                    groupId: '',
-                    childId: '',
-                    requestedDate: '',
-                    startTime: '',
-                    endTime: '',
-                    notes: '',
-                    requestType: 'simple',
-                    eventTitle: '',
-                    eventDescription: '',
-                    eventLocation: '',
-                    eventRSVPDeadline: '',
-                    eventEditDeadline: '',
-                    isRecurring: false,
-                    recurrencePattern: 'weekly',
-                    recurrenceEndDate: '',
-                    openBlockSlots: 1
-                  });
+                        setRequestForm({
+        groupId: '',
+        childId: '',
+        requestedDate: '',
+        startTime: '',
+        endTime: '',
+        notes: '',
+        requestType: 'reciprocal',
+        eventTitle: '',
+        eventDescription: '',
+        eventLocation: '',
+        eventRSVPDeadline: '',
+        eventEditDeadline: '',
+        isRecurring: false,
+        recurrencePattern: 'weekly',
+        recurrenceEndDate: '',
+        openBlockSlots: 1
+      });
                 }}
                 className="flex-1 px-4 py-2 bg-gray-300 text-gray-700 rounded-md hover:bg-gray-400"
               >

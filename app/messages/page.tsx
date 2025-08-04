@@ -86,13 +86,46 @@ export default function MessagesPage() {
             groupsMap[g.id] = g.name;
           });
         }
-        console.log("Message groupIds:", groupIds);
-        console.log("groupsMap:", groupsMap);
+
         setGroupsMap(groupsMap);
+        
+        // Mark all messages as viewed when the page loads
+        if (messagesData && messagesData.length > 0) {
+          await markMessagesAsViewed(data.user.id, messagesData.map(m => m.id));
+        }
+        
         setLoading(false);
       }
     });
   }, [router]);
+
+  // Function to mark messages as viewed
+  const markMessagesAsViewed = async (userId: string, messageIds: string[]) => {
+    try {
+      // Insert view records for all messages
+      const viewRecords = messageIds.map(messageId => ({
+        user_id: userId,
+        message_id: messageId
+      }));
+
+      // Use upsert to avoid conflicts if already viewed
+      const { error } = await supabase
+        .from("message_views")
+        .upsert(viewRecords, { 
+          onConflict: 'user_id,message_id',
+          ignoreDuplicates: true 
+        });
+
+      if (error) {
+        console.error("Error marking messages as viewed:", error);
+      } else {
+        // Trigger a refresh of the header notification count
+        window.dispatchEvent(new CustomEvent('messagesViewed'));
+      }
+    } catch (error) {
+      console.error("Error marking messages as viewed:", error);
+    }
+  };
 
   if (loading) {
     return <div className="flex min-h-screen items-center justify-center">Loading...</div>;
