@@ -635,7 +635,7 @@ export default function ClientDashboard() {
     <div>
       <Header currentPage="dashboard" />
       
-      <div className="p-6 max-w-6xl mx-auto">
+      <div className="p-6 max-w-6xl mx-auto bg-white min-h-screen">
         {/* Tab Navigation */}
       <div className="flex border-b border-gray-200 mb-6">
         <button
@@ -690,14 +690,14 @@ export default function ClientDashboard() {
             <h2 className="text-xl font-semibold">Children</h2>
             <button
               onClick={() => setShowAddChild(!showAddChild)}
-              className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 transition"
+              className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition shadow-soft hover:shadow-medium"
             >
               {showAddChild ? "Cancel" : "Add Child"}
             </button>
           </div>
 
           {showAddChild && (
-            <form onSubmit={handleAddChild} className="mb-6 p-4 bg-gray-50 rounded-lg">
+            <form onSubmit={handleAddChild} className="mb-6 p-4 bg-white rounded-lg border border-cyan-200">
               <h3 className="text-lg font-medium mb-4">Add New Child</h3>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
                 <div>
@@ -706,7 +706,7 @@ export default function ClientDashboard() {
                     type="text"
                     value={childName}
                     onChange={(e: React.ChangeEvent<HTMLInputElement>) => setChildName(e.target.value)}
-                    className="w-full px-3 py-2 border rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    className="w-full px-3 py-2 border border-blue-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                     placeholder="Enter child's name"
                     required
                   />
@@ -717,7 +717,7 @@ export default function ClientDashboard() {
                     type="date"
                     value={childBirthdate}
                     onChange={(e) => setChildBirthdate(e.target.value)}
-                    className="w-full px-3 py-2 border rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    className="w-full px-3 py-2 border border-blue-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                     max={new Date().toISOString().split('T')[0]}
                     required
                   />
@@ -727,7 +727,7 @@ export default function ClientDashboard() {
               <button
                 type="submit"
                 disabled={addingChild}
-                className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 transition disabled:opacity-50"
+                className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition disabled:opacity-50 shadow-soft hover:shadow-medium"
               >
                 {addingChild ? "Adding..." : "Add Child"}
               </button>
@@ -744,7 +744,7 @@ export default function ClientDashboard() {
               {children.map((child) => {
                 const age = calculateAge(child.birthdate);
                 return (
-                  <div key={child.id} className="border rounded p-4 flex flex-col gap-2 bg-gray-50">
+                  <div key={child.id} className="border border-cyan-200 rounded-lg p-4 flex flex-col gap-2 bg-white">
                     {editingChildId === child.id ? (
                       <>
                         <input
@@ -819,14 +819,14 @@ export default function ClientDashboard() {
               <h2 className="text-xl font-semibold">Create Groups</h2>
               <button
                 onClick={() => setShowAddGroup(!showAddGroup)}
-                className="px-4 py-2 bg-purple-600 text-white rounded hover:bg-purple-700 transition"
+                className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 transition"
               >
                 {showAddGroup ? "Cancel" : "Create Group"}
               </button>
             </div>
 
             {showAddGroup && (
-              <form onSubmit={handleAddGroup} className="mb-6 p-4 bg-gray-50 rounded-lg">
+              <form onSubmit={handleAddGroup} className="mb-6 p-4 bg-white rounded-lg border border-cyan-200">
                 <h3 className="text-lg font-medium mb-4">Create New Group</h3>
                 <div className="space-y-4 mb-4">
                   <div>
@@ -866,7 +866,7 @@ export default function ClientDashboard() {
                 <button
                   type="submit"
                   disabled={addingGroup}
-                  className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 transition disabled:opacity-50"
+                  className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 transition disabled:opacity-50"
                 >
                   {addingGroup ? "Creating..." : "Create Group"}
                 </button>
@@ -882,7 +882,7 @@ export default function ClientDashboard() {
             ) : (
               <div className="space-y-4">
                 {groups.map((group) => (
-                  <div key={group.id} className="border rounded p-4 flex flex-col gap-2 bg-gray-50">
+                  <div key={group.id} className="border border-cyan-200 rounded p-4 flex flex-col gap-2 bg-white">
                     {editingGroupId === group.id ? (
                       <>
                         <select
@@ -953,7 +953,7 @@ export default function ClientDashboard() {
                           Created: {new Date(group.created_at).toLocaleDateString()}
                         </p>
                         {invitingGroupId === group.id && (
-                          <form onSubmit={(e) => handleSubmitInvite(e, group)} className="mt-2 p-3 bg-gray-100 rounded">
+                          <form onSubmit={(e) => handleSubmitInvite(e, group)} className="mt-2 p-3 bg-white rounded border border-cyan-200">
                             <div className="mb-2">
                               <label className="block text-sm font-medium mb-1">Parent Email</label>
                               <input
@@ -1020,7 +1020,7 @@ export default function ClientDashboard() {
                   const isCreator = isGroupCreator(group);
                   
                   return (
-                    <div key={group.id} className="border rounded p-6 bg-gray-50">
+                    <div key={group.id} className="border border-cyan-200 rounded p-6 bg-white">
                       <div className="flex items-center justify-between mb-4">
                         <h3 className="text-lg font-semibold">{group.name}</h3>
                         <span className={`px-3 py-1 rounded-full text-xs font-medium ${

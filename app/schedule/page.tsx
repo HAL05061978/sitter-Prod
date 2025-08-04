@@ -214,6 +214,11 @@ export default function SchedulePage() {
   const [userChildren, setUserChildren] = useState<Child[]>([]);
   const [selectedChildId, setSelectedChildId] = useState<string>('');
   
+  // Proposal management state
+  const [invitationProposals, setInvitationProposals] = useState<any[]>([]);
+  const [showProposalsModal, setShowProposalsModal] = useState(false);
+  const [selectedInvitationForProposals, setSelectedInvitationForProposals] = useState<GroupInvitation | null>(null);
+  
   // Form states
   const [requestForm, setRequestForm] = useState({
     groupId: '',
@@ -486,6 +491,33 @@ export default function SchedulePage() {
       }
     }
 
+    // Also fetch blocks where the user's children are being cared for by others (provided care)
+    let childCareProvidedBlocks: any[] = [];
+    if (userChildIds.length > 0) {
+      const { data: childProvidedData, error: childProvidedError } = await supabase
+        .from("scheduled_care")
+        .select(`
+          *,
+          children:child_id (
+            id,
+            full_name,
+            parent_id
+          )
+        `)
+        .gte("care_date", formatDateForDB(startDate))
+        .lte("care_date", formatDateForDB(endDate))
+        .in("group_id", groupIds)
+        .eq("status", "confirmed")
+        .eq("care_type", "provided")
+        .in("child_id", userChildIds);
+
+      if (childProvidedError) {
+        console.error('Error fetching child care provided blocks:', childProvidedError);
+      } else {
+        childCareProvidedBlocks = childProvidedData || [];
+      }
+    }
+
     // Also fetch event blocks for all group members (since events create blocks for everyone)
     const { data: eventBlocks, error: eventError } = await supabase
       .from("scheduled_care")
@@ -508,7 +540,7 @@ export default function SchedulePage() {
     }
 
     // Combine and deduplicate the results
-    const allBlocks = [...(userBlocks || []), ...childCareNeededBlocks, ...(eventBlocks || [])];
+    const allBlocks = [...(userBlocks || []), ...childCareNeededBlocks, ...childCareProvidedBlocks, ...(eventBlocks || [])];
     const uniqueBlocks = allBlocks.filter((block, index, self) => 
       index === self.findIndex(b => b.id === block.id)
     );
@@ -516,6 +548,7 @@ export default function SchedulePage() {
     console.log('Fetched scheduled care blocks:', {
       userBlocks: userBlocks?.length || 0,
       childCareNeededBlocks: childCareNeededBlocks.length,
+      childCareProvidedBlocks: childCareProvidedBlocks.length,
       eventBlocks: eventBlocks?.length || 0,
       totalUnique: uniqueBlocks.length,
       blocks: uniqueBlocks
@@ -594,8 +627,62 @@ export default function SchedulePage() {
   };
 
   const fetchInvitations = async (userId: string) => {
-    // Implementation for invitations (if needed)
-    // This would need to be updated based on your invitation system
+    try {
+      // Since we're not using a separate group_invitations table,
+      // we'll fetch invitations from care_responses where the response_notes contains invitation data
+      // We want to show all invitations to all parents in the group
+      // BUT we should NOT include reciprocal requests - those should be handled as regular care requests
+      const { data: responsesData, error } = await supabase
+        .from("care_responses")
+        .select(`
+          *,
+          care_requests!inner(*)
+        `)
+        .ilike('response_notes', '%Invitation ID:%')
+        .neq('care_requests.request_type', 'reciprocal') // Exclude reciprocal requests from invitations
+        .order("created_at", { ascending: false });
+
+      if (error) {
+        console.error('Error fetching invitations:', error);
+        return;
+      }
+
+      // Convert care_responses to GroupInvitation format
+      const invitations: GroupInvitation[] = (responsesData || []).map(response => {
+        // Parse invitation data from response_notes
+        const notes = response.response_notes || '';
+        const inviterMatch = notes.match(/Inviter: ([^|]+)/);
+        const invitationIdMatch = notes.match(/Invitation ID: ([^|]+)/);
+        const dateMatch = notes.match(/Invitation Date: ([^|]+)/);
+        const timeMatch = notes.match(/Invitation Time: ([^|]+)/);
+        
+        const inviterId = inviterMatch ? inviterMatch[1].trim() : '';
+        const invitationId = invitationIdMatch ? invitationIdMatch[1].trim() : '';
+        const invitationDate = dateMatch ? dateMatch[1].trim() : '';
+        const invitationTime = timeMatch ? timeMatch[1].trim() : '';
+        
+        const [startTime, endTime] = invitationTime.split('-').map((t: string) => t.trim());
+        
+        return {
+          id: invitationId || response.id,
+          group_id: response.care_requests.group_id,
+          inviter_id: inviterId,
+          invitee_id: response.responder_id,
+          request_id: response.request_id,
+          invitation_date: invitationDate,
+          invitation_start_time: startTime || '',
+          invitation_end_time: endTime || '',
+          invitation_duration_minutes: 0,
+          status: response.status,
+          notes: notes,
+          created_at: response.created_at
+        };
+      });
+
+      setInvitations(invitations);
+    } catch (error) {
+      console.error('Error fetching invitations:', error);
+    }
   };
 
   // Event-specific functions
@@ -653,6 +740,10 @@ export default function SchedulePage() {
 
       // Refresh event responses
       await fetchEventResponses(selectedEventRequest.id);
+      
+      // Dispatch custom event to update header count
+      window.dispatchEvent(new CustomEvent('careRequestUpdated'));
+      
       setShowEventRSVPModal(false);
       setEventRSVPForm({
         responseType: 'going',
@@ -856,14 +947,131 @@ export default function SchedulePage() {
 
   // Updated function names and types
   const respondToCareRequest = async () => {
+    // For open block requests, no reciprocal times are needed
+    if (selectedRequest?.request_type === 'open_block') {
+      if (!user || !selectedRequest) {
+        return;
+      }
+
+      // Prevent users from responding to their own requests
+      if (selectedRequest.requester_id === user.id) {
+        return;
+      }
+
+      try {
+        // For open block requests, create both scheduled care blocks directly
+        // Parent B caring for Parent C's child + Parent C caring for Parent B's child
+        
+        // Get Parent B's child and original care block details from reciprocal fields
+        const parentBChildId = selectedRequest.reciprocal_child_id;
+        const originalCareBlock = {
+          care_date: selectedRequest.reciprocal_date,
+          start_time: selectedRequest.reciprocal_start_time,
+          end_time: selectedRequest.reciprocal_end_time
+        };
+        
+        // Debug logging
+        console.log('Open block request details:', {
+          selectedRequest: selectedRequest,
+          parentBChildId: parentBChildId,
+          originalCareBlock: originalCareBlock,
+          reciprocal_fields: {
+            reciprocal_parent_id: selectedRequest.reciprocal_parent_id,
+            reciprocal_child_id: selectedRequest.reciprocal_child_id,
+            reciprocal_date: selectedRequest.reciprocal_date,
+            reciprocal_start_time: selectedRequest.reciprocal_start_time,
+            reciprocal_end_time: selectedRequest.reciprocal_end_time
+          }
+        });
+
+        // Create both care blocks
+        const careBlocksToInsert = [
+          {
+            // Parent B caring for Parent C's child during the original care block time (same time as Parent A's child)
+            group_id: selectedRequest.group_id,
+            parent_id: selectedRequest.requester_id,
+            child_id: selectedRequest.child_id,
+            care_date: originalCareBlock?.care_date || selectedRequest.requested_date,
+            start_time: originalCareBlock?.start_time || selectedRequest.start_time,
+            end_time: originalCareBlock?.end_time || selectedRequest.end_time,
+            care_type: 'provided',
+            status: 'confirmed',
+            related_request_id: selectedRequest.id,
+            notes: `Open block: ${getParentName(selectedRequest.requester_id)} caring for ${getChildName(selectedRequest.child_id, selectedRequest)} during original care block time`
+          },
+          {
+            // Parent C caring for Parent B's child during the open block time (new time offered by Parent B)
+            group_id: selectedRequest.group_id,
+            parent_id: user.id,
+            child_id: parentBChildId,
+            care_date: selectedRequest.requested_date,
+            start_time: selectedRequest.start_time,
+            end_time: selectedRequest.end_time,
+            care_type: 'provided',
+            status: 'confirmed',
+            related_request_id: selectedRequest.id,
+            notes: `Reciprocal care: ${getParentName(user.id)} caring for Parent B's child during open block time`
+          }
+        ];
+        
+        console.log('Attempting to insert care blocks:', careBlocksToInsert);
+        
+        const { error: careError } = await supabase
+          .from("scheduled_care")
+          .insert(careBlocksToInsert);
+
+        if (careError) {
+          console.error('Error creating scheduled care blocks:', careError);
+          console.error('Care blocks that failed to insert:', careBlocksToInsert);
+          return;
+        }
+        
+        console.log('Successfully inserted care blocks');
+
+        // Update the open block request to mark it as accepted
+        const { error: updateError } = await supabase
+          .from("care_requests")
+          .update({ 
+            status: 'accepted',
+            responder_id: user.id
+          })
+          .eq('id', selectedRequest.id);
+
+        if (updateError) {
+          console.error('Error updating request:', updateError);
+          return;
+        }
+
+        // Refresh data
+        await fetchRequestsAndResponses(user.id);
+        await fetchScheduledCare(user.id, new Date());
+        
+        // Dispatch custom event to update header count
+        window.dispatchEvent(new CustomEvent('careRequestUpdated'));
+        
+        setShowResponseModal(false);
+        setResponseForm({
+          reciprocalDate: '',
+          reciprocalStartTime: '',
+          reciprocalEndTime: '',
+          reciprocalChildId: '',
+          notes: ''
+        });
+        // Success - no popup needed, just refresh the data
+        return;
+              } catch (error) {
+          console.error('Error accepting open block:', error);
+          return;
+        }
+    }
+
+    // For regular requests (reciprocal, simple, etc.)
     if (!user || !selectedRequest || !responseForm.reciprocalDate || !responseForm.reciprocalStartTime || !responseForm.reciprocalEndTime || !responseForm.reciprocalChildId) {
-      alert('Please fill in all required fields');
       return;
     }
 
     // Prevent users from responding to their own requests
     if (selectedRequest.requester_id === user.id) {
-      alert('You cannot respond to your own request');
       return;
     }
 
@@ -873,18 +1081,17 @@ export default function SchedulePage() {
         .insert({
           request_id: selectedRequest.id,
           responder_id: user.id,
-          response_type: responseType,
+          response_type: selectedRequest.request_type === 'reciprocal' ? 'pending' : responseType,
           reciprocal_date: responseForm.reciprocalDate,
           reciprocal_start_time: responseForm.reciprocalStartTime,
           reciprocal_end_time: responseForm.reciprocalEndTime,
           reciprocal_child_id: responseForm.reciprocalChildId,
           response_notes: responseForm.notes, // Fixed column name
-          status: 'pending'
+          status: 'pending' // Always set to pending so Parent A can choose
         });
 
       if (error) {
         console.error('Error creating response:', error);
-        alert('Error creating response: ' + error.message);
         return;
       }
 
@@ -902,10 +1109,10 @@ export default function SchedulePage() {
         reciprocalChildId: '',
         notes: ''
       });
-      alert('Response submitted successfully!');
+      // Success - no popup needed
     } catch (error) {
       console.error('Error creating response:', error);
-      alert('Error creating response. Please try again.');
+      return;
     }
   };
 
@@ -926,6 +1133,12 @@ export default function SchedulePage() {
     // Prevent users from responding to their own requests
     if (request.requester_id === user?.id) {
       alert('You cannot respond to your own request');
+      return;
+    }
+    
+    // For reciprocal requests, don't allow rejections - just don't respond
+    if (request.request_type === 'reciprocal') {
+      alert('For reciprocal requests, you can provide reciprocal care times or simply not respond.');
       return;
     }
     
@@ -1125,6 +1338,9 @@ export default function SchedulePage() {
       await fetchRequestsAndResponses(user.id);
       await fetchAllEventResponses(user.id);
       await fetchEventResponses(request.id);
+      
+      // Dispatch custom event to update header count
+      window.dispatchEvent(new CustomEvent('careRequestUpdated'));
     } catch (error) {
       console.error('Error submitting event RSVP:', error);
     }
@@ -1152,8 +1368,20 @@ export default function SchedulePage() {
 
   const sendInvitations = async () => {
     if (!user || !selectedRequest) {
-      alert('User or request not found');
       return;
+    }
+
+    // Validate that all selected children have time blocks
+    if (inviteForm.selectedMembers.length !== inviteForm.timeBlocks.length) {
+      return;
+    }
+
+    // Validate that all time blocks have required fields
+    for (let i = 0; i < inviteForm.timeBlocks.length; i++) {
+      const timeBlock = inviteForm.timeBlocks[i];
+      if (!timeBlock.date || !timeBlock.startTime || !timeBlock.endTime) {
+        return;
+      }
     }
 
     try {
@@ -1162,39 +1390,39 @@ export default function SchedulePage() {
         const childId = inviteForm.selectedMembers[i];
         const timeBlock = inviteForm.timeBlocks[i];
         
-        if (!timeBlock.date || !timeBlock.startTime || !timeBlock.endTime) {
-          alert(`Please fill in all time slot details for child ${i + 1}`);
-          return;
-        }
-
         // Find the child details
         const selectedChild = availableChildren.find(child => child.child_id === childId);
         if (!selectedChild) {
-          alert(`Child not found for selection ${i + 1}`);
           return;
         }
 
-        // Create a new care request for this child
+        // Create a new care request for this child with the specified time block
         const { error: createError } = await supabase
           .from('care_requests')
           .insert({
             group_id: selectedRequest.group_id,
-            requester_id: user.id, // The care provider is requesting reciprocal care
+            requester_id: user.id, // Parent B is requesting to care for additional children
             child_id: childId, // Use the selected child's ID
-            requested_date: timeBlock.date,
-            start_time: timeBlock.startTime,
-            end_time: timeBlock.endTime,
+            requested_date: timeBlock.date, // Use the specified date (new time Parent B is offering)
+            start_time: timeBlock.startTime, // Use the specified start time
+            end_time: timeBlock.endTime, // Use the specified end time
             request_type: 'open_block',
             status: 'pending',
             open_block_parent_id: user.id,
             open_block_slots: 1,
             open_block_slots_used: 0,
-            notes: inviteForm.notes || `Reciprocal care request from ${getParentName(user.id)} for ${selectedChild.child_name}`
+            // Store the original care block information in reciprocal fields
+            reciprocal_parent_id: user.id, // Parent B
+            reciprocal_child_id: selectedRequest.child_id, // Parent B's child
+            reciprocal_date: selectedRequest.requested_date, // Original care block date
+            reciprocal_start_time: selectedRequest.start_time, // Original care block start time
+            reciprocal_end_time: selectedRequest.end_time, // Original care block end time
+            reciprocal_status: 'pending',
+            notes: inviteForm.notes || `Open block invitation: ${getParentName(user.id)} is offering to care for ${selectedChild.child_name} from ${formatTime(timeBlock.startTime)} to ${formatTime(timeBlock.endTime)} on ${timeBlock.date}`
           });
 
         if (createError) {
           console.error('Error creating open block request:', createError);
-          alert('Error creating invitation: ' + createError.message);
           return;
         }
       }
@@ -1211,10 +1439,12 @@ export default function SchedulePage() {
       // Refresh data to show new requests
       await fetchRequestsAndResponses(user.id);
       
-      alert('Invitations sent successfully! New care requests have been created for the selected children.');
+      // Dispatch custom event to update header count
+      window.dispatchEvent(new CustomEvent('careRequestUpdated'));
+      
+      // Success - no popup needed
     } catch (error) {
       console.error('Error sending invitations:', error);
-      alert('Error sending invitations. Please try again.');
     }
   };
 
@@ -1249,9 +1479,105 @@ export default function SchedulePage() {
   };
 
   const acceptInvitation = async (selectedTimeBlockIndex: number) => {
-    // Implementation for accepting invitations
-    // This would need to be updated based on your invitation system
-    alert('Invitation accepted successfully!');
+    if (!user || !selectedInvitation || !selectedChildId) {
+      alert('Missing required information');
+      return;
+    }
+
+    try {
+      // Submit a response instead of directly accepting
+      const { data: responseId, error } = await supabase.rpc('submit_invitation_response', {
+        p_accepting_user_id: user.id,
+        p_request_id: selectedInvitation.request_id,
+        p_inviter_id: selectedInvitation.inviter_id,
+        p_selected_time_block_index: selectedTimeBlockIndex,
+        p_selected_child_id: selectedChildId,
+        p_invitation_date: selectedInvitation.invitation_date,
+        p_invitation_start_time: selectedInvitation.invitation_start_time,
+        p_invitation_end_time: selectedInvitation.invitation_end_time,
+        p_notes: 'Response submitted via invitation acceptance'
+      });
+
+      if (error) {
+        console.error('Error submitting response:', error);
+        alert('Error submitting response: ' + error.message);
+        return;
+      }
+
+      // Close the modal
+      setShowAcceptInvitationModal(false);
+      setSelectedInvitation(null);
+      setAvailableTimeBlocks([]);
+      setUserChildren([]);
+      setSelectedChildId('');
+
+      // Refresh data
+      await fetchRequestsAndResponses(user.id);
+      await fetchInvitations(user.id);
+      
+      alert('Response submitted successfully! The original inviter will review your response.');
+    } catch (error) {
+      console.error('Error submitting response:', error);
+      alert('Error submitting response. Please try again.');
+    }
+  };
+
+  const handleViewResponses = async (invitation: GroupInvitation) => {
+    setSelectedInvitationForProposals(invitation);
+    
+    try {
+      const { data: responses, error } = await supabase.rpc('get_invitation_responses', {
+        p_inviter_id: invitation.inviter_id,
+        p_request_id: invitation.request_id
+      });
+
+      if (error) {
+        console.error('Error fetching responses:', error);
+        alert('Error fetching responses: ' + error.message);
+        return;
+      }
+
+      setInvitationProposals(responses || []);
+      setShowProposalsModal(true);
+    } catch (error) {
+      console.error('Error fetching responses:', error);
+      alert('Error fetching responses. Please try again.');
+    }
+  };
+
+  const acceptInvitationResponse = async (responseId: string) => {
+    if (!user) {
+      alert('User not found');
+      return;
+    }
+
+    try {
+      const { error } = await supabase.rpc('accept_invitation_response', {
+        p_response_id: responseId,
+        p_acceptor_id: user.id
+      });
+
+      if (error) {
+        console.error('Error accepting response:', error);
+        alert('Error accepting response: ' + error.message);
+        return;
+      }
+
+      // Close the modal
+      setShowProposalsModal(false);
+      setSelectedInvitationForProposals(null);
+      setInvitationProposals([]);
+
+      // Refresh data
+      await fetchRequestsAndResponses(user.id);
+      await fetchInvitations(user.id);
+      await fetchScheduledCare(user.id, currentDate);
+      
+      alert('Response accepted successfully! Care blocks have been created.');
+    } catch (error) {
+      console.error('Error accepting response:', error);
+      alert('Error accepting response. Please try again.');
+    }
   };
 
   const addTimeBlock = () => {
@@ -1590,12 +1916,35 @@ export default function SchedulePage() {
           };
           
           setSelectedRequest(openBlockRequest);
-          setAvailableChildren(availableProfiles.map(profile => ({
-            child_id: profile.id, // Using profile ID as child ID for now
-            child_name: profile.full_name || 'Unknown',
-            parent_id: profile.id,
-            parent_name: profile.full_name || 'Unknown'
-          })));
+          // Fetch children for each available profile
+          const childrenPromises = availableProfiles.map(async (profile) => {
+            const { data: profileChildren, error } = await supabase
+              .from('children')
+              .select('id, full_name, parent_id')
+              .eq('parent_id', profile.id);
+            
+            if (error) {
+              console.error('Error fetching children for profile:', profile.id, error);
+              return [];
+            }
+            
+            return (profileChildren || []).map(child => ({
+              child_id: child.id,
+              child_name: child.full_name,
+              parent_id: child.parent_id,
+              parent_name: profile.full_name || 'Unknown'
+            }));
+          });
+          
+          const allChildren = await Promise.all(childrenPromises);
+          const flatChildren = allChildren.flat();
+          
+          if (flatChildren.length === 0) {
+            alert('No children found for the available group members.');
+            return;
+          }
+          
+          setAvailableChildren(flatChildren);
           setShowInviteModal(true);
           return;
         }
@@ -1652,7 +2001,7 @@ export default function SchedulePage() {
   return (
     <div>
       <Header currentPage="schedule" />
-      <div className="p-6 max-w-7xl mx-auto">
+      <div className="p-6 max-w-7xl mx-auto bg-white min-h-screen">
       
       <div className="mb-6">
         <h1 className="text-3xl font-bold text-gray-900">Schedule</h1>
@@ -1735,6 +2084,7 @@ export default function SchedulePage() {
   
                       const isUserProviding = block.parent_id === user?.id && block.care_type === 'provided';
                       const isUserChildNeeding = block.care_type === 'needed' && children.some(c => c.id === block.child_id);
+                      const isUserChildBeingCaredFor = block.care_type === 'provided' && children.some(c => c.id === block.child_id);
                       
                       // Determine the visual style based on user context
                       let blockStyle = '';
@@ -1744,6 +2094,11 @@ export default function SchedulePage() {
                         // User is providing care for someone else's child
                         blockStyle = 'bg-green-100 text-green-800 border border-green-300';
                         blockText = `Providing care for ${block.children?.full_name || getChildName(block.child_id, undefined, block)}`;
+                      } else if (isUserChildBeingCaredFor) {
+                        // Someone else is providing care for user's child
+                        const providingParentName = getParentName(block.parent_id);
+                        blockStyle = 'bg-blue-100 text-blue-800 border border-blue-300';
+                        blockText = `${providingParentName} providing care for ${block.children?.full_name || getChildName(block.child_id, undefined, block)}`;
                       } else if (isUserChildNeeding) {
                         // User's child needs care (someone else is providing)
                         // For "needed" blocks, we need to find the providing parent from the related request/response
@@ -1848,6 +2203,62 @@ export default function SchedulePage() {
           ))}
         </div>
       </div>
+
+      {/* Invitations Section */}
+      {invitations.length > 0 && (
+        <div className="mt-8 bg-white rounded-lg shadow p-6">
+          <h3 className="text-lg font-medium text-gray-900 mb-4">Group Invitations</h3>
+          <div className="space-y-4">
+            {invitations.map((invitation) => (
+              <div key={invitation.id} className="border border-gray-200 rounded-lg p-4">
+                <div className="flex justify-between items-start">
+                  <div className="flex-1">
+                    <h4 className="font-medium text-gray-900">
+                      Invitation from {getParentName(invitation.inviter_id)}
+                    </h4>
+                    <p className="text-sm text-gray-600">
+                      Date: {invitation.invitation_date} | Time: {formatTime(invitation.invitation_start_time)} - {formatTime(invitation.invitation_end_time)}
+                    </p>
+                    <p className="text-sm text-gray-600">
+                      Group: {getGroupName(invitation.group_id)} | Status: {invitation.status}
+                    </p>
+                    {invitation.notes && (
+                      <p className="text-sm text-gray-600 mt-1">Notes: {invitation.notes}</p>
+                    )}
+                  </div>
+                  <div className="flex items-center space-x-2 ml-4">
+                    {invitation.inviter_id === user?.id ? (
+                      // Original inviter - show proposals button
+                      <button
+                        onClick={() => handleViewResponses(invitation)}
+                        className="px-3 py-1 bg-blue-600 text-white text-sm rounded hover:bg-blue-700"
+                      >
+                        View Responses
+                      </button>
+                    ) : invitation.inviter_id !== user?.id && invitation.status === 'pending' ? (
+                      // Any other parent in the group can respond
+                      <button
+                        onClick={() => handleAcceptInvitation(invitation)}
+                        className="px-3 py-1 bg-green-600 text-white text-sm rounded hover:bg-green-700"
+                      >
+                        Accept Invitation
+                      </button>
+                    ) : (
+                      <span className={`px-2 py-1 text-xs rounded-full ${
+                        invitation.status === 'pending' ? 'bg-yellow-100 text-yellow-800' :
+                        invitation.status === 'accepted' ? 'bg-green-100 text-green-800' :
+                        'bg-red-100 text-red-800'
+                      }`}>
+                        {invitation.status}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Action Buttons */}
 
@@ -2241,7 +2652,7 @@ export default function SchedulePage() {
             <div className="mt-6 flex space-x-3">
               <button
                 onClick={createCareRequest}
-                className="flex-1 px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700"
+                className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700"
               >
                 Create Event
               </button>
@@ -2262,6 +2673,7 @@ export default function SchedulePage() {
           <div className="bg-white rounded-lg p-6 w-full max-w-md">
             <h3 className="text-lg font-medium mb-4">Respond to Care Request</h3>
             <div className="space-y-4">
+              {selectedRequest?.request_type !== 'reciprocal' && (
               <div>
                 <label className="block text-sm font-medium text-gray-700">Response Type</label>
                                  <select
@@ -2273,7 +2685,22 @@ export default function SchedulePage() {
                     <option value="decline">Decline</option>
                  </select>
                </div>
-                                 {responseType === 'accept' && (
+              )}
+                            {selectedRequest?.request_type === 'reciprocal' && (
+                <div className="p-3 bg-blue-50 rounded-md">
+                  <p className="text-sm text-blue-900">
+                    <strong>Reciprocal Request:</strong> You can provide reciprocal care times below.
+                  </p>
+                </div>
+              )}
+              {selectedRequest?.request_type === 'open_block' && (
+                <div className="p-3 bg-green-50 rounded-md">
+                  <p className="text-sm text-green-900">
+                    <strong>Open Block Request:</strong> Accept to create the reciprocal care arrangement.
+                  </p>
+                </div>
+              )}
+              {responseType === 'accept' && selectedRequest?.request_type !== 'open_block' && (
                  <>
                    <div>
                      <label className="block text-sm font-medium text-gray-700">Reciprocal Date</label>
@@ -2401,10 +2828,22 @@ export default function SchedulePage() {
                        <span className="font-medium">RSVP Deadline:</span> {new Date(request.event_rsvp_deadline).toLocaleString()}
                      </p>
                    )}
-                   {request.request_type === 'open_block' && request.open_block_slots && (
-                     <p className="text-sm text-gray-600 mt-1">
-                       Available slots: {request.open_block_slots - (request.open_block_slots_used || 0)}/{request.open_block_slots}
-                     </p>
+                   {request.request_type === 'open_block' && (
+                     <div className="mt-2 p-3 bg-green-50 rounded-md">
+                       <p className="text-sm text-green-900 font-medium">
+                         Open Block Invitation from {getParentName(request.requester_id)}
+                       </p>
+                       <p className="text-sm text-green-800 mt-1">
+                         <strong>Care Offer:</strong> {request.requested_date} from {formatTime(request.start_time)} to {formatTime(request.end_time)}
+                       </p>
+                       <p className="text-sm text-green-700 mt-1">
+                         <strong>What happens when you accept:</strong> Two care blocks will be created:
+                       </p>
+                       <ul className="text-sm text-green-700 mt-1 ml-4">
+                         <li>• {getParentName(request.requester_id)} will care for your child during their original care block time ({request.reciprocal_date} from {formatTime(request.reciprocal_start_time)} to {formatTime(request.reciprocal_end_time)})</li>
+                         <li>• You will care for {getParentName(request.requester_id)}'s child during the time above ({request.requested_date} from {formatTime(request.start_time)} to {formatTime(request.end_time)})</li>
+                       </ul>
+                     </div>
                    )}
                    {request.notes && (
                      <p className="text-sm text-gray-600 mt-1">{request.notes}</p>
@@ -2463,7 +2902,7 @@ export default function SchedulePage() {
                          </>
                        ) : (
                          <>
-                           {!responses.some(r => r.request_id === request.id) && (
+                           {!responses.some(r => r.request_id === request.id && r.responder_id === user?.id) && (
                              <>
                                <button
                                  onClick={() => handleAgreeToRequest(request)}
@@ -2532,7 +2971,7 @@ export default function SchedulePage() {
                  openBlockSlots: 1
                });
              }}
-             className="px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 text-sm"
+             className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 text-sm"
            >
              Create Event
            </button>
@@ -2663,18 +3102,20 @@ export default function SchedulePage() {
                              Response from {getResponderName(response.responder_id)}
                            </h4>
                            <span className={`px-2 py-1 text-xs rounded-full ${
+                             (response.response_type === 'accept' || (response.response_type === 'pending' && request.request_type === 'reciprocal')) && request.request_type === 'reciprocal' ? 'bg-blue-100 text-blue-800' :
                              response.response_type === 'accept' ? 'bg-green-100 text-green-800' :
                              response.response_type === 'decline' ? 'bg-red-100 text-red-800' :
                              'bg-yellow-100 text-yellow-800'
                            }`}>
-                             {response.response_type === 'accept' ? 'Accepted' :
+                             {(response.response_type === 'accept' || (response.response_type === 'pending' && request.request_type === 'reciprocal')) && request.request_type === 'reciprocal' ? 'Reciprocal Offered' :
+                              response.response_type === 'accept' ? 'Accepted' :
                               response.response_type === 'decline' ? 'Declined' : 'Pending'}
                            </span>
                          </div>
                          <p className="text-sm text-gray-600">
                            For: {getChildName(request.child_id, request)} on {request.requested_date} • {formatTime(request.start_time)} - {formatTime(request.end_time)}
                          </p>
-                         {response.response_type === 'accept' && response.reciprocal_date && (
+                         {(response.response_type === 'accept' || (response.response_type === 'pending' && request.request_type === 'reciprocal')) && response.reciprocal_date && (
                            <div className="mt-2 p-3 bg-blue-50 rounded-md">
                              <p className="text-sm font-medium text-blue-900">Reciprocal Care Offered:</p>
                              <p className="text-sm text-blue-700">
@@ -2687,7 +3128,7 @@ export default function SchedulePage() {
                          )}
                        </div>
                        <div className="flex space-x-2 ml-4">
-                         {response.response_type === 'accept' && response.status === 'pending' && (
+                         {(response.response_type === 'accept' || (response.response_type === 'pending' && request.request_type === 'reciprocal')) && response.status === 'pending' && (
                            <button
                              onClick={() => acceptResponse(response.id, response.request_id)}
                              className="px-3 py-1 text-sm bg-green-600 text-white rounded hover:bg-green-700"
@@ -2695,7 +3136,6 @@ export default function SchedulePage() {
                              Accept Response
                            </button>
                          )}
-
                        </div>
                      </div>
                    </div>
@@ -2874,58 +3314,79 @@ export default function SchedulePage() {
                 </div>
               </div>
 
+              {/* Dynamic Time Blocks Section - Only show if children are selected */}
+              {inviteForm.selectedMembers.length > 0 && (
+                <div>
+                  <h4 className="font-medium text-gray-900 mb-2">
+                    Time Blocks for Reciprocal Care ({inviteForm.selectedMembers.length} selected)
+                  </h4>
+                  <div className="space-y-4">
+                    {inviteForm.selectedMembers.map((childId, index) => {
+                      const selectedChild = availableChildren.find(child => child.child_id === childId);
+                      const timeBlock = inviteForm.timeBlocks[index] || { date: '', startTime: '', endTime: '' };
+                      
+                      return (
+                        <div key={childId} className="border border-gray-200 rounded-lg p-4">
+                          <h5 className="font-medium text-gray-800 mb-3">
+                            Reciprocal Care for {selectedChild?.child_name}
+                          </h5>
+                          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                            <div>
+                              <label className="block text-sm font-medium text-gray-700 mb-1">
+                                Date
+                              </label>
+                              <input
+                                type="date"
+                                value={timeBlock.date}
+                                onChange={(e) => updateTimeBlock(index, 'date', e.target.value)}
+                                className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm"
+                                required
+                              />
+                            </div>
+                            <div>
+                              <label className="block text-sm font-medium text-gray-700 mb-1">
+                                Start Time
+                              </label>
+                              <input
+                                type="time"
+                                value={timeBlock.startTime}
+                                onChange={(e) => updateTimeBlock(index, 'startTime', e.target.value)}
+                                className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm"
+                                required
+                              />
+                            </div>
+                            <div>
+                              <label className="block text-sm font-medium text-gray-700 mb-1">
+                                End Time
+                              </label>
+                              <input
+                                type="time"
+                                value={timeBlock.endTime}
+                                onChange={(e) => updateTimeBlock(index, 'endTime', e.target.value)}
+                                className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm"
+                                required
+                              />
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
               <div>
-                <h4 className="font-medium text-gray-900 mb-2">
-                  Available Time Slots ({inviteForm.selectedMembers.length} selected children = {inviteForm.selectedMembers.length} time slots)
-                </h4>
-                <div className="space-y-2">
-                  {inviteForm.timeBlocks.map((block, index) => (
-                    <div key={index} className="flex items-center space-x-2">
-                      <input
-                        type="date"
-                        value={block.date}
-                        onChange={(e) => updateTimeBlock(index, 'date', e.target.value)}
-                        className="border border-gray-300 rounded px-2 py-1 text-sm"
-                      />
-                      <input
-                        type="time"
-                        value={block.startTime}
-                        onChange={(e) => updateTimeBlock(index, 'startTime', e.target.value)}
-                        className="border border-gray-300 rounded px-2 py-1 text-sm"
-                      />
-                      <span className="text-sm text-gray-500">to</span>
-                      <input
-                        type="time"
-                        value={block.endTime}
-                        onChange={(e) => updateTimeBlock(index, 'endTime', e.target.value)}
-                        className="border border-gray-300 rounded px-2 py-1 text-sm"
-                      />
-                      <button
-                        onClick={() => removeTimeBlock(index)}
-                        className="text-red-600 hover:text-red-800 text-sm"
-                      >
-                        Remove
-                      </button>
-                    </div>
-                  ))}
-                  {inviteForm.selectedMembers.length > inviteForm.timeBlocks.length && (
-                    <button
-                      onClick={addTimeBlock}
-                      className="text-blue-600 hover:text-blue-800 text-sm"
-                    >
-                      + Add Time Slot ({inviteForm.selectedMembers.length - inviteForm.timeBlocks.length} more needed)
-                    </button>
-                  )}
-                  {inviteForm.selectedMembers.length === inviteForm.timeBlocks.length && (
-                    <div className="text-sm text-green-600">
-                      ✓ Time slots match selected members
-                    </div>
-                  )}
-                  {inviteForm.selectedMembers.length < inviteForm.timeBlocks.length && (
-                    <div className="text-sm text-orange-600">
-                      ⚠ Too many time slots for selected members
-                    </div>
-                  )}
+                <h4 className="font-medium text-gray-900 mb-2">Open Block Invitation Information</h4>
+                <div className="bg-blue-50 p-3 rounded-md">
+                  <p className="text-sm text-blue-900">
+                    <strong>You are creating open block invitations for reciprocal care:</strong>
+                  </p>
+                  <p className="text-sm text-blue-700 mt-1">
+                    <strong>Your Original Care Block:</strong> {selectedRequest.requested_date} from {formatTime(selectedRequest.start_time)} to {formatTime(selectedRequest.end_time)}
+                  </p>
+                  <p className="text-sm text-blue-700 mt-2">
+                    <strong>How it works:</strong> For each child you select, you'll specify a time block where you're offering to care for their child. When they accept, both care blocks will be created automatically - you caring for their child during your specified time, and them caring for your child during your original care block time.
+                  </p>
                 </div>
               </div>
 
@@ -3222,6 +3683,91 @@ export default function SchedulePage() {
                 className="flex-1 px-4 py-2 bg-gray-300 text-gray-700 rounded-md hover:bg-gray-400"
               >
                 Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Proposals Modal */}
+      {showProposalsModal && selectedInvitationForProposals && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg p-6 w-full max-w-4xl max-h-[90vh] overflow-y-auto">
+            <h3 className="text-lg font-medium mb-4">Invitation Responses</h3>
+            
+            {/* Invitation Details */}
+            <div className="mb-6 p-4 bg-gray-50 rounded-lg">
+              <h4 className="font-medium text-gray-900 mb-2">Invitation Details</h4>
+              <div className="grid grid-cols-2 gap-4 text-sm">
+                <div>
+                  <span className="font-medium">Date:</span> {selectedInvitationForProposals.invitation_date}
+                </div>
+                <div>
+                  <span className="font-medium">Time:</span> {formatTime(selectedInvitationForProposals.invitation_start_time)} - {formatTime(selectedInvitationForProposals.invitation_end_time)}
+                </div>
+                <div>
+                  <span className="font-medium">Group:</span> {getGroupName(selectedInvitationForProposals.group_id)}
+                </div>
+                <div>
+                  <span className="font-medium">Status:</span> {selectedInvitationForProposals.status}
+                </div>
+              </div>
+            </div>
+
+            {/* Proposals List */}
+            <div className="space-y-4">
+              <h4 className="font-medium text-gray-900">Responses ({invitationProposals.length})</h4>
+              
+              {invitationProposals.length === 0 ? (
+                <div className="text-center py-8 text-gray-500">
+                  No responses received yet.
+                </div>
+              ) : (
+                invitationProposals.map((proposal) => (
+                  <div key={proposal.id} className="border border-gray-200 rounded-lg p-4">
+                    <div className="flex justify-between items-start mb-3">
+                      <div>
+                        <h5 className="font-medium text-gray-900">{proposal.proposer_name}</h5>
+                        <p className="text-sm text-gray-600">Child: {proposal.selected_child_name}</p>
+                        <p className="text-sm text-gray-600">Time Block: {proposal.selected_time_block_index}</p>
+                        <p className="text-sm text-gray-600">Submitted: {new Date(proposal.created_at).toLocaleString()}</p>
+                        {proposal.notes && (
+                          <p className="text-sm text-gray-600 mt-1">Notes: {proposal.notes}</p>
+                        )}
+                      </div>
+                      <div className="flex items-center space-x-2">
+                        <span className={`px-2 py-1 text-xs rounded-full ${
+                          proposal.status === 'pending' ? 'bg-yellow-100 text-yellow-800' :
+                          proposal.status === 'accepted' ? 'bg-green-100 text-green-800' :
+                          'bg-red-100 text-red-800'
+                        }`}>
+                          {proposal.status}
+                        </span>
+                        {proposal.status === 'pending' && (
+                                                  <button
+                          onClick={() => acceptInvitationResponse(proposal.id)}
+                          className="px-3 py-1 bg-green-600 text-white text-sm rounded hover:bg-green-700"
+                        >
+                          Accept
+                        </button>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+
+            <div className="mt-6 flex justify-end">
+              <button
+                onClick={() => {
+                  setShowProposalsModal(false);
+                  setSelectedInvitationForProposals(null);
+                  setInvitationProposals([]);
+                }}
+                className="px-4 py-2 bg-gray-300 text-gray-700 rounded-md hover:bg-gray-400"
+              >
+                Close
               </button>
             </div>
           </div>

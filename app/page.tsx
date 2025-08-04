@@ -2,21 +2,21 @@ import Link from 'next/link';
 
 export default function HomePage() {
   return (
-    <main className="flex flex-col items-center justify-center min-h-screen bg-gray-50">
-      <h1 className="text-4xl font-bold mb-4">Welcome to Sitter!</h1>
-      <p className="mb-8 text-center max-w-xl">
-        A smarter way for parents to schedule playdates, carpooling, and exchange childcare hours. Join or create groups, manage your children’s activities, and discover local marketplace offers—all in one place.
+          <main className="flex flex-col items-center justify-center min-h-screen bg-white">
+      <h1 className="text-4xl font-bold mb-4 text-gray-900">Welcome to Sitter!</h1>
+      <p className="mb-8 text-center max-w-xl text-gray-600">
+        A smarter way for parents to schedule playdates, carpooling, and exchange childcare hours. Join or create groups, manage your children's activities, and discover local marketplace offers—all in one place.
       </p>
       <div className="flex gap-4">
         <Link
           href="/auth"
-          className="px-6 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 transition"
+          className="px-6 py-3 bg-emerald-500 text-white rounded-lg hover:bg-emerald-600 transition shadow-soft hover:shadow-medium"
         >
           Sign In
         </Link>
         <Link
           href="/signup"
-          className="px-6 py-2 bg-green-600 text-white rounded hover:bg-green-700 transition"
+          className="px-6 py-3 bg-emerald-500 text-white rounded-lg hover:bg-emerald-600 transition shadow-soft hover:shadow-medium"
         >
           Sign Up
         </Link>

@@ -145,6 +145,19 @@ export default function Header({ currentPage = "dashboard" }: HeaderProps) {
     }
   };
 
+  // Manual refresh function for debugging (can be called from console)
+  const manualRefresh = async () => {
+    if (user) {
+      console.log('Manual refresh triggered');
+      await Promise.all([
+        fetchPendingInvitations(user.id),
+        fetchPendingScheduleItems(user.id),
+        fetchUnreadChatMessages(user.id)
+      ]);
+      console.log('Manual refresh completed');
+    }
+  };
+
   // Initialize user and fetch all counts
   useEffect(() => {
     supabase.auth.getUser().then(async ({ data }) => {
@@ -231,30 +244,100 @@ export default function Header({ currentPage = "dashboard" }: HeaderProps) {
     getUserEmail();
   }, [user]);
 
+  // Set up real-time subscription for care responses updates
+  useEffect(() => {
+    if (!user) return;
+    
+    const channel = supabase
+      .channel('header_care_responses_updates')
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'care_responses',
+          filter: `responder_id=eq.${user.id}`
+        },
+        (payload) => {
+          // Refresh the count when care responses change
+          fetchPendingScheduleItems(user.id);
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [user]);
+
+  // Set up real-time subscription for care requests updates
+  useEffect(() => {
+    if (!user) return;
+    
+    // Get groups the user is a member of for filtering
+    const setupCareRequestsSubscription = async () => {
+      const { data: userGroups } = await supabase
+        .from("group_members")
+        .select("group_id")
+        .eq("profile_id", user.id)
+        .eq("status", "active");
+
+      if (!userGroups || userGroups.length === 0) {
+        return;
+      }
+
+      const groupIds = userGroups.map(g => g.group_id);
+      
+      const channel = supabase
+        .channel('header_care_requests_updates')
+        .on(
+          'postgres_changes',
+          {
+            event: '*',
+            schema: 'public',
+            table: 'care_requests',
+            filter: `group_id=in.(${groupIds.join(',')})`
+          },
+          (payload) => {
+            // Refresh the count when care requests change
+            fetchPendingScheduleItems(user.id);
+          }
+        )
+        .subscribe();
+
+      return () => {
+        supabase.removeChannel(channel);
+      };
+    };
+
+    setupCareRequestsSubscription();
+  }, [user]);
+
+  // Make manualRefresh available globally for debugging
+  useEffect(() => {
+    (window as any).manualRefresh = manualRefresh;
+    return () => {
+      delete (window as any).manualRefresh;
+    };
+  }, [user]);
+
   const getButtonClass = (page: string) => {
-    const baseClass = "px-6 py-3 text-white rounded-lg transition font-medium";
+    const baseClass = "px-6 py-3 rounded-lg transition font-medium shadow-soft";
     const isActive = currentPage === page;
     
     if (isActive) {
-      return `${baseClass} bg-gray-700 cursor-default`;
+      return `${baseClass} bg-emerald-600 text-white cursor-default shadow-medium`;
     }
     
-    const colorClasses = {
-      dashboard: "bg-blue-600 hover:bg-blue-700",
-      messages: "bg-green-600 hover:bg-green-700",
-      schedule: "bg-purple-600 hover:bg-purple-700",
-      chats: "bg-indigo-600 hover:bg-indigo-700",
-      activities: "bg-red-600 hover:bg-red-700"
-    };
-    
-    return `${baseClass} ${colorClasses[page as keyof typeof colorClasses] || "bg-gray-600 hover:bg-gray-700"}`;
+    // All inactive buttons use the same lighter shade
+    return `${baseClass} bg-emerald-500 text-white hover:bg-emerald-600 hover:shadow-medium`;
   };
 
   return (
-    <div className="bg-white shadow-sm border-b">
+    <div className="bg-white shadow-soft border-b border-gray-200">
       <div className="p-6 max-w-6xl mx-auto">
         <div className="flex justify-between items-center mb-6">
-          <h1 className="text-3xl font-bold">SitterApp</h1>
+          <h1 className="text-3xl font-bold text-gray-900">SitterApp</h1>
           <LogoutButton />
         </div>
         
@@ -271,33 +354,33 @@ export default function Header({ currentPage = "dashboard" }: HeaderProps) {
             className={`${getButtonClass('messages')} relative`}
           >
             Messages
-            {pendingInvitations > 0 && (
-              <span className="absolute -top-2 -right-2 bg-red-500 text-white text-xs rounded-full h-6 w-6 flex items-center justify-center font-bold">
-                {pendingInvitations}
-              </span>
-            )}
+                         {pendingInvitations > 0 && (
+               <span className="absolute -top-2 -right-2 bg-red-500 text-white text-xs rounded-full h-6 w-6 flex items-center justify-center font-bold shadow-medium">
+                 {pendingInvitations}
+               </span>
+             )}
           </button>
           <button 
             onClick={() => router.push('/schedule')}
             className={`${getButtonClass('schedule')} relative`}
           >
             Schedule
-            {pendingScheduleItems > 0 && (
-              <span className="absolute -top-2 -right-2 bg-red-500 text-white text-xs rounded-full h-6 w-6 flex items-center justify-center font-bold">
-                {pendingScheduleItems}
-              </span>
-            )}
+                         {pendingScheduleItems > 0 && (
+               <span className="absolute -top-2 -right-2 bg-red-500 text-white text-xs rounded-full h-6 w-6 flex items-center justify-center font-bold shadow-medium">
+                 {pendingScheduleItems}
+               </span>
+             )}
           </button>
           <button 
             onClick={() => router.push('/chats')}
             className={`${getButtonClass('chats')} relative`}
           >
             Chats
-            {unreadChatMessages > 0 && (
-              <span className="absolute -top-2 -right-2 bg-red-500 text-white text-xs rounded-full h-6 w-6 flex items-center justify-center font-bold">
-                {unreadChatMessages}
-              </span>
-            )}
+                         {unreadChatMessages > 0 && (
+               <span className="absolute -top-2 -right-2 bg-red-500 text-white text-xs rounded-full h-6 w-6 flex items-center justify-center font-bold shadow-medium">
+                 {unreadChatMessages}
+               </span>
+             )}
           </button>
           <button 
             onClick={() => router.push('/activities')}
