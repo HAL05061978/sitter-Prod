@@ -203,9 +203,11 @@ export default function SchedulePage() {
   const [showInviteModal, setShowInviteModal] = useState(false);
   const [showAcceptInvitationModal, setShowAcceptInvitationModal] = useState(false);
   const [showDailyScheduleModal, setShowDailyScheduleModal] = useState(false);
+  const [showOpenBlockModal, setShowOpenBlockModal] = useState(false);
   const [selectedRequest, setSelectedRequest] = useState<CareRequest | null>(null); // Updated type
   const [selectedInvitation, setSelectedInvitation] = useState<GroupInvitation | null>(null);
   const [selectedDateForDailyView, setSelectedDateForDailyView] = useState<Date | null>(null);
+  const [selectedCareBlock, setSelectedCareBlock] = useState<ScheduledCare | null>(null);
 
   const [responseType, setResponseType] = useState<'accept' | 'decline'>('accept');
   const [availableTimeBlocks, setAvailableTimeBlocks] = useState<InvitationTimeBlock[]>([]);
@@ -278,6 +280,16 @@ export default function SchedulePage() {
     eventEditDeadline: ''
   });
 
+  // Open block form state
+  const [openBlockForm, setOpenBlockForm] = useState({
+    invitedParentIds: [] as string[],
+    reciprocalTimeSlots: [
+      { date: '', startTime: '', endTime: '' }
+    ] as Array<{ date: string; startTime: string; endTime: string }>,
+    notes: ''
+  });
+  const [availableParentsForOpenBlock, setAvailableParentsForOpenBlock] = useState<Profile[]>([]);
+
   // Load children data for care blocks
   useEffect(() => {
     const loadChildrenInCareBlocks = async () => {
@@ -347,11 +359,83 @@ export default function SchedulePage() {
     setAllProfiles(profilesData || []);
   };
 
+  const fetchAllGroupChildren = async (userId: string) => {
+    console.log('fetchAllGroupChildren called with userId:', userId);
+    
+    if (!userId) {
+      console.log('No user ID available, skipping fetchAllGroupChildren');
+      setAllGroupChildren([]);
+      return;
+    }
+    
+    // Get all children in all groups where the current user is a member
+    const { data: memberGroups, error: memberError } = await supabase
+      .from("group_members")
+      .select("group_id")
+      .eq("profile_id", userId)
+      .eq("status", "active");
+
+    if (memberError) {
+      console.error('Error fetching member groups:', memberError);
+      setAllGroupChildren([]);
+      return;
+    }
+
+    if (!memberGroups || memberGroups.length === 0) {
+      console.log('No member groups found for user:', userId);
+      setAllGroupChildren([]);
+      return;
+    }
+
+    const groupIds = memberGroups.map(mg => mg.group_id);
+    console.log('Group IDs for user:', groupIds);
+    
+    // Get all active children in these groups
+    const { data: childGroupMembers, error } = await supabase
+      .from("child_group_members")
+      .select(`
+        child_id,
+        parent_id,
+        children(
+          id,
+          full_name,
+          parent_id
+        )
+      `)
+      .in("group_id", groupIds)
+      .eq("active", true);
+
+    if (error) {
+      console.error('Error fetching all group children:', error);
+      setAllGroupChildren([]);
+      return;
+    }
+
+    if (childGroupMembers) {
+      // Extract the children data from the joined query and flatten the array
+      const allChildren = childGroupMembers
+        .map(cgm => cgm.children)
+        .flat()
+        .filter(Boolean) as Child[];
+      
+      console.log('Fetched all group children:', allChildren);
+      setAllGroupChildren(allChildren);
+    } else {
+      console.log('No child group members found');
+      setAllGroupChildren([]);
+    }
+  };
+
   useEffect(() => {
-    supabase.auth.getUser().then(async ({ data }) => {
+    console.log('Main useEffect starting - checking authentication...');
+    supabase.auth.getUser().then(async ({ data, error }) => {
+      console.log('Auth getUser result:', { data, error });
+      
       if (!data.user) {
+        console.log('No user found, redirecting to auth');
         router.replace("/auth");
       } else {
+        console.log('User authenticated:', data.user.id);
         setUser(data.user);
         
         // Fetch user profile
@@ -361,6 +445,7 @@ export default function SchedulePage() {
           .eq("id", data.user.id)
           .single();
         setProfile(profileData);
+        console.log('Profile data:', profileData);
 
         // Fetch user's children
         const { data: childrenData } = await supabase
@@ -368,6 +453,7 @@ export default function SchedulePage() {
           .select("*")
           .eq("parent_id", data.user.id);
         setChildren(childrenData || []);
+        console.log('Children data:', childrenData);
 
         // Fetch groups where user is a member
         const { data: memberGroups } = await supabase
@@ -383,6 +469,7 @@ export default function SchedulePage() {
             .select("*")
             .in("id", groupIds);
           setGroups(groupsData || []);
+          console.log('Groups data:', groupsData);
 
           // Fetch active children for each group - pass groupsData directly
           await refreshActiveChildren(data.user.id, childrenData || [], groupsData || []);
@@ -403,7 +490,12 @@ export default function SchedulePage() {
         // Fetch all profiles for name resolution
         await fetchAllProfiles();
 
+                         // Fetch all group children for open block functionality
+                 console.log('About to call fetchAllGroupChildren with user ID:', data.user.id);
+                 await fetchAllGroupChildren(data.user.id);
+
         setLoading(false);
+        console.log('Main useEffect completed');
       }
     });
   }, [router]); // Removed currentDate from dependencies
@@ -601,33 +693,85 @@ export default function SchedulePage() {
       .in("group_id", groupIds)
       .order("created_at", { ascending: false });
 
+    // First, fetch all responses for all requests to use in filtering
+    const { data: allResponsesData } = await supabase
+      .from("care_responses")
+      .select("*")
+      .in("request_id", (allRequestsData || []).map(r => r.id))
+      .order("created_at", { ascending: false });
+
     // Filter out completed reciprocal requests (accepted/rejected) since they're already handled
+    console.log('=== fetchRequestsAndResponses DEBUG ===');
+    console.log('Total requests before filtering:', (allRequestsData || []).length);
+    console.log('Open block requests before filtering:', (allRequestsData || []).filter(r => r.request_type === 'open_block').length);
+    console.log('Current user ID:', userId);
+    
     const filteredRequests = (allRequestsData || []).filter(request => {
-      // Keep all non-reciprocal requests
-      if (request.request_type !== 'reciprocal') {
-        return true;
+      // Handle open block requests with specific filtering
+      if (request.request_type === 'open_block') {
+        console.log('Processing open block request:', {
+          requestId: request.id,
+          requesterId: request.requester_id,
+          openBlockParentId: request.open_block_parent_id,
+          reciprocalParentId: request.reciprocal_parent_id,
+          currentUserId: userId
+        });
+        
+        // Allow the open block creator (Parent B) to see their own requests for editing/canceling
+        if (request.open_block_parent_id === userId) {
+          console.log('Including open block request for creator (Parent B) - for editing/canceling');
+          return true;
+        }
+        
+        // Don't show open block requests that have been accepted by someone else
+        const acceptedResponses = (allResponsesData || []).filter(response =>
+          response.request_id === request.id && response.status === 'accepted'
+        );
+        if (acceptedResponses.length > 0) {
+          console.log('Filtering out - request has been accepted by someone else');
+          return false;
+        }
+        
+        // Don't show open block requests that the current user has already responded to
+        const userResponses = (allResponsesData || []).filter(response =>
+          response.responder_id === userId && response.request_id === request.id
+        );
+        if (userResponses.length > 0) {
+          console.log('Filtering out - user has already responded to this request');
+          return false;
+        }
+        
+        // Show open block requests to the specific parent who was invited (reciprocal_parent_id)
+        if (request.reciprocal_parent_id === userId) {
+          console.log('Including open block request for invited parent');
+          return true;
+        }
+        
+        console.log('Filtering out - user is not the invited parent');
+        return false;
       }
+      
       // For reciprocal requests, only keep if they're not completed (not accepted/rejected)
-      return request.status !== 'accepted' && request.status !== 'rejected';
+      if (request.request_type === 'reciprocal') {
+        return request.status !== 'accepted' && request.status !== 'rejected';
+      }
+      
+      // Keep all other request types
+      return true;
     });
+    
+    console.log('Total requests after filtering:', filteredRequests.length);
+    console.log('Open block requests after filtering:', filteredRequests.filter(r => r.request_type === 'open_block').length);
+    console.log('=== fetchRequestsAndResponses DEBUG END ===');
 
     setRequests(filteredRequests);
 
-    // Fetch responses for these requests (including all statuses)
-    if (filteredRequests && filteredRequests.length > 0) {
-      const requestIds = filteredRequests.map((r: CareRequest) => r.id);
-      const { data: responsesData } = await supabase
-        .from("care_responses") // Updated table name
-        .select("*")
-        .in("request_id", requestIds)
-        .order("created_at", { ascending: false });
-
-
-
-      setResponses(responsesData || []);
-    } else {
-      setResponses([]);
-    }
+    // Filter responses to only include responses for the filtered requests
+    const filteredRequestIds = filteredRequests.map((r: CareRequest) => r.id);
+    const filteredResponses = (allResponsesData || []).filter(response =>
+      filteredRequestIds.includes(response.request_id)
+    );
+    setResponses(filteredResponses);
 
     // Fetch all children in the user's groups for name resolution
     const { data: childGroupMembers } = await supabase
@@ -977,7 +1121,7 @@ export default function SchedulePage() {
     const requestToUse = request || selectedRequest;
     console.log('respondToCareRequest called with request type:', requestToUse?.request_type);
     
-    // For open block requests, no reciprocal times are needed
+    // For open block requests, automatically accept and create care blocks
     if (requestToUse?.request_type === 'open_block') {
       if (!user || !requestToUse) {
         return;
@@ -989,84 +1133,89 @@ export default function SchedulePage() {
       }
 
       try {
-        // For open block requests, create both scheduled care blocks directly
-        // Parent B caring for Parent C's child + Parent C caring for Parent B's child
+        console.log('Processing open block acceptance automatically');
         
-        // Get Parent B's child and original care block details from reciprocal fields
-        const parentBChildId = requestToUse.reciprocal_child_id;
-        const originalCareBlock = {
-          care_date: requestToUse.reciprocal_date,
-          start_time: requestToUse.reciprocal_start_time,
-          end_time: requestToUse.reciprocal_end_time
-        };
-        
-        // Debug logging
-        console.log('Open block request details:', {
-          selectedRequest: requestToUse,
-          parentBChildId: parentBChildId,
-          originalCareBlock: originalCareBlock,
-          reciprocal_fields: {
-            reciprocal_parent_id: requestToUse.reciprocal_parent_id,
-            reciprocal_child_id: requestToUse.reciprocal_child_id,
-            reciprocal_date: requestToUse.reciprocal_date,
-            reciprocal_start_time: requestToUse.reciprocal_start_time,
-            reciprocal_end_time: requestToUse.reciprocal_end_time
-          }
-        });
+        // Create the care response
+        const { data: responseData, error: responseError } = await supabase
+          .from("care_responses")
+          .insert({
+            request_id: requestToUse.id,
+            responder_id: user.id,
+            response_type: 'accept',
+            status: 'accepted', // Automatically accepted
+            response_notes: 'Accepted open block invitation'
+          })
+          .select()
+          .single();
 
-        // Create both care blocks
-        const careBlocksToInsert = [
-          {
-            // Parent B caring for Parent C's child during the original care block time (same time as Parent A's child)
+        if (responseError) {
+          console.error('Error creating open block response:', responseError);
+          alert('Error accepting open block: ' + responseError.message);
+          return;
+        }
+
+        // Create the two care blocks automatically
+        // 1. Parent B (open block creator) provides care for Parent C's child (reciprocal time)
+        // 2. Parent C provides care for Parent B's child (original time)
+        
+        // Calculate duration for the first block (Parent B's care time)
+        const startTime1 = new Date(`2000-01-01T${requestToUse.start_time}`);
+        const endTime1 = new Date(`2000-01-01T${requestToUse.end_time}`);
+        const durationMinutes1 = Math.round((endTime1.getTime() - startTime1.getTime()) / (1000 * 60));
+
+        // First block: Parent B provides care for Parent C's child
+        const { error: careError1 } = await supabase
+          .from("scheduled_care")
+          .insert({
             group_id: requestToUse.group_id,
-            parent_id: requestToUse.requester_id,
-            child_id: requestToUse.child_id,
-            care_date: originalCareBlock?.care_date || requestToUse.requested_date,
-            start_time: originalCareBlock?.start_time || requestToUse.start_time,
-            end_time: originalCareBlock?.end_time || requestToUse.end_time,
-            care_type: 'provided',
-            status: 'confirmed',
-            related_request_id: requestToUse.id,
-            notes: `Open block: ${getParentName(requestToUse.requester_id)} caring for ${getChildName(requestToUse.child_id, requestToUse)} during original care block time`
-          },
-          {
-            // Parent C caring for Parent B's child during the open block time (new time offered by Parent B)
-            group_id: requestToUse.group_id,
-            parent_id: user.id,
-            child_id: parentBChildId,
+            parent_id: requestToUse.open_block_parent_id, // Parent B (open block creator)
+            child_id: requestToUse.child_id, // Parent B's child who needs care
             care_date: requestToUse.requested_date,
             start_time: requestToUse.start_time,
             end_time: requestToUse.end_time,
+            duration_minutes: durationMinutes1,
             care_type: 'provided',
             status: 'confirmed',
             related_request_id: requestToUse.id,
-            notes: `Reciprocal care: ${getParentName(user.id)} caring for Parent B's child during open block time`
-          }
-        ];
-        
-        console.log('Attempting to insert care blocks:', careBlocksToInsert);
-        
-        const { error: careError } = await supabase
-          .from("scheduled_care")
-          .insert(careBlocksToInsert);
+            notes: `Open block: ${getParentName(requestToUse.open_block_parent_id || '')} providing care for ${getChildName(requestToUse.child_id, requestToUse, undefined)}`
+          });
 
-        if (careError) {
-          console.error('Error creating scheduled care blocks:', careError);
-          console.error('Care blocks that failed to insert:', careBlocksToInsert);
+        if (careError1) {
+          console.error('Error creating first care block:', careError1);
+          alert('Error creating care block: ' + careError1.message);
           return;
         }
-        
-        console.log('Successfully inserted care blocks');
-        console.log('About to update open block request status...');
 
-        // Update the open block request to mark it as accepted
-        console.log('Updating open block request:', {
-          requestId: requestToUse.id,
-          newStatus: 'accepted',
-          responderId: user.id
-        });
-        
-        const { error: updateError } = await supabase
+        // Calculate duration for the second block (Parent C's care time)
+        const startTime2 = new Date(`2000-01-01T${requestToUse.reciprocal_start_time}`);
+        const endTime2 = new Date(`2000-01-01T${requestToUse.reciprocal_end_time}`);
+        const durationMinutes2 = Math.round((endTime2.getTime() - startTime2.getTime()) / (1000 * 60));
+
+        // Second block: Parent C provides care for Parent B's child (reciprocal time)
+        const { error: careError2 } = await supabase
+          .from("scheduled_care")
+          .insert({
+            group_id: requestToUse.group_id,
+            parent_id: user.id, // Parent C (acceptor)
+            child_id: requestToUse.reciprocal_child_id, // Parent C's child who needs care
+            care_date: requestToUse.reciprocal_date,
+            start_time: requestToUse.reciprocal_start_time,
+            end_time: requestToUse.reciprocal_end_time,
+            duration_minutes: durationMinutes2,
+            care_type: 'provided',
+            status: 'confirmed',
+            related_request_id: requestToUse.id,
+            notes: `Open block: ${getParentName(user.id)} providing care for ${getChildName(requestToUse.reciprocal_child_id || '', requestToUse, undefined)}`
+          });
+
+        if (careError2) {
+          console.error('Error creating second care block:', careError2);
+          alert('Error creating care block: ' + careError2.message);
+          return;
+        }
+
+        // Update the request status to accepted
+        const { error: requestUpdateError } = await supabase
           .from("care_requests")
           .update({ 
             status: 'accepted',
@@ -1074,50 +1223,25 @@ export default function SchedulePage() {
           })
           .eq('id', requestToUse.id);
 
-        if (updateError) {
-          console.error('Error updating request:', updateError);
-          return;
-        }
-        
-        console.log('Successfully updated open block request status to accepted');
-
-        // Create a care_response record for open block requests so UI can track responses
-        const { error: responseError } = await supabase
-          .from("care_responses")
-          .insert({
-            request_id: requestToUse.id,
-            responder_id: user.id,
-            response_type: 'accept',
-            status: 'accepted',
-            response_notes: 'Open block request accepted'
-          });
-
-        if (responseError) {
-          console.error('Error creating care response record:', responseError);
-          // Don't return here - the main functionality worked
+        if (requestUpdateError) {
+          console.error('Error updating request status:', requestUpdateError);
         }
 
         // Refresh data
         await fetchRequestsAndResponses(user.id);
-        await fetchScheduledCare(user.id, new Date());
+        await fetchScheduledCare(user.id, currentDate);
         
         // Dispatch custom event to update header count
         window.dispatchEvent(new CustomEvent('careRequestUpdated'));
         
         setShowResponseModal(false);
-        setResponseForm({
-          reciprocalDate: '',
-          reciprocalStartTime: '',
-          reciprocalEndTime: '',
-          reciprocalChildId: '',
-          notes: ''
-        });
-        // Success - no popup needed, just refresh the data
+        alert('Open block accepted! Both care blocks have been scheduled.');
         return;
-              } catch (error) {
-          console.error('Error accepting open block:', error);
-          return;
-        }
+      } catch (error) {
+        console.error('Error accepting open block:', error);
+        alert('Error accepting open block. Please try again.');
+        return;
+      }
     }
 
     // For regular requests (reciprocal, simple, etc.)
@@ -1232,9 +1356,18 @@ export default function SchedulePage() {
 
   const handleEditRequest = async (request: CareRequest) => {
     // Only allow creators to edit their own requests
-    if (request.requester_id !== user?.id) {
-      alert('You can only edit your own requests');
-      return;
+    if (request.request_type === 'open_block') {
+      // For open block requests, check if user is the open block creator
+      if (request.open_block_parent_id !== user?.id) {
+        alert('You can only edit your own open block requests');
+        return;
+      }
+    } else {
+      // For other request types, check if user is the requester
+      if (request.requester_id !== user?.id) {
+        alert('You can only edit your own requests');
+        return;
+      }
     }
     
     // Populate the form with existing request data
@@ -1263,9 +1396,18 @@ export default function SchedulePage() {
 
   const handleCancelRequest = async (request: CareRequest) => {
     // Only allow creators to cancel their own requests
-    if (request.requester_id !== user?.id) {
-      alert('You can only cancel your own requests');
-      return;
+    if (request.request_type === 'open_block') {
+      // For open block requests, check if user is the open block creator
+      if (request.open_block_parent_id !== user?.id) {
+        alert('You can only cancel your own open block requests');
+        return;
+      }
+    } else {
+      // For other request types, check if user is the requester
+      if (request.requester_id !== user?.id) {
+        alert('You can only cancel your own requests');
+        return;
+      }
     }
     
     if (!confirm('Are you sure you want to cancel this request? This action cannot be undone.')) {
@@ -1949,192 +2091,380 @@ export default function SchedulePage() {
 
 
 
-  // Updated function with new types
-  const findOriginalRequestForBlock = (block: ScheduledCare): CareRequest | null => {
+  // Synchronous version for render logic
+  const findOriginalRequestForBlockSync = (block: ScheduledCare): CareRequest | null => {
+    return requests.find(request => request.id === block.related_request_id) || null;
+  };
+
+  // Async version for open block functionality
+  const findOriginalRequestForBlock = async (block: ScheduledCare): Promise<CareRequest | null> => {
+    console.log('=== findOriginalRequestForBlock DEBUG START ===');
+    console.log('Block related_request_id:', block.related_request_id);
+    console.log('Local requests count:', requests.length);
+    
+    // First try to find in local requests array
     const foundRequest = requests.find(request => request.id === block.related_request_id);
-    return foundRequest || null;
+    console.log('Found in local requests:', foundRequest);
+    
+    if (foundRequest) {
+      console.log('=== findOriginalRequestForBlock DEBUG END (found locally) ===');
+      return foundRequest;
+    }
+    
+    // If not found locally, fetch from database (this handles completed reciprocal requests)
+    if (block.related_request_id) {
+      console.log('Not found locally, fetching from database...');
+      try {
+        const { data: requestData, error } = await supabase
+          .from('care_requests')
+          .select(`
+            *,
+            children:child_id (
+              id,
+              full_name,
+              parent_id
+            )
+          `)
+          .eq('id', block.related_request_id)
+          .single();
+        
+        console.log('Database query result:', { data: requestData, error });
+        
+        if (error) {
+          console.error('Error fetching original request:', error);
+          console.log('=== findOriginalRequestForBlock DEBUG END (error) ===');
+          return null;
+        }
+        
+        console.log('=== findOriginalRequestForBlock DEBUG END (found in database) ===');
+        return requestData;
+      } catch (error) {
+        console.error('Error fetching original request:', error);
+        console.log('=== findOriginalRequestForBlock DEBUG END (exception) ===');
+        return null;
+      }
+    }
+    
+    console.log('No related_request_id found');
+    console.log('=== findOriginalRequestForBlock DEBUG END (no related_request_id) ===');
+    return null;
   };
 
   const handleBlockDoubleClick = async (block: ScheduledCare) => { // Updated type
+    console.log('handleBlockDoubleClick called with block:', block);
+    console.log('Current user ID:', user?.id);
     
     // Check if this is an event block
     if (block.care_type === 'event') {
+      console.log('This is an event block, calling handleEventBlockDoubleClick');
       await handleEventBlockDoubleClick(block);
       return;
     }
     
-    // Check if the logged-in user is the responder (care provider) of the original request
-    const originalRequest = findOriginalRequestForBlock(block);
-    if (originalRequest) {
-      // Find the accepted response for this request
-      const acceptedResponse = responses.find(r => 
-        r.request_id === originalRequest.id && r.status === 'accepted'
-      );
+    // Check if this is a provided care block with reciprocal notes (indicating it's from a reciprocal request)
+    if (block.care_type === 'provided' && 
+        block.parent_id === user?.id && 
+        block.notes && 
+        block.notes.toLowerCase().includes('reciprocal')) {
+      console.log('=== RECIPROCAL BLOCK DETECTED ===');
+      console.log('Block details:', {
+        care_type: block.care_type,
+        parent_id: block.parent_id,
+        user_id: user?.id,
+        notes: block.notes,
+        child_id: block.child_id,
+        care_date: block.care_date,
+        related_request_id: block.related_request_id
+      });
       
-      // Only show invite option if the logged-in user is the responder (Parent B)
-      if (acceptedResponse && acceptedResponse.responder_id === user?.id && block.care_type === 'provided') {
-        const shouldInviteOthers = confirm(
-          `You are providing care for ${getChildName(block.child_id, undefined, block)} on ${block.care_date}.\n\nWould you like to invite other group members to join this care block?`
-        );
-        
-        if (shouldInviteOthers) {
-          // For now, use all profiles except the current user and original requester
-          const availableProfiles = allProfiles.filter(profile => 
-            profile.id !== user?.id && profile.id !== originalRequest.requester_id
+      // Find the original reciprocal request to determine if current user is Parent B (responder)
+      const originalRequest = await findOriginalRequestForBlock(block);
+      console.log('Original request found:', originalRequest);
+      
+      if (originalRequest && originalRequest.request_type === 'reciprocal') {
+        // Check if current user is the responder (Parent B) of the original reciprocal request
+        // Only Parent B should be able to open blocks, not Parent A (initiator)
+        if (originalRequest.responder_id === user?.id) {
+          console.log('Current user is Parent B (responder) - allowing open block');
+          
+          const shouldOpenBlock = confirm(
+            `You are providing care for ${getChildName(block.child_id, undefined, block)} on ${block.care_date}.\n\nWould you like to open this care block to invite other group members?`
           );
           
-          if (availableProfiles.length === 0) {
-            alert('No other group members available to invite.');
+          if (shouldOpenBlock) {
+            console.log('User chose to open block - setting up modal...');
+            // Set up the open block modal
+            setSelectedCareBlock(block);
+                                                                         setOpenBlockForm({
+                           invitedParentIds: [],
+                           reciprocalTimeSlots: [{ date: '', startTime: '', endTime: '' }],
+                           notes: ''
+                         });
+            
+            console.log('Calling getAvailableParentsForOpenBlock...');
+            // Fetch available parents for open block
+            const availableParents = await getAvailableParentsForOpenBlock(block);
+            console.log('getAvailableParentsForOpenBlock returned:', availableParents);
+            setAvailableParentsForOpenBlock(availableParents);
+            
+            setShowOpenBlockModal(true);
+            console.log('Modal should now be visible');
             return;
           }
-          
-          // Create an open block request based on this care block
-          const openBlockRequest: CareRequest = {
-            ...originalRequest,
-            id: '', // Will be generated by the database
-            request_type: 'open_block',
-            open_block_parent_id: block.parent_id, // The care provider
-            open_block_slots: Math.min(availableProfiles.length, 3), // Limit to available profiles or 3, whichever is smaller
-            open_block_slots_used: 0
-          };
-          
-          setSelectedRequest(openBlockRequest);
-          // Fetch children for each available profile
-          const childrenPromises = availableProfiles.map(async (profile) => {
-            const { data: profileChildren, error } = await supabase
-              .from('children')
-              .select('id, full_name, parent_id')
-              .eq('parent_id', profile.id);
-            
-            if (error) {
-              console.error('Error fetching children for profile:', profile.id, error);
-              return [];
-            }
-            
-            return (profileChildren || []).map(child => ({
-              child_id: child.id,
-              child_name: child.full_name,
-              parent_id: child.parent_id,
-              parent_name: profile.full_name || 'Unknown'
-            }));
-          });
-          
-          const allChildren = await Promise.all(childrenPromises);
-          const flatChildren = allChildren.flat();
-          
-          if (flatChildren.length === 0) {
-            alert('No children found for the available group members.');
-            return;
-          }
-          
-          setAvailableChildren(flatChildren);
-          setShowInviteModal(true);
+        } else {
+          console.log('Current user is Parent A (initiator) - showing details only');
+          // Parent A should just see the details, not be able to open the block
+          alert(`Care Block Details:\n\nYou are providing care for ${getChildName(block.child_id, undefined, block)} on ${block.care_date} from ${formatTime(block.start_time)} to ${formatTime(block.end_time)}.\n\nThis is part of a reciprocal care agreement.`);
           return;
         }
+      } else {
+        console.log('No original reciprocal request found or not a reciprocal request');
       }
     }
     
     // Default behavior: Show daily schedule popup for the block's date
+    console.log('Showing daily schedule modal instead');
     // Fix timezone issue by parsing the date properly
     const blockDate = parseLocalDate(block.care_date);
     setSelectedDateForDailyView(blockDate);
     setShowDailyScheduleModal(true);
   };
 
-  const handleOpenBlock = async (block: ScheduledCare) => {
-    // Only allow the parent who created the block to open it
-    if (block.parent_id !== user?.id) {
-      alert('You can only open your own care blocks');
+  const handleOpenBlockSubmit = async () => {
+    if (!user || !selectedCareBlock || openBlockForm.invitedParentIds.length === 0) {
+      alert('Please select at least one parent to invite');
       return;
     }
-    
-    // Check if this is a provided care block
-    if (block.care_type !== 'provided') {
-      alert('You can only open blocks where you are providing care');
-      return;
-    }
-    
-    // Find the original request for this block
-    const originalRequest = findOriginalRequestForBlock(block);
-    if (!originalRequest) {
-      alert('Could not find the original request for this block');
-      return;
-    }
-    
-    // Create an open block request based on this care block
-    const openBlockRequest: CareRequest = {
-      ...originalRequest,
-      id: '', // Will be generated by the database
-      request_type: 'open_block',
-      open_block_parent_id: block.parent_id, // The care provider
-      open_block_slots: 3, // Default to 3 slots
-      open_block_slots_used: 0,
-      // Store the original care block information in reciprocal fields
-      reciprocal_parent_id: block.parent_id,
-      reciprocal_child_id: block.child_id,
-      reciprocal_date: block.care_date,
-      reciprocal_start_time: block.start_time,
-      reciprocal_end_time: block.end_time,
-      reciprocal_status: 'pending'
-    };
-    
-    // Set the request form to open_block type for the invitation modal
-    setRequestForm(prev => ({
-      ...prev,
-      requestType: 'open_block',
-      groupId: block.group_id,
-      childId: block.child_id,
-      requestedDate: block.care_date,
-      startTime: block.start_time,
-      endTime: block.end_time,
-      openBlockSlots: 3
-    }));
-    
-    setSelectedRequest(openBlockRequest);
-    
-    // Fetch available children from other group members
-    const { data: groupMembers, error: groupError } = await supabase
-      .from('profiles')
-      .select('id, full_name')
-      .neq('id', user?.id)
-      .neq('id', originalRequest.requester_id);
-    
-    if (groupError) {
-      console.error('Error fetching group members:', groupError);
-      alert('Error fetching group members');
-      return;
-    }
-    
-    // Fetch children for each group member
-    const childrenPromises = groupMembers.map(async (profile) => {
-      const { data: profileChildren, error } = await supabase
-        .from('children')
-        .select('id, full_name, parent_id')
-        .eq('parent_id', profile.id);
+
+    try {
+      // First, create the open block session
+      const { data: openBlockSession, error: sessionError } = await supabase
+        .from('open_block_sessions')
+        .insert({
+          open_block_parent_id: user.id,
+          scheduled_care_id: selectedCareBlock.id,
+          notes: openBlockForm.notes || `Open block invitation: ${getParentName(user.id)} is offering their care block on ${selectedCareBlock.care_date} from ${formatTime(selectedCareBlock.start_time)} to ${formatTime(selectedCareBlock.end_time)}.`
+        })
+        .select()
+        .single();
+
+      if (sessionError) {
+        console.error('Error creating open block session:', sessionError);
+        alert('Error creating open block session: ' + sessionError.message);
+        return;
+      }
+
+      const invitations = [];
       
-      if (error) {
-        console.error('Error fetching children for profile:', profile.id, error);
-        return [];
+      // Create invitations for each time slot
+      for (let timeSlotIndex = 0; timeSlotIndex < openBlockForm.reciprocalTimeSlots.length; timeSlotIndex++) {
+        const timeSlot = openBlockForm.reciprocalTimeSlots[timeSlotIndex];
+        const blockTimeId = crypto.randomUUID(); // Generate unique block time ID for this time slot
+        
+        // Create invitation for each parent for this time slot
+        for (const parentId of openBlockForm.invitedParentIds) {
+          const { data: invitation, error: createError } = await supabase
+            .from('open_block_invitations')
+            .insert({
+              open_block_id: openBlockSession.id,
+              block_time_id: blockTimeId, // Same block time ID for all parents for this time slot
+              invited_parent_id: parentId, // Single parent per invitation
+              reciprocal_date: timeSlot.date,
+              reciprocal_start_time: timeSlot.startTime,
+              reciprocal_end_time: timeSlot.endTime,
+              notes: `In exchange, they need care for their child on ${timeSlot.date} from ${timeSlot.startTime} to ${timeSlot.endTime}.`
+            })
+            .select()
+            .single();
+
+          if (createError) {
+            console.error('Error creating open block invitation for parent', parentId, 'time slot:', timeSlot, ':', createError);
+            alert('Error creating open block invitation: ' + createError.message);
+            return;
+          }
+
+          invitations.push(invitation);
+        }
+
+        // Send notification to all parents for this time slot
+        for (const parentId of openBlockForm.invitedParentIds) {
+          const { error: messageError } = await supabase
+            .from("messages")
+            .insert({
+              group_id: selectedCareBlock.group_id,
+              sender_id: user.id,
+              recipient_id: parentId,
+              subject: "Open Block Invitation",
+              content: `You have been invited to join an open care block by ${getParentName(user.id)}. You have ${openBlockForm.reciprocalTimeSlots.length} time slot(s) to choose from. Check your care requests to respond.`,
+              role: 'notification'
+            });
+
+          if (messageError) {
+            console.error('Error sending notification:', messageError);
+          }
+        }
+      }
+
+      // Close the modal and show success message
+      setShowOpenBlockModal(false);
+      setOpenBlockForm({
+        invitedParentIds: [],
+        reciprocalTimeSlots: [{ date: '', startTime: '', endTime: '' }],
+        notes: ''
+      });
+      setSelectedCareBlock(null);
+
+      // Refresh data to show new invitations
+      await fetchRequestsAndResponses(user.id);
+
+      // Dispatch custom event to update header count
+      window.dispatchEvent(new CustomEvent('careRequestUpdated'));
+      window.dispatchEvent(new CustomEvent('newMessageSent'));
+
+      alert(`Open block invitations created successfully! ${invitations.length} invitation(s) sent. It's first-come-first-serve - the first parent to accept gets the slot.`);
+    } catch (error) {
+      console.error('Error creating open block invitation:', error);
+      alert('Error creating open block invitation. Please try again.');
+    }
+  };
+
+  const toggleParentSelection = (parentId: string) => {
+    setOpenBlockForm(prev => {
+      const newInvitedParentIds = prev.invitedParentIds.includes(parentId)
+        ? prev.invitedParentIds.filter(id => id !== parentId)
+        : [...prev.invitedParentIds, parentId];
+      
+      // Automatically adjust time slots based on number of selected parents
+      const newTimeSlots = [];
+      for (let i = 0; i < newInvitedParentIds.length; i++) {
+        newTimeSlots.push({ date: '', startTime: '', endTime: '' });
       }
       
-      return (profileChildren || []).map(child => ({
-        child_id: child.id,
-        child_name: child.full_name,
-        parent_id: child.parent_id,
-        parent_name: profile.full_name || 'Unknown'
-      }));
+      return {
+        ...prev,
+        invitedParentIds: newInvitedParentIds,
+        reciprocalTimeSlots: newTimeSlots.length > 0 ? newTimeSlots : [{ date: '', startTime: '', endTime: '' }]
+      };
     });
+  };
+
+  const addReciprocalTimeSlot = () => {
+    setOpenBlockForm(prev => ({
+      ...prev,
+      reciprocalTimeSlots: [...prev.reciprocalTimeSlots, { date: '', startTime: '', endTime: '' }]
+    }));
+  };
+
+  const removeReciprocalTimeSlot = (index: number) => {
+    setOpenBlockForm(prev => ({
+      ...prev,
+      reciprocalTimeSlots: prev.reciprocalTimeSlots.filter((_, i) => i !== index)
+    }));
+  };
+
+  const updateReciprocalTimeSlot = (index: number, field: 'date' | 'startTime' | 'endTime', value: string) => {
+    setOpenBlockForm(prev => ({
+      ...prev,
+      reciprocalTimeSlots: prev.reciprocalTimeSlots.map((slot, i) => 
+        i === index ? { ...slot, [field]: value } : slot
+      )
+    }));
+  };
+
+
+
+  const getAvailableParentsForOpenBlock = async (block?: ScheduledCare) => {
+    console.log('=== getAvailableParentsForOpenBlock DEBUG START ===');
+    console.log('allProfiles length:', allProfiles.length);
+    console.log('selectedCareBlock:', selectedCareBlock);
+    console.log('Passed block parameter:', block);
+    console.log('Current user ID:', user?.id);
     
-    const allChildren = await Promise.all(childrenPromises);
-    const flatChildren = allChildren.flat();
+    // Use passed block parameter if available, otherwise fall back to selectedCareBlock
+    const targetBlock = block || selectedCareBlock;
     
-    if (flatChildren.length === 0) {
-      alert('No children found for the available group members.');
-      return;
+    if (!targetBlock) {
+      console.log('No selected care block');
+      return [];
     }
     
-    setAvailableChildren(flatChildren);
-    setShowInviteModal(true);
+    // Get all group members except the current user and the original requester
+    console.log('Calling findOriginalRequestForBlock...');
+    const originalRequest = await findOriginalRequestForBlock(targetBlock);
+    console.log('findOriginalRequestForBlock result:', originalRequest);
+    
+    if (!originalRequest) {
+      console.log('No original request found for block');
+      return [];
+    }
+    
+    console.log('Original request:', originalRequest);
+    console.log('Original requester:', originalRequest.requester_id);
+    console.log('Selected care block group_id:', targetBlock.group_id);
+    
+    // Get all active group members for this specific group
+    console.log('Fetching group members from database...');
+    const { data: groupMembers, error } = await supabase
+      .from('group_members')
+      .select('profile_id')
+      .eq('group_id', targetBlock.group_id)
+      .eq('status', 'active');
+    
+    console.log('Group members query result:', { data: groupMembers, error });
+    
+    if (error) {
+      console.error('Error fetching group members:', error);
+      return [];
+    }
+    
+    if (!groupMembers || groupMembers.length === 0) {
+      console.log('No group members found');
+      return [];
+    }
+    
+    const profileIds = groupMembers.map(member => member.profile_id);
+    console.log('Profile IDs found:', profileIds);
+    
+    // Get the actual profile data for these members
+    console.log('Fetching profiles from database...');
+    const { data: profilesData, error: profilesError } = await supabase
+      .from('profiles')
+      .select('id, full_name, email')
+      .in('id', profileIds);
+    
+    console.log('Profiles query result:', { data: profilesData, error: profilesError });
+    
+    if (profilesError) {
+      console.error('Error fetching profiles:', profilesError);
+      return [];
+    }
+    
+    console.log('Profiles found:', profilesData);
+    
+    // Filter profiles to only include active group members, excluding current user and original requester
+    console.log('Filtering profiles...');
+    const availableParents = (profilesData || [])
+      .filter(profile => {
+        console.log(`Checking profile: ${profile.full_name} (ID: ${profile.id})`);
+        console.log(`Current user ID: ${user?.id}, Original requester ID: ${originalRequest.requester_id}`);
+        
+        // Exclude current user and original requester
+        if (profile.id === user?.id || profile.id === originalRequest.requester_id) {
+          console.log(`Excluding ${profile.full_name} (current user or original requester)`);
+          return false;
+        }
+        
+        console.log(`Including ${profile.full_name} as available parent`);
+        return true;
+      });
+    
+    console.log('Final available parents:', availableParents);
+    console.log('=== getAvailableParentsForOpenBlock DEBUG END ===');
+    return availableParents;
+  };
+
+  const getChildrenForParent = (parentId: string) => {
+    return allGroupChildren.filter(child => child.parent_id === parentId);
   };
 
   // Function to send notifications to responders about their response status
@@ -2214,6 +2544,103 @@ export default function SchedulePage() {
      };
 
   const acceptResponse = async (responseId: string, requestId: string) => {
+    // For open block requests, handle differently
+    const request = requests.find(r => r.id === requestId);
+    if (request?.request_type === 'open_block') {
+      try {
+        // Get the response details
+        const response = responses.find(r => r.id === responseId);
+        if (!response) {
+          alert('Response not found');
+          return;
+        }
+
+        // For open block requests, we need to create two care blocks:
+        // 1. Parent B (open block creator) provides care for Parent C's child (reciprocal time)
+        // 2. Parent C provides care for Parent B's child (original time)
+
+        // First block: Parent B provides care for Parent C's child
+        const { error: careError1 } = await supabase
+          .from("scheduled_care")
+          .insert({
+            group_id: request.group_id,
+            parent_id: request.requester_id, // Parent B (open block creator)
+            child_id: request.child_id, // Parent B's child who needs care
+            care_date: request.requested_date,
+            start_time: request.start_time,
+            end_time: request.end_time,
+            duration_minutes: request.duration_minutes,
+            care_type: 'provided',
+            status: 'confirmed',
+            related_request_id: request.id,
+            notes: `Open block: ${getParentName(request.requester_id)} providing care for ${getChildName(request.child_id, request)}`
+          });
+
+        if (careError1) {
+          console.error('Error creating first care block:', careError1);
+          alert('Error creating care block: ' + careError1.message);
+          return;
+        }
+
+        // Second block: Parent C provides care for Parent B's child (original reciprocal time)
+        const { error: careError2 } = await supabase
+          .from("scheduled_care")
+          .insert({
+            group_id: request.group_id,
+            parent_id: response.responder_id, // Parent C (responder)
+            child_id: request.reciprocal_child_id || request.child_id, // Child Parent C will care for
+            care_date: request.reciprocal_date || request.requested_date,
+            start_time: request.reciprocal_start_time || request.start_time,
+            end_time: request.reciprocal_end_time || request.end_time,
+            duration_minutes: request.duration_minutes,
+            care_type: 'provided',
+            status: 'confirmed',
+            related_request_id: request.id,
+            notes: `Open block: ${getParentName(response.responder_id)} providing care for ${getChildName(request.reciprocal_child_id || request.child_id, request)}`
+          });
+
+        if (careError2) {
+          console.error('Error creating second care block:', careError2);
+          alert('Error creating care block: ' + careError2.message);
+          return;
+        }
+
+        // Update the response status to accepted
+        const { error: updateError } = await supabase
+          .from("care_responses")
+          .update({ status: 'accepted' })
+          .eq('id', responseId);
+
+        if (updateError) {
+          console.error('Error updating response:', updateError);
+          alert('Error updating response: ' + updateError.message);
+          return;
+        }
+
+        // Update the open block slots used
+        const { error: slotError } = await supabase
+          .from("care_requests")
+          .update({ 
+            open_block_slots_used: (request.open_block_slots_used || 0) + 1 
+          })
+          .eq('id', requestId);
+
+        if (slotError) {
+          console.error('Error updating slots used:', slotError);
+        }
+
+        // Refresh data
+        await fetchRequestsAndResponses(user?.id || '');
+        await fetchScheduledCare(user?.id || '', new Date());
+        
+        alert('Open block request approved! Both care blocks have been created.');
+        return;
+      } catch (error) {
+        console.error('Error approving open block response:', error);
+        alert('Error approving open block response. Please try again.');
+        return;
+      }
+    }
     console.log('acceptResponse called with:', { responseId, requestId, userId: user?.id });
     
     if (!user) {
@@ -2419,7 +2846,7 @@ export default function SchedulePage() {
                       } else if (isUserChildNeeding) {
                         // User's child needs care (someone else is providing)
                         // For "needed" blocks, we need to find the providing parent from the related request/response
-                        const originalRequest = findOriginalRequestForBlock(block);
+                        const originalRequest = findOriginalRequestForBlockSync(block);
                         
                         let providingParentName = 'Unknown Parent'; // Default to 'Unknown Parent'
                         
@@ -2458,7 +2885,7 @@ export default function SchedulePage() {
                         // Other care arrangements
                         if (block.care_type === 'needed') {
                           // For "needed" blocks, show who is providing care
-                          const originalRequest = findOriginalRequestForBlock(block);
+                          const originalRequest = findOriginalRequestForBlockSync(block);
                           
                           let providingParentName = 'Unknown Parent'; // Default to 'Unknown Parent'
                           
@@ -2511,19 +2938,7 @@ export default function SchedulePage() {
                             {formatTime(block.start_time)} - {formatTime(block.end_time)}
                           </div>
                           
-                          {/* Open button for blocks where user is providing care */}
-                          {block.parent_id === user?.id && block.care_type === 'provided' && (
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                handleOpenBlock(block);
-                              }}
-                              className="absolute top-0 right-0 text-xs bg-green-500 text-white px-1 py-0.5 rounded hover:bg-green-600"
-                              title="Open this block to invite others"
-                            >
-                              Open
-                            </button>
-                          )}
+
                         </div>
                       );
                     })}
@@ -3003,7 +3418,7 @@ export default function SchedulePage() {
             </div>
             <div className="mt-6 flex space-x-3">
               <button
-                onClick={respondToCareRequest}
+                onClick={() => respondToCareRequest()}
                 className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700"
               >
                 Submit Response
@@ -3096,8 +3511,63 @@ export default function SchedulePage() {
                  </div>
                  <div className="flex space-x-2 ml-4">
                    {/* Show different buttons based on request type and user role */}
-                   {request.requester_id !== user?.id ? (
-                     // Non-creators can accept/reject requests
+                   {request.request_type === 'open_block' ? (
+                     // Special handling for open block requests
+                     <>
+                       {request.open_block_parent_id === user?.id ? (
+                         // Parent B (creator) can edit/cancel their open block requests
+                         <>
+                           <button
+                             onClick={() => handleEditRequest(request)}
+                             className="px-3 py-1 text-sm bg-blue-600 text-white rounded hover:bg-blue-700"
+                           >
+                             Edit
+                           </button>
+                           <button
+                             onClick={() => handleCancelRequest(request)}
+                             className="px-3 py-1 text-sm bg-red-600 text-white rounded hover:bg-red-700"
+                           >
+                             Cancel
+                           </button>
+                         </>
+                       ) : request.reciprocal_parent_id === user?.id ? (
+                         // Parent C/D (invited parents) can agree/reject
+                         <>
+                           {(() => {
+                             const shouldShowButtons = !responses.some(r => r.request_id === request.id && r.responder_id === user?.id) && 
+                               request.status !== 'accepted';
+                             
+                             // Debug logging for open block requests
+                             console.log('Open block request button visibility:', {
+                               requestId: request.id,
+                               status: request.status,
+                               responderId: request.responder_id,
+                               shouldShowButtons: shouldShowButtons,
+                               userResponses: responses.filter(r => r.request_id === request.id)
+                             });
+                             
+                             return shouldShowButtons;
+                           })() && (
+                             <>
+                               <button
+                                 onClick={() => handleAgreeToRequest(request)}
+                                 className="px-3 py-1 text-sm bg-green-600 text-white rounded hover:bg-green-700"
+                               >
+                                 Agree
+                               </button>
+                               <button
+                                 onClick={() => handleRejectRequest(request)}
+                                 className="px-3 py-1 text-sm bg-red-600 text-white rounded hover:bg-red-700"
+                               >
+                                 Reject
+                               </button>
+                             </>
+                           )}
+                         </>
+                       ) : null}
+                     </>
+                   ) : request.requester_id !== user?.id ? (
+                     // Non-creators can accept/reject requests (for non-open-block requests)
                      <>
                        {request.request_type === 'event' ? (
                          <>
@@ -3151,17 +3621,6 @@ export default function SchedulePage() {
                              const shouldShowButtons = !responses.some(r => r.request_id === request.id && r.responder_id === user?.id) && 
                                request.status !== 'accepted';
                              
-                             // Debug logging for open block requests
-                             if (request.request_type === 'open_block') {
-                               console.log('Open block request button visibility:', {
-                                 requestId: request.id,
-                                 status: request.status,
-                                 responderId: request.responder_id,
-                                 shouldShowButtons: shouldShowButtons,
-                                 userResponses: responses.filter(r => r.request_id === request.id)
-                               });
-                             }
-                             
                              return shouldShowButtons;
                            })() && (
                              <>
@@ -3183,7 +3642,7 @@ export default function SchedulePage() {
                        )}
                      </>
                    ) : (
-                     // Creators can edit/cancel their own requests
+                     // Creators can edit/cancel their own requests (for non-open-block requests)
                      <>
                        <button
                          onClick={() => handleEditRequest(request)}
@@ -3452,7 +3911,7 @@ export default function SchedulePage() {
                   blockText = `Providing care for ${block.children?.full_name || getChildName(block.child_id, undefined, block)}`;
                 } else if (isUserChildNeeding) {
                   // For "needed" blocks, we need to find the providing parent from the related request/response
-                  const originalRequest = findOriginalRequestForBlock(block);
+                  const originalRequest = findOriginalRequestForBlockSync(block);
                   
                   let providingParentName = 'Unknown Parent'; // Default to 'Unknown Parent'
                   
@@ -3471,7 +3930,7 @@ export default function SchedulePage() {
                 } else {
                   if (block.care_type === 'needed') {
                     // For "needed" blocks, show who is providing care
-                    const originalRequest = findOriginalRequestForBlock(block);
+                    const originalRequest = findOriginalRequestForBlockSync(block);
                     
                     let providingParentName = 'Unknown Parent'; // Default to 'Unknown Parent'
                     
@@ -3633,7 +4092,7 @@ export default function SchedulePage() {
                               <input
                                 type="time"
                                 value={timeBlock.endTime}
-                                onChange={(e) => updateTimeBlock(index, 'endTime', e.target.value)}
+                                onChange={(e) => updateTimeBlock(index, 'endTime', (e.target as HTMLInputElement).value)}
                                 className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm"
                                 required
                               />
@@ -4039,6 +4498,219 @@ export default function SchedulePage() {
                 className="px-4 py-2 bg-gray-300 text-gray-700 rounded-md hover:bg-gray-400"
               >
                 Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Open Block Modal */}
+      {showOpenBlockModal && selectedCareBlock && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          {console.log('Open Block Modal is rendering')}
+          <div className="bg-white rounded-lg p-6 w-full max-w-2xl max-h-[90vh] overflow-y-auto">
+            <div className="flex justify-between items-center mb-4">
+              <h3 className="text-lg font-medium">
+                Open Block Invitation
+              </h3>
+              <button
+                onClick={() => setShowOpenBlockModal(false)}
+                className="text-gray-400 hover:text-gray-600"
+              >
+                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+            
+            <div className="space-y-4">
+              <div>
+                <h4 className="font-medium text-gray-900 mb-2">Care Block Details</h4>
+                <div className="bg-gray-50 p-3 rounded-md">
+                  <p className="text-sm text-gray-600">
+                    <strong>Date:</strong> {selectedCareBlock.care_date}
+                  </p>
+                  <p className="text-sm text-gray-600">
+                    <strong>Time:</strong> {formatTime(selectedCareBlock.start_time)} - {formatTime(selectedCareBlock.end_time)}
+                  </p>
+                  <p className="text-sm text-gray-600">
+                    <strong>Child:</strong> {getChildName(selectedCareBlock.child_id, undefined, selectedCareBlock)}
+                  </p>
+                  <p className="text-sm text-gray-600">
+                    <strong>Group:</strong> {getGroupName(selectedCareBlock.group_id)}
+                  </p>
+                </div>
+              </div>
+
+              <div>
+                <h4 className="font-medium text-gray-900 mb-2">Select Parents to Invite</h4>
+                <div className="space-y-2">
+                  {(() => {
+                    console.log('Available parents for open block:', availableParentsForOpenBlock);
+                    console.log('All profiles:', allProfiles.length);
+                    console.log('All group children:', allGroupChildren.length);
+                    
+                    if (availableParentsForOpenBlock.length > 0) {
+                      return availableParentsForOpenBlock.map(parent => (
+                        <label key={parent.id} className="flex items-center space-x-3">
+                          <input
+                            type="checkbox"
+                            checked={openBlockForm.invitedParentIds.includes(parent.id)}
+                            onChange={() => toggleParentSelection(parent.id)}
+                            className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                          />
+                          <span className="text-sm text-gray-700">
+                            {parent.full_name}
+                          </span>
+                        </label>
+                      ));
+                    } else {
+                      return (
+                        <div className="text-sm text-gray-500">
+                          <p>No parents available for this time slot.</p>
+                          <p className="mt-1 text-xs">Debug info: {allProfiles.length} profiles, {allGroupChildren.length} group children</p>
+                        </div>
+                      );
+                    }
+                  })()}
+                </div>
+              </div>
+
+              {/* Selected Parents Summary */}
+              {openBlockForm.invitedParentIds.length > 0 && (
+                <div>
+                  <h4 className="font-medium text-gray-900 mb-2">
+                    Selected Parents ({openBlockForm.invitedParentIds.length} selected)
+                  </h4>
+                  <div className="bg-green-50 p-3 rounded-md">
+                    <p className="text-sm text-green-800">
+                      You have selected {openBlockForm.invitedParentIds.length} parent(s) to invite to your open block.
+                    </p>
+                    <p className="text-sm text-green-700 mt-1">
+                      When they accept, they will choose which of their children will receive care during your specified time.
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              {/* Multiple Reciprocal Care Time Slots */}
+              {openBlockForm.invitedParentIds.length > 0 && (
+                <div className="mt-4">
+                  <h4 className="font-medium text-gray-900 mb-2">
+                    When You Need Care for Your Child
+                  </h4>
+                  <p className="text-sm text-gray-600 mb-3">
+                    Specify time slots for when you need each invited parent to take care of your child (Sarah Grace) in exchange for your care block. One time slot will be created for each selected parent.
+                  </p>
+                  
+                  {/* Time Slot List */}
+                  <div className="space-y-3">
+                    {openBlockForm.reciprocalTimeSlots.map((slot, index) => (
+                      <div key={index} className="border border-gray-200 rounded-lg p-3">
+                        <div className="flex justify-between items-center mb-2">
+                          <h5 className="font-medium text-gray-800">Time Slot {index + 1} (for Parent {index + 1})</h5>
+                        </div>
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                          <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-1">
+                              Date
+                            </label>
+                            <input
+                              type="date"
+                              value={slot.date}
+                              onChange={(e) => updateReciprocalTimeSlot(index, 'date', (e.target as HTMLInputElement).value)}
+                              className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm"
+                              required
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-1">
+                              Start Time
+                            </label>
+                            <input
+                              type="time"
+                              value={slot.startTime}
+                              onChange={(e) => updateReciprocalTimeSlot(index, 'startTime', (e.target as HTMLInputElement).value)}
+                              className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm"
+                              required
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-1">
+                              End Time
+                            </label>
+                            <input
+                              type="time"
+                              value={slot.endTime}
+                              onChange={(e) => updateReciprocalTimeSlot(index, 'endTime', (e.target as HTMLInputElement).value)}
+                              className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm"
+                              required
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  
+                  {/* Time Slots Info */}
+                  <div className="mt-3 bg-yellow-50 p-3 rounded-md">
+                    <p className="text-sm text-yellow-800">
+                      <strong>Time Slots:</strong> {openBlockForm.reciprocalTimeSlots.length} time slot(s) will be created - one for each selected parent.
+                    </p>
+                  </div>
+                  
+                  <div className="mt-3 bg-blue-50 p-3 rounded-md">
+                    <p className="text-sm text-blue-800">
+                      <strong>Exchange:</strong> You will care for their child during your block (4:00 PM - 9:00 PM), 
+                      and they will care for your child (Sarah Grace) during one of the time slots you specify above.
+                    </p>
+                    <p className="text-sm text-blue-700 mt-1">
+                      <strong>How it works:</strong> Each invited parent will see their assigned time slot. When one parent accepts their slot, 
+                      that slot becomes unavailable to other parents.
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              <div>
+                <h4 className="font-medium text-gray-900 mb-2">Open Block Invitation Information</h4>
+                <div className="bg-blue-50 p-3 rounded-md">
+                  <p className="text-sm text-blue-900">
+                    <strong>You are creating open block invitations for reciprocal care:</strong>
+                  </p>
+                  <p className="text-sm text-blue-700 mt-1">
+                    <strong>Your Original Care Block:</strong> {selectedCareBlock.care_date} from {formatTime(selectedCareBlock.start_time)} to {formatTime(selectedCareBlock.end_time)}
+                  </p>
+                  <p className="text-sm text-blue-700 mt-2">
+                    <strong>How it works:</strong> For each parent you select, you'll specify a time block where you're offering to care for their child. When they accept the invitation, they will choose which of their children will receive care during your specified time, and you will care for their child during your original care block time.
+                  </p>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700">Notes</label>
+                <textarea
+                  value={openBlockForm.notes}
+                  onChange={(e) => setOpenBlockForm(prev => ({ ...prev, notes: e.target.value }))}
+                  className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2"
+                  rows={3}
+                  placeholder="Optional notes for the invitation..."
+                />
+              </div>
+            </div>
+
+            <div className="mt-6 flex space-x-3">
+              <button
+                onClick={handleOpenBlockSubmit}
+                className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700"
+              >
+                Send Invitations
+              </button>
+              <button
+                onClick={() => setShowOpenBlockModal(false)}
+                className="flex-1 px-4 py-2 bg-gray-300 text-gray-700 rounded-md hover:bg-gray-400"
+              >
+                Cancel
               </button>
             </div>
           </div>

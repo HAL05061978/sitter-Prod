@@ -28,7 +28,14 @@ export default function AuthPage() {
           supabaseClient={supabase}
           appearance={{
             theme: ThemeSupa,
-            variables: {},
+            variables: {
+              default: {
+                colors: {
+                  brand: '#3b82f6',
+                  brandAccent: '#2563eb',
+                },
+              },
+            },
             style: {
               anchor: { display: 'none' }, // Hide built-in links
               message: {},
@@ -38,8 +45,6 @@ export default function AuthPage() {
               container: {},
               loader: {},
               divider: {},
-              // Hide the default footer
-              footer: { display: 'none' },
             },
           }}
           providers={[]}
