@@ -700,71 +700,76 @@ export default function SchedulePage() {
       .in("request_id", (allRequestsData || []).map(r => r.id))
       .order("created_at", { ascending: false });
 
-    // Filter out completed reciprocal requests (accepted/rejected) since they're already handled
+    // Fetch open block invitations for the current user
+    const { data: openBlockInvitations } = await supabase
+      .from("open_block_invitations")
+      .select(`
+        *,
+        scheduled_care!inner(
+          *,
+          children:child_id (
+            id,
+            full_name,
+            parent_id
+          )
+        )
+      `)
+      .eq("invited_parent_id", userId)
+      .eq("status", "active")
+      .order("created_at", { ascending: false });
+
     console.log('=== fetchRequestsAndResponses DEBUG ===');
     console.log('Total requests before filtering:', (allRequestsData || []).length);
-    console.log('Open block requests before filtering:', (allRequestsData || []).filter(r => r.request_type === 'open_block').length);
+    console.log('Open block invitations for user:', (openBlockInvitations || []).length);
     console.log('Current user ID:', userId);
     
-    const filteredRequests = (allRequestsData || []).filter(request => {
-      // Handle open block requests with specific filtering
-      if (request.request_type === 'open_block') {
-        console.log('Processing open block request:', {
-          requestId: request.id,
-          requesterId: request.requester_id,
-          openBlockParentId: request.open_block_parent_id,
-          reciprocalParentId: request.reciprocal_parent_id,
-          currentUserId: userId
-        });
-        
-        // Allow the open block creator (Parent B) to see their own requests for editing/canceling
-        if (request.open_block_parent_id === userId) {
-          console.log('Including open block request for creator (Parent B) - for editing/canceling');
-          return true;
-        }
-        
-        // Don't show open block requests that have been accepted by someone else
-        const acceptedResponses = (allResponsesData || []).filter(response =>
-          response.request_id === request.id && response.status === 'accepted'
-        );
-        if (acceptedResponses.length > 0) {
-          console.log('Filtering out - request has been accepted by someone else');
-          return false;
-        }
-        
-        // Don't show open block requests that the current user has already responded to
-        const userResponses = (allResponsesData || []).filter(response =>
-          response.responder_id === userId && response.request_id === request.id
-        );
-        if (userResponses.length > 0) {
-          console.log('Filtering out - user has already responded to this request');
-          return false;
-        }
-        
-        // Show open block requests to the specific parent who was invited (reciprocal_parent_id)
-        if (request.reciprocal_parent_id === userId) {
-          console.log('Including open block request for invited parent');
-          return true;
-        }
-        
-        console.log('Filtering out - user is not the invited parent');
-        return false;
-      }
+    // Convert open block invitations to care request format for display
+    const openBlockRequests = (openBlockInvitations || []).map(invitation => {
+      const scheduledCare = invitation.scheduled_care;
       
+      return {
+        id: invitation.id,
+        group_id: scheduledCare.group_id,
+        requester_id: scheduledCare.parent_id, // Parent B (who created the original care block)
+        child_id: scheduledCare.child_id,
+        requested_date: scheduledCare.care_date,
+        start_time: scheduledCare.start_time,
+        end_time: scheduledCare.end_time,
+        duration_minutes: scheduledCare.duration_minutes,
+        notes: invitation.notes,
+        request_type: 'open_block',
+        status: invitation.status,
+        created_at: invitation.created_at,
+        children: scheduledCare.children,
+        // Open block specific fields
+        reciprocal_date: invitation.reciprocal_date,
+        reciprocal_start_time: invitation.reciprocal_start_time,
+        reciprocal_end_time: invitation.reciprocal_end_time,
+        open_block_parent_id: scheduledCare.parent_id, // Parent B
+        block_time_id: invitation.block_time_id,
+        open_block_id: invitation.open_block_id
+      };
+    });
+    
+    const filteredRequests = (allRequestsData || []).filter(request => {
       // For reciprocal requests, only keep if they're not completed (not accepted/rejected)
       if (request.request_type === 'reciprocal') {
         return request.status !== 'accepted' && request.status !== 'rejected';
       }
       
-      // Keep all other request types
+      // Keep all other request types (simple, event, etc.)
       return true;
     });
     
+    // Combine regular requests with open block requests
+    const allRequests = [...filteredRequests, ...openBlockRequests];
+    
     console.log('Total requests after filtering:', filteredRequests.length);
-    console.log('Open block requests after filtering:', filteredRequests.filter(r => r.request_type === 'open_block').length);
+    console.log('Open block requests converted:', openBlockRequests.length);
+    console.log('Total combined requests:', allRequests.length);
     console.log('=== fetchRequestsAndResponses DEBUG END ===');
 
-    setRequests(filteredRequests);
+    setRequests(allRequests);
 
     // Filter responses to only include responses for the filtered requests
     const filteredRequestIds = filteredRequests.map((r: CareRequest) => r.id);
@@ -1235,11 +1240,9 @@ export default function SchedulePage() {
         window.dispatchEvent(new CustomEvent('careRequestUpdated'));
         
         setShowResponseModal(false);
-        alert('Open block accepted! Both care blocks have been scheduled.');
         return;
       } catch (error) {
         console.error('Error accepting open block:', error);
-        alert('Error accepting open block. Please try again.');
         return;
       }
     }
@@ -2237,22 +2240,7 @@ export default function SchedulePage() {
     }
 
     try {
-      // First, create the open block session
-      const { data: openBlockSession, error: sessionError } = await supabase
-        .from('open_block_sessions')
-        .insert({
-          open_block_parent_id: user.id,
-          scheduled_care_id: selectedCareBlock.id,
-          notes: openBlockForm.notes || `Open block invitation: ${getParentName(user.id)} is offering their care block on ${selectedCareBlock.care_date} from ${formatTime(selectedCareBlock.start_time)} to ${formatTime(selectedCareBlock.end_time)}.`
-        })
-        .select()
-        .single();
-
-      if (sessionError) {
-        console.error('Error creating open block session:', sessionError);
-        alert('Error creating open block session: ' + sessionError.message);
-        return;
-      }
+      // No need to create a session - we link directly to scheduled_care
 
       const invitations = [];
       
@@ -2266,7 +2254,7 @@ export default function SchedulePage() {
           const { data: invitation, error: createError } = await supabase
             .from('open_block_invitations')
             .insert({
-              open_block_id: openBlockSession.id,
+              open_block_id: selectedCareBlock.id, // Direct link to Parent B's scheduled care block
               block_time_id: blockTimeId, // Same block time ID for all parents for this time slot
               invited_parent_id: parentId, // Single parent per invitation
               reciprocal_date: timeSlot.date,
@@ -2286,23 +2274,7 @@ export default function SchedulePage() {
           invitations.push(invitation);
         }
 
-        // Send notification to all parents for this time slot
-        for (const parentId of openBlockForm.invitedParentIds) {
-          const { error: messageError } = await supabase
-            .from("messages")
-            .insert({
-              group_id: selectedCareBlock.group_id,
-              sender_id: user.id,
-              recipient_id: parentId,
-              subject: "Open Block Invitation",
-              content: `You have been invited to join an open care block by ${getParentName(user.id)}. You have ${openBlockForm.reciprocalTimeSlots.length} time slot(s) to choose from. Check your care requests to respond.`,
-              role: 'notification'
-            });
-
-          if (messageError) {
-            console.error('Error sending notification:', messageError);
-          }
-        }
+        // Note: Messages will be sent when invitations are accepted/declined, not when created
       }
 
       // Close the modal and show success message
@@ -2729,6 +2701,100 @@ export default function SchedulePage() {
     } catch (error) {
       console.error('Error accepting response:', error);
       alert('Error accepting response. Please try again.');
+    }
+  };
+
+  // Open block response state
+  const [showOpenBlockResponseModal, setShowOpenBlockResponseModal] = useState(false);
+  const [selectedOpenBlockInvitation, setSelectedOpenBlockInvitation] = useState<any>(null);
+  const [openBlockResponseType, setOpenBlockResponseType] = useState<'accept' | 'decline'>('accept');
+  const [openBlockResponseChildId, setOpenBlockResponseChildId] = useState('');
+  const [openBlockResponseNotes, setOpenBlockResponseNotes] = useState('');
+
+  // Handle open block invitation responses
+  const handleOpenBlockResponse = async (invitationId: string, response: 'accept' | 'decline', childId?: string) => {
+    try {
+      // Check if a response already exists for this invitation and parent
+      const { data: existingResponse, error: checkError } = await supabase
+        .from("open_block_responses")
+        .select("*")
+        .eq("invitation_id", invitationId)
+        .eq("parent_id", user!.id)
+        .single();
+
+      if (existingResponse) {
+        console.log("Response already exists for this invitation:", existingResponse);
+        // Close the modal and refresh data
+        setShowOpenBlockResponseModal(false);
+        await fetchRequestsAndResponses(user!.id);
+        await fetchScheduledCare(user!.id, new Date());
+        window.dispatchEvent(new CustomEvent('careRequestUpdated'));
+        return;
+      }
+
+      // Create a response record
+      const { data: responseRecord, error: createError } = await supabase
+        .from("open_block_responses")
+        .insert({
+          invitation_id: invitationId,
+          parent_id: user!.id,
+          response: response,
+          child_id: childId,
+          notes: response === 'accept' ? 'Accepted open block invitation' : 'Declined open block invitation'
+        })
+        .select()
+        .single();
+
+      if (createError) {
+        console.error("Error creating open block response:", createError);
+        // Don't show alert - let the user see the result in the UI
+        return;
+      }
+
+      // If accepted, the database trigger will handle creating the scheduled care blocks
+      if (response === 'accept') {
+        // Send notification to the open block creator
+        const { data: invitation, error: fetchError } = await supabase
+          .from("open_block_invitations")
+          .select(`
+            *,
+            scheduled_care!inner(*)
+          `)
+          .eq("id", invitationId)
+          .single();
+
+        if (!fetchError && invitation) {
+          const scheduledCare = invitation.scheduled_care;
+          
+          const { error: messageError } = await supabase
+            .from("messages")
+            .insert({
+              group_id: scheduledCare.group_id,
+              sender_id: user!.id,
+              recipient_id: scheduledCare.parent_id, // Parent B (who created the original care block)
+              subject: "Open Block Accepted",
+              content: `${getParentName(user!.id)} has accepted your open block invitation for ${invitation.reciprocal_date} from ${invitation.reciprocal_start_time} to ${invitation.reciprocal_end_time}.`,
+              role: 'notification'
+            });
+
+          if (messageError) {
+            console.error('Error sending notification:', messageError);
+          }
+        }
+      }
+
+      // Close the modal
+      setShowOpenBlockResponseModal(false);
+      
+      // Refresh data
+      await fetchRequestsAndResponses(user!.id);
+      await fetchScheduledCare(user!.id, new Date());
+
+      // Dispatch custom event to update header count
+      window.dispatchEvent(new CustomEvent('careRequestUpdated'));
+    } catch (error) {
+      console.error("Error responding to open block invitation:", error);
+      // Don't show alert - let the user see the result in the UI
     }
   };
 
@@ -3500,8 +3566,8 @@ export default function SchedulePage() {
                          <strong>What happens when you accept:</strong> Two care blocks will be created:
                        </p>
                        <ul className="text-sm text-green-700 mt-1 ml-4">
-                         <li>• {getParentName(request.requester_id)} will care for your child during their original care block time ({request.reciprocal_date} from {formatTime(request.reciprocal_start_time)} to {formatTime(request.reciprocal_end_time)})</li>
-                         <li>• You will care for {getParentName(request.requester_id)}'s child during the time above ({request.requested_date} from {formatTime(request.start_time)} to {formatTime(request.end_time)})</li>
+                         <li>• {getParentName(request.requester_id)} will care for your child during the time above ({request.requested_date} from {formatTime(request.start_time)} to {formatTime(request.end_time)})</li>
+                         <li>• You will care for {getParentName(request.requester_id)}'s child during their original care block time ({request.reciprocal_date} from {formatTime(request.reciprocal_start_time)} to {formatTime(request.reciprocal_end_time)})</li>
                        </ul>
                      </div>
                    )}
@@ -3530,41 +3596,35 @@ export default function SchedulePage() {
                              Cancel
                            </button>
                          </>
-                       ) : request.reciprocal_parent_id === user?.id ? (
-                         // Parent C/D (invited parents) can agree/reject
+                       ) : (
+                         // Parent C/D (invited parents) can accept/decline
                          <>
-                           {(() => {
-                             const shouldShowButtons = !responses.some(r => r.request_id === request.id && r.responder_id === user?.id) && 
-                               request.status !== 'accepted';
-                             
-                             // Debug logging for open block requests
-                             console.log('Open block request button visibility:', {
-                               requestId: request.id,
-                               status: request.status,
-                               responderId: request.responder_id,
-                               shouldShowButtons: shouldShowButtons,
-                               userResponses: responses.filter(r => r.request_id === request.id)
-                             });
-                             
-                             return shouldShowButtons;
-                           })() && (
-                             <>
-                               <button
-                                 onClick={() => handleAgreeToRequest(request)}
-                                 className="px-3 py-1 text-sm bg-green-600 text-white rounded hover:bg-green-700"
-                               >
-                                 Agree
-                               </button>
-                               <button
-                                 onClick={() => handleRejectRequest(request)}
-                                 className="px-3 py-1 text-sm bg-red-600 text-white rounded hover:bg-red-700"
-                               >
-                                 Reject
-                               </button>
-                             </>
-                           )}
+                           <button
+                             onClick={() => {
+                               setSelectedOpenBlockInvitation(request);
+                               setOpenBlockResponseType('accept');
+                               setOpenBlockResponseChildId('');
+                               setOpenBlockResponseNotes('');
+                               setShowOpenBlockResponseModal(true);
+                             }}
+                             className="px-3 py-1 text-sm bg-green-600 text-white rounded hover:bg-green-700"
+                           >
+                             Accept
+                           </button>
+                           <button
+                             onClick={() => {
+                               setSelectedOpenBlockInvitation(request);
+                               setOpenBlockResponseType('decline');
+                               setOpenBlockResponseChildId('');
+                               setOpenBlockResponseNotes('');
+                               setShowOpenBlockResponseModal(true);
+                             }}
+                             className="px-3 py-1 text-sm bg-red-600 text-white rounded hover:bg-red-700"
+                           >
+                             Decline
+                           </button>
                          </>
-                       ) : null}
+                       )}
                      </>
                    ) : request.requester_id !== user?.id ? (
                      // Non-creators can accept/reject requests (for non-open-block requests)
@@ -4708,6 +4768,75 @@ export default function SchedulePage() {
               </button>
               <button
                 onClick={() => setShowOpenBlockModal(false)}
+                className="flex-1 px-4 py-2 bg-gray-300 text-gray-700 rounded-md hover:bg-gray-400"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Open Block Response Modal */}
+      {showOpenBlockResponseModal && selectedOpenBlockInvitation && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg p-6 w-full max-w-md">
+            <h3 className="text-lg font-medium mb-4">Respond to Open Block Invitation</h3>
+            <div className="space-y-4">
+              <div className="p-3 bg-green-50 rounded-md">
+                <p className="text-sm text-green-900">
+                  <strong>Open Block Invitation:</strong> You can accept or decline this invitation.
+                </p>
+              </div>
+              
+              <div>
+                <label className="block text-sm font-medium text-gray-700">Response</label>
+                <select
+                  value={openBlockResponseType}
+                  onChange={(e) => setOpenBlockResponseType(e.target.value as 'accept' | 'decline')}
+                  className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2"
+                >
+                  <option value="accept">Accept</option>
+                  <option value="decline">Decline</option>
+                </select>
+              </div>
+
+              {openBlockResponseType === 'accept' && (
+                <div>
+                  <label className="block text-sm font-medium text-gray-700">Child to Bring</label>
+                  <select
+                    value={openBlockResponseChildId}
+                    onChange={(e) => setOpenBlockResponseChildId(e.target.value)}
+                    className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2"
+                  >
+                    <option value="">Select a child</option>
+                    {children.map(child => (
+                      <option key={child.id} value={child.id}>{child.full_name}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700">Notes</label>
+                <textarea
+                  value={openBlockResponseNotes}
+                  onChange={(e) => setOpenBlockResponseNotes(e.target.value)}
+                  className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2"
+                  rows={3}
+                  placeholder="Optional notes..."
+                />
+              </div>
+            </div>
+            <div className="mt-6 flex space-x-3">
+              <button
+                onClick={() => handleOpenBlockResponse(selectedOpenBlockInvitation.id, openBlockResponseType, openBlockResponseChildId)}
+                className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700"
+              >
+                Submit Response
+              </button>
+              <button
+                onClick={() => setShowOpenBlockResponseModal(false)}
                 className="flex-1 px-4 py-2 bg-gray-300 text-gray-700 rounded-md hover:bg-gray-400"
               >
                 Cancel
