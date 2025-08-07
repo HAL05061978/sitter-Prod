@@ -188,3 +188,4 @@ ORDER BY obi.created_at DESC;
 -- 7. Success message
 SELECT '=== READY FOR TESTING ===' as info;
 SELECT 'All existing open block data has been cleaned up and fresh invitations have been created. You can now test the acceptance process.' as status;
+

@@ -77,3 +77,4 @@ WHERE notes LIKE '%Open block acceptance%';
 SELECT '=== READY FOR FRONTEND TESTING ===' as info;
 SELECT 'The broken trigger has been removed and test data cleaned up.' as status;
 SELECT 'You can now test the open block acceptance using the frontend.' as instruction;
+

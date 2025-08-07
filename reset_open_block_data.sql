@@ -78,3 +78,4 @@ LIMIT 5;
 -- 7. Success message
 SELECT '=== READY FOR TESTING ===' as info;
 SELECT 'All open block data has been reset. You can now test the fixed acceptance logic.' as status;
+
