@@ -491,8 +491,8 @@ export default function SchedulePage() {
         // Fetch all profiles for name resolution
         await fetchAllProfiles();
 
-        // Fetch all group children for open block functionality
-        await fetchAllGroupChildren(data.user.id);
+                         // Fetch all group children for open block functionality
+                 await fetchAllGroupChildren(data.user.id);
 
         setLoading(false);
       }
@@ -701,7 +701,7 @@ export default function SchedulePage() {
         };
       })
     );
-
+    
     setScheduledCare(blocksWithAllChildren); // Updated variable name
   };
 
@@ -747,7 +747,7 @@ export default function SchedulePage() {
       .from("open_block_invitations")
       .select(`
         *,
-        scheduled_care!inner(
+        scheduled_care!open_block_id(
           *,
           children:child_id (
             id,
@@ -765,6 +765,11 @@ export default function SchedulePage() {
     // Convert open block invitations to care request format for display
     const openBlockRequests = (openBlockInvitations || []).map(invitation => {
       const scheduledCare = invitation.scheduled_care;
+      
+      if (!scheduledCare) {
+        console.log('No scheduled care data found for invitation:', invitation.id);
+        return null; // Skip this invitation
+      }
       
       return {
         id: invitation.id,
@@ -788,7 +793,7 @@ export default function SchedulePage() {
         block_time_id: invitation.block_time_id,
         open_block_id: invitation.open_block_id
       };
-    });
+    }).filter(Boolean); // Remove null entries
     
     const filteredRequests = (allRequestsData || []).filter(request => {
       // For reciprocal requests, only keep if they're not completed (not accepted/rejected)
@@ -2168,25 +2173,28 @@ export default function SchedulePage() {
       return;
     }
     
-    // Check if this is a provided care block with reciprocal notes (indicating it's from a reciprocal request)
-    if (block.care_type === 'provided' && 
-        block.parent_id === user?.id && 
-        block.notes && 
-        block.notes.toLowerCase().includes('reciprocal')) {
-      
-      // Find the original reciprocal request to determine if current user is Parent B (responder)
-      const originalRequest = await findOriginalRequestForBlock(block);
-      
-      if (originalRequest && originalRequest.request_type === 'reciprocal') {
-        // Check if current user is the responder (Parent B) of the original reciprocal request
-        // Only Parent B should be able to open blocks, not Parent A (initiator)
-        if (originalRequest.responder_id === user?.id) {
-          
+    // Check if this is a provided care block where current user is the hosting parent
+    if (block.care_type === 'provided' && block.parent_id === user?.id) {
       const shouldOpenBlock = confirm(
         `You are providing care for ${getChildName(block.child_id, undefined, block)} on ${block.care_date}.\n\nWould you like to open this care block to invite other group members?`
       );
       
       if (shouldOpenBlock) {
+        await openBlockForInvitations(block);
+        return;
+      }
+    }
+    
+    // Default behavior: Show daily schedule popup for the block's date
+    console.log('Showing daily schedule modal instead');
+    // Fix timezone issue by parsing the date properly
+    const blockDate = parseLocalDate(block.care_date);
+    setSelectedDateForDailyView(blockDate);
+    setShowDailyScheduleModal(true);
+  };
+
+  // Helper function to open a block for invitations
+  const openBlockForInvitations = async (block: ScheduledCare) => {
         // Set up the open block modal
         setSelectedCareBlock(block);
         setOpenBlockForm({
@@ -2203,25 +2211,6 @@ export default function SchedulePage() {
             
         setShowOpenBlockModal(true);
             console.log('Modal should now be visible');
-        return;
-          }
-        } else {
-          console.log('Current user is Parent A (initiator) - showing details only');
-          // Parent A should just see the details, not be able to open the block
-          alert(`Care Block Details:\n\nYou are providing care for ${getChildName(block.child_id, undefined, block)} on ${block.care_date} from ${formatTime(block.start_time)} to ${formatTime(block.end_time)}.\n\nThis is part of a reciprocal care agreement.`);
-          return;
-        }
-      } else {
-        console.log('No original reciprocal request found or not a reciprocal request');
-      }
-    }
-    
-    // Default behavior: Show daily schedule popup for the block's date
-    console.log('Showing daily schedule modal instead');
-    // Fix timezone issue by parsing the date properly
-    const blockDate = parseLocalDate(block.care_date);
-    setSelectedDateForDailyView(blockDate);
-    setShowDailyScheduleModal(true);
   };
 
   const handleOpenBlockSubmit = async () => {
@@ -2244,6 +2233,7 @@ export default function SchedulePage() {
             .from('open_block_invitations')
           .insert({
               open_block_id: selectedCareBlock.id, // Link to the existing care block that Parent B is opening
+              existing_block_id: selectedCareBlock.id, // Link to the existing care block for invitations to existing blocks
               block_time_id: blockTimeId, // Same block time ID for all parents for this time slot
               invited_parent_id: parentId, // Single parent per invitation
               reciprocal_date: timeSlot.date,
@@ -2378,14 +2368,28 @@ export default function SchedulePage() {
       return [];
     }
     
-    // Filter profiles to only include active group members, excluding current user and original requester
+    // Get the child being cared for in this block and exclude their parent
+    const { data: childData, error: childError } = await supabase
+      .from('children')
+      .select('parent_id')
+      .eq('id', targetBlock.child_id)
+      .single();
+    
+    if (childError) {
+      console.error('Error fetching child data:', childError);
+      return [];
+    }
+    
+    // Filter profiles to exclude the parent of the child being cared for
     const availableParents = (profilesData || [])
       .filter(profile => {
-        // Exclude current user and original requester
-        if (profile.id === user?.id || profile.id === originalRequest.requester_id) {
-          return false;
-        }
-        
+        // Exclude current user, original requester, and parent of the child being cared for
+        if (profile.id === user?.id || 
+            profile.id === originalRequest.requester_id ||
+            profile.id === childData.parent_id) {
+        return false;
+      }
+      
         return true;
       });
     
@@ -2671,6 +2675,7 @@ export default function SchedulePage() {
 
   // Handle open block invitation responses
   const handleOpenBlockResponse = async (invitationId: string, response: 'accept' | 'decline', childId?: string) => {
+    console.log("handleOpenBlockResponse called with:", { invitationId, response, childId });
     try {
       // Check if a response already exists for this invitation and parent
       const { data: existingResponse, error: checkError } = await supabase
@@ -2682,30 +2687,43 @@ export default function SchedulePage() {
 
       if (existingResponse) {
         console.log("Response already exists for this invitation:", existingResponse);
-        // Close the modal and refresh data
-        setShowOpenBlockResponseModal(false);
-        await fetchRequestsAndResponses(user!.id);
-        await fetchScheduledCare(user!.id, new Date());
-        window.dispatchEvent(new CustomEvent('careRequestUpdated'));
-        return;
+        // If the existing response is 'accept', we should continue with the acceptance logic
+        // If it's 'decline', we should not allow re-accepting
+        if (existingResponse.response === 'decline') {
+          console.log("Cannot accept - invitation was already declined");
+          setShowOpenBlockResponseModal(false);
+          await fetchRequestsAndResponses(user!.id);
+          await fetchScheduledCare(user!.id, new Date());
+          window.dispatchEvent(new CustomEvent('careRequestUpdated'));
+          return;
+        }
+        // If it's 'accept', continue with the acceptance logic (in case it was interrupted)
+        console.log("Continuing with acceptance logic despite existing response");
       }
 
-      // Create a response record
-      const { data: responseRecord, error: createError } = await supabase
-        .from("open_block_responses")
-        .insert({
-          invitation_id: invitationId,
-          parent_id: user!.id,
-          response: response,
-          child_id: childId,
-          notes: response === 'accept' ? 'Accepted open block invitation' : 'Declined open block invitation'
-        })
-        .select()
-        .single();
+      // Create a response record only if one doesn't already exist
+      let responseRecord;
+      if (!existingResponse || existingResponse.response !== 'accept') {
+        const { data: newResponseRecord, error: createError } = await supabase
+          .from("open_block_responses")
+          .insert({
+            invitation_id: invitationId,
+            parent_id: user!.id,
+            response: response,
+            child_id: childId,
+            notes: response === 'accept' ? 'Accepted open block invitation' : 'Declined open block invitation'
+          })
+          .select()
+          .single();
 
-      if (createError) {
-        console.error("Error creating open block response:", createError);
-        return;
+        if (createError) {
+          console.error("Error creating open block response:", createError);
+          return;
+        }
+        responseRecord = newResponseRecord;
+      } else {
+        // Use existing response data
+        responseRecord = existingResponse;
       }
 
       // If accepted, handle the acceptance logic directly
@@ -2717,7 +2735,7 @@ export default function SchedulePage() {
           .from("open_block_invitations")
           .select(`
             *,
-            scheduled_care!inner(*)
+            scheduled_care!open_block_id(*)
           `)
           .eq("id", invitationId)
           .single();
@@ -2727,7 +2745,7 @@ export default function SchedulePage() {
           return;
         }
 
-        const scheduledCare = invitation.scheduled_care;
+          const scheduledCare = invitation.scheduled_care;
         console.log("Found invitation:", invitation);
         console.log("Original care block:", scheduledCare);
 
@@ -2748,20 +2766,9 @@ export default function SchedulePage() {
 
         console.log("Updated invitation status to accepted");
 
-        // Get the original child ID (Parent B's child)
-        const { data: originalChild, error: childError } = await supabase
-          .from("children")
-          .select("id")
-          .eq("parent_id", scheduledCare.parent_id)
-          .limit(1)
-          .single();
-
-        if (childError || !originalChild) {
-          console.error("Error getting original child:", childError);
-          return;
-        }
-
-                console.log("Original child ID:", originalChild.id);
+        // Get the original child ID (the child being cared for in the existing block)
+        const originalChildId = scheduledCare.child_id;
+        console.log("Original child ID from scheduled_care:", originalChildId);
 
         // Check if the accepting child is already in the care block
         const { data: existingChild, error: checkChildError } = await supabase
@@ -2893,7 +2900,7 @@ export default function SchedulePage() {
           .insert({
             group_id: scheduledCare.group_id,
             parent_id: user!.id,
-            child_id: originalChild.id,
+            child_id: originalChildId,
             care_date: formattedDate,
             start_time: invitation.reciprocal_start_time,
             end_time: invitation.reciprocal_end_time,
@@ -2913,23 +2920,23 @@ export default function SchedulePage() {
 
         // Note: The original child (Parent B's child) is already set in the scheduled_care.child_id field
         // No need to add it again to scheduled_care_children as it would create a duplicate
-        console.log("Reciprocal care block created with child:", originalChild.id);
+        console.log("Reciprocal care block created with child:", originalChildId);
 
         // Send notification to the open block creator (Parent B)
-        const { error: messageError } = await supabase
-          .from("messages")
-          .insert({
-            group_id: scheduledCare.group_id,
-            sender_id: user!.id,
-            recipient_id: scheduledCare.parent_id, // Parent B (who created the original care block)
-            subject: "Open Block Accepted",
-            content: `${getParentName(user!.id)} has accepted your open block invitation for ${invitation.reciprocal_date} from ${invitation.reciprocal_start_time} to ${invitation.reciprocal_end_time}.`,
-            role: 'notification'
-          });
+          const { error: messageError } = await supabase
+            .from("messages")
+            .insert({
+              group_id: scheduledCare.group_id,
+              sender_id: user!.id,
+              recipient_id: scheduledCare.parent_id, // Parent B (who created the original care block)
+              subject: "Open Block Accepted",
+              content: `${getParentName(user!.id)} has accepted your open block invitation for ${invitation.reciprocal_date} from ${invitation.reciprocal_start_time} to ${invitation.reciprocal_end_time}.`,
+              role: 'notification'
+            });
 
-        if (messageError) {
-          console.error('Error sending notification:', messageError);
-        }
+          if (messageError) {
+            console.error('Error sending notification:', messageError);
+          }
 
         // Send notification to the accepting parent (Parent C) about their reciprocal obligation
         const { error: reciprocalMessageError } = await supabase
