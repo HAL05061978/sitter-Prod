@@ -1162,129 +1162,18 @@ export default function SchedulePage() {
     }
   };
 
-  // Updated function names and types
+  // Clean function for handling care requests
   const respondToCareRequest = async (request?: CareRequest) => {
     const requestToUse = request || selectedRequest;
     
-    // For open block requests, automatically accept and create care blocks
-    if (requestToUse?.request_type === 'open_block') {
-      if (!user || !requestToUse) {
+    // For regular requests (reciprocal, simple, etc.)
+    if (!user || !selectedRequest || !responseForm.reciprocalDate || !responseForm.reciprocalStartTime || !responseForm.reciprocalEndTime || !responseForm.reciprocalChildId) {
         return;
       }
 
       // Prevent users from responding to their own requests
-      if (requestToUse.requester_id === user.id) {
+    if (selectedRequest.requester_id === user.id) {
         return;
-      }
-
-      try {
-        console.log('Processing open block acceptance automatically');
-        
-        // Create the care response
-        const { data: responseData, error: responseError } = await supabase
-          .from("care_responses")
-          .insert({
-            request_id: requestToUse.id,
-            responder_id: user.id,
-            response_type: 'accept',
-            status: 'accepted', // Automatically accepted
-            response_notes: 'Accepted open block invitation'
-          })
-          .select()
-          .single();
-
-        if (responseError) {
-          console.error('Error creating open block response:', responseError);
-          alert('Error accepting open block: ' + responseError.message);
-          return;
-        }
-
-        // Create the two care blocks automatically
-        // 1. Parent B (open block creator) provides care for Parent C's child (reciprocal time)
-        // 2. Parent C provides care for Parent B's child (original time)
-        
-        // Calculate duration for the first block (Parent B's care time)
-        const startTime1 = new Date(`2000-01-01T${requestToUse.start_time}`);
-        const endTime1 = new Date(`2000-01-01T${requestToUse.end_time}`);
-        const durationMinutes1 = Math.round((endTime1.getTime() - startTime1.getTime()) / (1000 * 60));
-
-        // First block: Parent B provides care for Parent C's child
-        const { error: careError1 } = await supabase
-          .from("scheduled_care")
-          .insert({
-            group_id: requestToUse.group_id,
-            parent_id: requestToUse.open_block_parent_id, // Parent B (open block creator)
-            child_id: requestToUse.child_id, // Parent B's child who needs care
-            care_date: requestToUse.requested_date,
-            start_time: requestToUse.start_time,
-            end_time: requestToUse.end_time,
-            duration_minutes: durationMinutes1,
-            care_type: 'provided',
-            status: 'confirmed',
-            related_request_id: requestToUse.id,
-            notes: `Open block: ${getParentName(requestToUse.open_block_parent_id || '')} providing care for ${getChildName(requestToUse.child_id, requestToUse, undefined)}`
-          });
-
-        if (careError1) {
-          console.error('Error creating first care block:', careError1);
-          alert('Error creating care block: ' + careError1.message);
-          return;
-        }
-
-        // Calculate duration for the second block (Parent C's care time)
-        const startTime2 = new Date(`2000-01-01T${requestToUse.reciprocal_start_time}`);
-        const endTime2 = new Date(`2000-01-01T${requestToUse.reciprocal_end_time}`);
-        const durationMinutes2 = Math.round((endTime2.getTime() - startTime2.getTime()) / (1000 * 60));
-
-        // Second block: Parent C provides care for Parent B's child (reciprocal time)
-        const { error: careError2 } = await supabase
-          .from("scheduled_care")
-          .insert({
-            group_id: requestToUse.group_id,
-            parent_id: user.id, // Parent C (acceptor)
-            child_id: requestToUse.reciprocal_child_id, // Parent C's child who needs care
-            care_date: requestToUse.reciprocal_date,
-            start_time: requestToUse.reciprocal_start_time,
-            end_time: requestToUse.reciprocal_end_time,
-            duration_minutes: durationMinutes2,
-            care_type: 'provided',
-            status: 'confirmed',
-            related_request_id: requestToUse.id,
-            notes: `Open block: ${getParentName(user.id)} providing care for ${getChildName(requestToUse.reciprocal_child_id || '', requestToUse, undefined)}`
-          });
-
-        if (careError2) {
-          console.error('Error creating second care block:', careError2);
-          alert('Error creating care block: ' + careError2.message);
-          return;
-        }
-
-        // Update the request status to accepted
-        const { error: requestUpdateError } = await supabase
-          .from("care_requests")
-          .update({ 
-            status: 'accepted',
-            responder_id: user.id
-          })
-          .eq('id', requestToUse.id);
-
-        if (requestUpdateError) {
-          console.error('Error updating request status:', requestUpdateError);
-        }
-
-        // Refresh data
-        await fetchRequestsAndResponses(user.id);
-        await fetchScheduledCare(user.id, currentDate);
-        
-        // Dispatch custom event to update header count
-        window.dispatchEvent(new CustomEvent('careRequestUpdated'));
-        
-        setShowResponseModal(false);
-        return;
-      } catch (error) {
-        console.error('Error accepting open block:', error);
-        return;
-      }
     }
 
     // For regular requests (reciprocal, simple, etc.)
@@ -2236,6 +2125,7 @@ export default function SchedulePage() {
               existing_block_id: selectedCareBlock.id, // Link to the existing care block for invitations to existing blocks
               block_time_id: blockTimeId, // Same block time ID for all parents for this time slot
               invited_parent_id: parentId, // Single parent per invitation
+              inviting_parent_id: user.id, // NEW COLUMN: Parent B (who is inviting) - SIMPLE AND CLEAR
               reciprocal_date: timeSlot.date,
               reciprocal_start_time: timeSlot.startTime,
               reciprocal_end_time: timeSlot.endTime,
@@ -2331,18 +2221,21 @@ export default function SchedulePage() {
     if (!targetBlock) {
       return [];
     }
+
+    console.log(`Target block: ${targetBlock.id}, Child ID: ${targetBlock.child_id}, Parent ID: ${targetBlock.parent_id}`);
     
     // Get all group members except the current user and the original requester
     const originalRequest = await findOriginalRequestForBlock(targetBlock);
     
-    if (!originalRequest) {
-      return [];
-    }
+    console.log('Original request found:', originalRequest);
+    
+    // If no original request (e.g., for "provided" blocks), we can still proceed
+    // We'll just exclude the current user and the parent of the child being cared for
     
     // Get all active group members for this specific group
     const { data: groupMembers, error } = await supabase
       .from('group_members')
-      .select('profile_id')
+      .select('profile_id, group_id')
       .eq('group_id', targetBlock.group_id)
       .eq('status', 'active');
     
@@ -2351,11 +2244,16 @@ export default function SchedulePage() {
       return [];
     }
     
+    console.log(`Group members found: ${groupMembers?.length || 0} for group ${targetBlock.group_id}`);
+    console.log('Group members data:', groupMembers);
+    
     if (!groupMembers || groupMembers.length === 0) {
+      console.log('No group members found, returning empty array');
       return [];
     }
     
     const profileIds = groupMembers.map(member => member.profile_id);
+    console.log(`Profile IDs to fetch: ${profileIds.join(', ')}`);
     
     // Get the actual profile data for these members
     const { data: profilesData, error: profilesError } = await supabase
@@ -2368,31 +2266,42 @@ export default function SchedulePage() {
       return [];
     }
     
-    // Get the child being cared for in this block and exclude their parent
+    console.log(`Profiles fetched: ${profilesData?.length || 0}`);
+    
+        // Get the child being cared for in this block and exclude their parent
     const { data: childData, error: childError } = await supabase
       .from('children')
-      .select('parent_id')
+      .select('parent_id, full_name')
       .eq('id', targetBlock.child_id)
       .single();
-    
+
     if (childError) {
       console.error('Error fetching child data:', childError);
       return [];
     }
+
+    if (!childData) {
+      console.error('No child data found for child ID:', targetBlock.child_id);
+      return [];
+    }
+
+    console.log(`Child being cared for: ${childData?.full_name || 'Unknown'} (${targetBlock.child_id}), Parent ID: ${childData?.parent_id || 'Unknown'}`);
     
-    // Filter profiles to exclude the parent of the child being cared for
+    // Filter profiles to exclude only the current user and the parent of the child being cared for
     const availableParents = (profilesData || [])
       .filter(profile => {
-        // Exclude current user, original requester, and parent of the child being cared for
+        // Exclude current user and parent of the child being cared for
         if (profile.id === user?.id || 
-            profile.id === originalRequest.requester_id ||
             profile.id === childData.parent_id) {
-        return false;
-      }
-      
+          console.log(`Excluding profile ${profile.full_name} (${profile.id}) - reason: ${profile.id === user?.id ? 'current user' : 'parent of child being cared for'}`);
+          return false;
+        }
+        
+        console.log(`Including profile ${profile.full_name} (${profile.id})`);
         return true;
       });
     
+    console.log(`Available parents: ${availableParents.length} out of ${profilesData?.length || 0} total profiles`);
     return availableParents;
   };
 
@@ -2673,301 +2582,221 @@ export default function SchedulePage() {
   const [openBlockResponseNotes, setOpenBlockResponseNotes] = useState('');
 
 
-  // Handle open block invitation responses
-  const handleOpenBlockResponse = async (invitationId: string, response: 'accept' | 'decline', childId?: string) => {
-    console.log("handleOpenBlockResponse called with:", { invitationId, response, childId });
+  // Fixed open block response handling
+  const createOpenBlockCalendarBlocks = async (invitationId: string) => {
     try {
-      // Check if a response already exists for this invitation and parent
-      const { data: existingResponse, error: checkError } = await supabase
-        .from("open_block_responses")
+      // 1. Get the invitation details
+      const { data: invitation, error: fetchError } = await supabase
+        .from("open_block_invitations")
         .select("*")
-        .eq("invitation_id", invitationId)
-        .eq("parent_id", user!.id)
-        .maybeSingle(); // Use maybeSingle to avoid 406 error if no record exists
+        .eq("id", invitationId)
+        .single();
 
-      if (existingResponse) {
-        console.log("Response already exists for this invitation:", existingResponse);
-        // If the existing response is 'accept', we should continue with the acceptance logic
-        // If it's 'decline', we should not allow re-accepting
-        if (existingResponse.response === 'decline') {
-          console.log("Cannot accept - invitation was already declined");
-          setShowOpenBlockResponseModal(false);
-          await fetchRequestsAndResponses(user!.id);
-          await fetchScheduledCare(user!.id, new Date());
-          window.dispatchEvent(new CustomEvent('careRequestUpdated'));
+      if (fetchError || !invitation) {
+        console.error("Error fetching invitation:", fetchError);
           return;
         }
-        // If it's 'accept', continue with the acceptance logic (in case it was interrupted)
-        console.log("Continuing with acceptance logic despite existing response");
+
+      // 2. Get the original care block
+      const { data: originalBlock, error: blockError } = await supabase
+        .from("scheduled_care")
+        .select("*")
+        .eq("id", invitation.open_block_id)
+        .single();
+
+      if (blockError || !originalBlock) {
+        console.error("Error fetching original block:", blockError);
+        return;
       }
 
-      // Create a response record only if one doesn't already exist
-      let responseRecord;
-      if (!existingResponse || existingResponse.response !== 'accept') {
-        const { data: newResponseRecord, error: createError } = await supabase
-          .from("open_block_responses")
+      // 3. Get children for both parents
+      const { data: invitingChild } = await supabase
+        .from("children")
+        .select("id")
+        .eq("parent_id", invitation.inviting_parent_id)
+        .limit(1)
+        .single();
+
+      const { data: invitedChild } = await supabase
+        .from("children")
+        .select("id")
+        .eq("parent_id", invitation.invited_parent_id)
+        .limit(1)
+        .single();
+
+      // 4. Create the new care block for invited parent (provides care)
+      console.log("Creating provided care block for invited parent:", invitation.invited_parent_id);
+      const { data: newBlock, error: createError } = await supabase
+        .from("scheduled_care")
           .insert({
-            invitation_id: invitationId,
-            parent_id: user!.id,
-            response: response,
-            child_id: childId,
-            notes: response === 'accept' ? 'Accepted open block invitation' : 'Declined open block invitation'
+          group_id: originalBlock.group_id,
+          parent_id: invitation.invited_parent_id,
+          child_id: invitingChild.id,
+          care_date: invitation.reciprocal_date,
+          start_time: invitation.reciprocal_start_time,
+          end_time: invitation.reciprocal_end_time,
+          care_type: "provided",
+          status: "confirmed",
+          notes: "Open block: invited parent provides care"
           })
           .select()
           .single();
 
         if (createError) {
-          console.error("Error creating open block response:", createError);
+        console.error("Error creating new care block:", createError);
           return;
         }
-        responseRecord = newResponseRecord;
+
+      console.log("Successfully created provided care block:", newBlock);
+
+      // 5. Create the care block for inviting parent (needs care)
+      console.log("Creating needed care block for inviting parent:", invitation.inviting_parent_id);
+      const { data: neededBlock, error: createNeededError } = await supabase
+        .from("scheduled_care")
+        .insert({
+          group_id: originalBlock.group_id,
+          parent_id: invitation.inviting_parent_id,
+          child_id: invitingChild.id,
+          care_date: invitation.reciprocal_date,
+          start_time: invitation.reciprocal_start_time,
+          end_time: invitation.reciprocal_end_time,
+          care_type: "needed",
+          status: "confirmed",
+          notes: "Open block: inviting parent needs care"
+        })
+        .select()
+        .single();
+
+      if (createNeededError) {
+        console.error("Error creating needed care block:", createNeededError);
       } else {
-        // Use existing response data
-        responseRecord = existingResponse;
+        console.log("Successfully created needed care block:", neededBlock);
       }
 
-      // If accepted, handle the acceptance logic directly
-      if (response === 'accept') {
-        console.log("Processing open block acceptance...");
-        
-        // Get the invitation details
+      // 6. Add invited parent's child to original block (only if not already added)
+      const { data: existingChild } = await supabase
+        .from("scheduled_care_children")
+        .select("id")
+        .eq("scheduled_care_id", invitation.open_block_id)
+        .eq("child_id", invitedChild.id)
+        .single();
+
+      if (!existingChild) {
+        await supabase
+          .from("scheduled_care_children")
+          .insert({
+            scheduled_care_id: invitation.open_block_id,
+            child_id: invitedChild.id,
+            providing_parent_id: invitation.inviting_parent_id,
+            notes: "Open block: inviting parent provides care for invited parent's child"
+          });
+      }
+
+      console.log("Calendar blocks created successfully");
+      console.log("Created blocks for:");
+      console.log("- Invited parent (provides care):", invitation.invited_parent_id);
+      console.log("- Inviting parent (needs care):", invitation.inviting_parent_id);
+      console.log("- Child:", invitingChild.id);
+      console.log("- Date:", invitation.reciprocal_date);
+
+      // Check for any blocks with null parent_id that might be causing "Unknown Parent"
+      const { data: nullParentBlocks } = await supabase
+        .from("scheduled_care")
+        .select("*")
+        .is("parent_id", null)
+        .eq("care_date", invitation.reciprocal_date);
+
+      if (nullParentBlocks && nullParentBlocks.length > 0) {
+        console.warn("Found blocks with null parent_id:", nullParentBlocks);
+      }
+    } catch (error) {
+      console.error("Error creating calendar blocks:", error);
+    }
+  };
+
+  const handleOpenBlockResponse = async (invitationId: string, response: 'accept' | 'decline', childId?: string) => {
+    console.log("handleOpenBlockResponse called with:", { invitationId, response, childId });
+    try {
+      if (response === "accept") {
+        // 1. Get the invitation details to understand the context
         const { data: invitation, error: fetchError } = await supabase
           .from("open_block_invitations")
-          .select(`
-            *,
-            scheduled_care!open_block_id(*)
-          `)
+          .select("*")
           .eq("id", invitationId)
           .single();
 
         if (fetchError || !invitation) {
           console.error("Error fetching invitation:", fetchError);
+          alert("Error processing open block invitation. Please try again.");
           return;
         }
 
-          const scheduledCare = invitation.scheduled_care;
-        console.log("Found invitation:", invitation);
-        console.log("Original care block:", scheduledCare);
-
-        // Update the invitation status to accepted
+        // 2. Update statuses for first-come-first-serve logic
         const { error: updateError } = await supabase
           .from("open_block_invitations")
           .update({
-            status: 'accepted',
-            accepted_parent_id: user!.id,
-            updated_at: new Date().toISOString()
+            status: "accepted" 
           })
           .eq("id", invitationId);
 
         if (updateError) {
           console.error("Error updating invitation status:", updateError);
+          alert("Error processing open block invitation. Please try again.");
           return;
         }
 
-        console.log("Updated invitation status to accepted");
-
-        // Get the original child ID (the child being cared for in the existing block)
-        const originalChildId = scheduledCare.child_id;
-        console.log("Original child ID from scheduled_care:", originalChildId);
-
-        // Check if the accepting child is already in the care block
-        const { data: existingChild, error: checkChildError } = await supabase
-          .from("scheduled_care_children")
-          .select("id")
-          .eq("scheduled_care_id", scheduledCare.id)
-          .eq("child_id", childId!)
-          .maybeSingle();
-
-        if (checkChildError) {
-          console.error("Error checking existing child:", checkChildError);
-          return;
-        }
-
-        if (!existingChild) {
-          // Add the accepting child to the original care block (Parent C's child)
-          const { error: addChildError } = await supabase
-            .from("scheduled_care_children")
-            .insert({
-              scheduled_care_id: scheduledCare.id,
-              child_id: childId!,
-              providing_parent_id: scheduledCare.parent_id, // Parent B providing care
-              notes: 'Open block acceptance - accepting child'
-            });
-
-          if (addChildError) {
-            console.error("Error adding accepting child to care block:", addChildError);
-            return;
-          }
-
-          console.log("Added accepting child to original care block");
-        } else {
-          console.log("Accepting child already in care block, skipping addition");
-        }
-
-        // FIRST: Expire other invitations for the same block_time_id (first-come-first-serve for that time slot)
-        console.log("Expiring other invitations for block_time_id:", invitation.block_time_id);
-        const { data: expiredTimeSlotInvitations, error: expireTimeSlotError } = await supabase
+        // 3. Expire all other invitations for the same invited_parent_id (same accepting user)
+        const { error: expireSameUserError } = await supabase
           .from("open_block_invitations")
-          .update({
-            status: 'expired',
-            updated_at: new Date().toISOString()
-          })
-          .eq("block_time_id", invitation.block_time_id)
-          .neq("id", invitationId) // Exclude the accepted invitation
-          .eq("status", 'active')
-          .select();
-
-        if (expireTimeSlotError) {
-          console.error("Error expiring time slot invitations:", expireTimeSlotError);
-        } else {
-          console.log("Expired time slot invitations:", expiredTimeSlotInvitations?.length || 0, "invitations");
-        }
-
-        // SECOND: Expire ALL remaining invitations for the same invited_parent_id (parent can only choose one time slot)
-        console.log("Expiring remaining invitations for invited_parent_id:", invitation.invited_parent_id);
-        const { data: expiredParentInvitations, error: expireParentError } = await supabase
-          .from("open_block_invitations")
-          .update({
-            status: 'expired',
-            updated_at: new Date().toISOString()
-          })
+          .update({ status: "expired" })
           .eq("invited_parent_id", invitation.invited_parent_id)
-          .neq("id", invitationId) // Exclude the accepted invitation
-          .eq("status", 'active')
-          .select();
+          .neq("id", invitationId);
 
-        if (expireParentError) {
-          console.error("Error expiring parent invitations:", expireParentError);
-        } else {
-          console.log("Expired parent invitations:", expiredParentInvitations?.length || 0, "invitations");
+        if (expireSameUserError) {
+          console.error("Error expiring other invitations for same user:", expireSameUserError);
         }
 
-        // Log total expired invitations
-        const totalExpired = (expiredTimeSlotInvitations?.length || 0) + (expiredParentInvitations?.length || 0);
-        console.log("Total expired invitations:", totalExpired);
-        
-        if (expiredTimeSlotInvitations && expiredTimeSlotInvitations.length > 0) {
-          console.log("Expired time slot invitation details:", expiredTimeSlotInvitations.map(inv => ({
-            id: inv.id,
-            invited_parent_id: inv.invited_parent_id,
-            block_time_id: inv.block_time_id,
-            status: inv.status
-          })));
-        }
-        
-        if (expiredParentInvitations && expiredParentInvitations.length > 0) {
-          console.log("Expired parent invitation details:", expiredParentInvitations.map(inv => ({
-            id: inv.id,
-            invited_parent_id: inv.invited_parent_id,
-            block_time_id: inv.block_time_id,
-            status: inv.status
-          })));
+        // 4. Expire all other invitations for the same block_time_id (same time slot from same invitation batch)
+        const { error: expireSameTimeError } = await supabase
+          .from("open_block_invitations")
+          .update({ status: "expired" })
+          .eq("block_time_id", invitation.block_time_id)
+          .neq("id", invitationId);
+
+        if (expireSameTimeError) {
+          console.error("Error expiring other invitations for same time:", expireSameTimeError);
         }
 
-        // Debug: Log the reciprocal time data
-        console.log("Reciprocal time data:", {
-          date: invitation.reciprocal_date,
-          start_time: invitation.reciprocal_start_time,
-          end_time: invitation.reciprocal_end_time
-        });
+        // 5. Create the calendar blocks
+        await createOpenBlockCalendarBlocks(invitationId);
+      } else {
+        // For decline, just update this invitation to declined
+        const { error: updateError } = await supabase
+          .from("open_block_invitations")
+          .update({ status: "declined" })
+          .eq("id", invitationId);
 
-        // Validate time data before creating reciprocal care block
-        if (!invitation.reciprocal_date || !invitation.reciprocal_start_time || !invitation.reciprocal_end_time) {
-          console.error("Missing reciprocal time data:", {
-            date: invitation.reciprocal_date,
-            start_time: invitation.reciprocal_start_time,
-            end_time: invitation.reciprocal_end_time
-          });
+        if (updateError) {
+          console.error("Error updating invitation status:", updateError);
+          alert("Error processing open block invitation. Please try again.");
           return;
         }
-
-        // Check if end time is after start time
-        if (invitation.reciprocal_end_time <= invitation.reciprocal_start_time) {
-          console.error("Invalid time range: end time must be after start time", {
-            start_time: invitation.reciprocal_start_time,
-            end_time: invitation.reciprocal_end_time
-          });
-          return;
-        }
-
-        // Ensure date is in YYYY-MM-DD format
-        const formattedDate = invitation.reciprocal_date.split('T')[0]; // Remove time part if present
-        console.log("Formatted date for database:", formattedDate);
-
-        // Create reciprocal care block for the accepting parent
-        const { data: reciprocalCare, error: reciprocalError } = await supabase
-          .from("scheduled_care")
-          .insert({
-            group_id: scheduledCare.group_id,
-            parent_id: user!.id,
-            child_id: originalChildId,
-            care_date: formattedDate,
-            start_time: invitation.reciprocal_start_time,
-            end_time: invitation.reciprocal_end_time,
-            care_type: 'provided',
-            status: 'confirmed',
-            notes: 'Open block acceptance - reciprocal care'
-          })
-          .select()
-          .single();
-
-        if (reciprocalError) {
-          console.error("Error creating reciprocal care block:", reciprocalError);
-          return;
-        }
-
-        console.log("Created reciprocal care block:", reciprocalCare.id);
-
-        // Note: The original child (Parent B's child) is already set in the scheduled_care.child_id field
-        // No need to add it again to scheduled_care_children as it would create a duplicate
-        console.log("Reciprocal care block created with child:", originalChildId);
-
-        // Send notification to the open block creator (Parent B)
-          const { error: messageError } = await supabase
-            .from("messages")
-            .insert({
-              group_id: scheduledCare.group_id,
-              sender_id: user!.id,
-              recipient_id: scheduledCare.parent_id, // Parent B (who created the original care block)
-              subject: "Open Block Accepted",
-              content: `${getParentName(user!.id)} has accepted your open block invitation for ${invitation.reciprocal_date} from ${invitation.reciprocal_start_time} to ${invitation.reciprocal_end_time}.`,
-              role: 'notification'
-            });
-
-          if (messageError) {
-            console.error('Error sending notification:', messageError);
-          }
-
-        // Send notification to the accepting parent (Parent C) about their reciprocal obligation
-        const { error: reciprocalMessageError } = await supabase
-          .from("messages")
-          .insert({
-            group_id: scheduledCare.group_id,
-            sender_id: user!.id,
-            recipient_id: user!.id, // Parent C (who accepted the invitation)
-            subject: "Reciprocal Care Block Created",
-            content: `You have agreed to provide care for ${getParentName(scheduledCare.parent_id)}'s child on ${invitation.reciprocal_date} from ${invitation.reciprocal_start_time} to ${invitation.reciprocal_end_time}. This care block has been added to your schedule.`,
-            role: 'notification'
-          });
-
-        if (reciprocalMessageError) {
-          console.error('Error sending reciprocal notification:', reciprocalMessageError);
-        }
-
-        console.log("Open block acceptance process completed successfully");
       }
 
-      // Close the modal
-      setShowOpenBlockResponseModal(false);
-      
-      // Refresh data
+      // 6. Refresh data
       await fetchRequestsAndResponses(user!.id);
       await fetchScheduledCare(user!.id, new Date());
 
-      // Dispatch custom event to update header count
-      window.dispatchEvent(new CustomEvent('careRequestUpdated'));
+      setShowOpenBlockResponseModal(false);
+
+      if (response === "accept") {
+        alert("Open block invitation accepted successfully! Calendar blocks have been created.");
+      } else {
+        alert("Open block invitation declined.");
+      }
     } catch (error) {
-      console.error("Error responding to open block invitation:", error);
+      console.error("Error handling open block response:", error);
+      alert("Error processing open block invitation. Please try again.");
     }
   };
 
@@ -5004,9 +4833,69 @@ export default function SchedulePage() {
                     className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2"
                   >
                     <option value="">Select a child</option>
-                    {children.map(child => (
-                      <option key={child.id} value={child.id}>{child.full_name}</option>
-                    ))}
+                    {(() => {
+                      // Debug logging to see what's happening
+                      console.log('=== OPEN BLOCK RESPONSE CHILD FILTERING DEBUG ===');
+                      console.log('selectedOpenBlockInvitation:', selectedOpenBlockInvitation);
+                      console.log('selectedOpenBlockInvitation keys:', Object.keys(selectedOpenBlockInvitation || {}));
+                      
+                      // Check different possible paths for scheduled_care data
+                      const scheduledCareData = selectedOpenBlockInvitation?.scheduled_care || 
+                                              selectedOpenBlockInvitation?.open_block_id || 
+                                              selectedOpenBlockInvitation?.existing_block_id;
+                      console.log('scheduledCareData:', scheduledCareData);
+                      
+                      // Try to get group_id from the invitation directly or from scheduled_care
+                      let groupId = selectedOpenBlockInvitation?.group_id || 
+                                   scheduledCareData?.group_id ||
+                                   selectedOpenBlockInvitation?.scheduled_care?.group_id;
+                      console.log('groupId found:', groupId);
+                      
+                      // Check children arrays
+                      console.log('children array:', children);
+                      console.log('children count:', children.length);
+                      
+                      // Check if the child exists in the base children array with proper status
+                      const userChildren = children.filter(child => child.parent_id === user?.id);
+                      console.log('userChildren in base array:', userChildren);
+                      userChildren.forEach((child, index) => {
+                        console.log(`Base child ${index}:`, child);
+                        console.log(`  status in base: ${child.status}`);
+                      });
+                      
+                      console.log('activeChildrenPerGroup:', activeChildrenPerGroup);
+                      console.log('user?.id:', user?.id);
+                      
+                      if (!groupId) {
+                        // Fallback to user's active children if no group ID available
+                        console.log('No groupId - using fallback to active children');
+                        const activeChildren = children.filter(child => child.status !== 'inactive');
+                        console.log('activeChildren (fallback):', activeChildren);
+                        return activeChildren.map(child => (
+                          <option key={child.id} value={child.id}>{child.full_name}</option>
+                        ));
+                      }
+                      
+                      // Get active children for this specific group
+                      const groupChildren = getActiveChildrenForGroup(groupId);
+                      console.log('groupChildren for groupId', groupId, ':', groupChildren);
+                      
+                      // Debug each child in the group
+                      groupChildren.forEach((child, index) => {
+                        console.log(`Child ${index}:`, child);
+                        console.log(`  parent_id: ${child.parent_id} (user: ${user?.id}) - match: ${child.parent_id === user?.id}`);
+                        console.log(`  status: ${child.status} - active: ${child.status === 'active'}`);
+                      });
+                      
+                      const userActiveGroupChildren = groupChildren.filter(child => 
+                        child.parent_id === user?.id && child.status !== 'inactive'
+                      );
+                      console.log('userActiveGroupChildren (filtered):', userActiveGroupChildren);
+                      
+                      return userActiveGroupChildren.map(child => (
+                        <option key={child.id} value={child.id}>{child.full_name}</option>
+                      ));
+                    })()}
                   </select>
                 </div>
               )}
