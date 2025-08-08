@@ -8,7 +8,7 @@ import { useRouter } from 'next/navigation';
 import { supabase } from '../lib/supabaseClient';
 import Header from '../components/Header';
 import LogoutButton from '../components/LogoutButton';
-import OpenBlockDebugger from '../components/OpenBlockDebugger';
+
 
 import type { User as SupabaseUser } from '@supabase/supabase-js';
 
@@ -2667,7 +2667,7 @@ export default function SchedulePage() {
   const [openBlockResponseType, setOpenBlockResponseType] = useState<'accept' | 'decline'>('accept');
   const [openBlockResponseChildId, setOpenBlockResponseChildId] = useState('');
   const [openBlockResponseNotes, setOpenBlockResponseNotes] = useState('');
-  const [showDebugger, setShowDebugger] = useState(false);
+
 
   // Handle open block invitation responses
   const handleOpenBlockResponse = async (invitationId: string, response: 'accept' | 'decline', childId?: string) => {
@@ -3024,12 +3024,7 @@ export default function SchedulePage() {
           >
             Monthly
           </button>
-          <button
-            onClick={() => setShowDebugger(true)}
-            className="px-3 py-1 text-sm font-medium bg-red-500 text-white rounded-md hover:bg-red-600"
-          >
-            Debug Open Block
-          </button>
+
         </div>
       </div>
 
@@ -5039,9 +5034,7 @@ export default function SchedulePage() {
       )}
 
       {/* Debugger Modal */}
-      {showDebugger && (
-        <OpenBlockDebugger onClose={() => setShowDebugger(false)} />
-      )}
+      
       </div>
     </div>
   );
