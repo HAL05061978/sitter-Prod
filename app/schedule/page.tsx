@@ -3,7 +3,7 @@
 
 'use client';
 
-import { useState, useEffect } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { supabase } from '../lib/supabaseClient';
 import Header from '../components/Header';
@@ -2438,7 +2438,7 @@ export default function SchedulePage() {
     const request = requests.find(r => r.id === requestId);
     if (request?.request_type === 'open_block') {
       alert('Open block requests should be handled via the open block invitation system, not this function.');
-      return;
+          return;
     }
     console.log('acceptResponse called with:', { responseId, requestId, userId: user?.id });
     
@@ -2559,11 +2559,11 @@ export default function SchedulePage() {
         .from("open_block_invitations")
         .select("*")
         .eq("id", invitationId)
-        .single();
+          .single();
 
       if (fetchError || !invitation) {
         console.error("Error fetching invitation:", fetchError);
-        return;
+          return;
       }
 
       console.log("Invitation details:", invitation);
@@ -2573,12 +2573,12 @@ export default function SchedulePage() {
         .from("scheduled_care")
         .select("*")
         .eq("id", invitation.open_block_id)
-        .single();
+          .single();
 
       if (blockError || !originalBlock) {
         console.error("Error fetching original block:", blockError);
-        return;
-      }
+          return;
+        }
 
       // 3. Get the specific child from the original block (not just any child)
       console.log("Original block child_id:", originalBlock.child_id);
@@ -2650,7 +2650,7 @@ export default function SchedulePage() {
         } else {
           console.log("Invited parent's child already exists in original block");
         }
-      } else {
+        } else {
         console.log("No invited child found, skipping scheduled_care_children insertion");
       }
 
@@ -2703,7 +2703,7 @@ export default function SchedulePage() {
 
     // Check what blocks exist BEFORE we start the acceptance process (outside if block)
     const { data: beforeAcceptBlocks } = await supabase
-      .from("scheduled_care")
+          .from("scheduled_care")
       .select("id, parent_id, child_id, care_type, care_date, start_time, end_time, notes, related_request_id")
       .gte("care_date", "2025-08-08")
       .order("care_date", { ascending: true });
@@ -2932,7 +2932,13 @@ export default function SchedulePage() {
                         relevantChildren = allChildren;
                       }
                       
-                      const childNames = relevantChildren.map((child: any) => child.children?.full_name || getChildName((child.child_id || ''), undefined, block)).join(', ');
+                      const childNames = relevantChildren.map((child: any) => {
+                      // Handle both data structures: childrenInCareBlocks format and fallback format
+                      if (child.child_name) {
+                        return child.child_name;
+                      }
+                      return child.children?.full_name || getChildName((child.child_id || ''), undefined, block);
+                    }).join(', ');
                       
                       if (isUserProviding) {
                         // User is providing care for someone else's child
@@ -3018,9 +3024,10 @@ export default function SchedulePage() {
                           blockStyle = 'bg-blue-100 text-blue-800 border border-blue-300';
                           blockText = `${providingParentName} providing care for ${childNames}`;
                         } else {
-                          // For "provided" blocks
-                          blockStyle = 'bg-gray-100 text-gray-800 border border-gray-300';
-                          blockText = `Providing care for ${childNames}`;
+                          // For "provided" blocks, also show the parent name
+                          const providingParentName = getParentName(block.parent_id);
+                          blockStyle = 'bg-blue-100 text-blue-800 border border-blue-300'; // Make it blue like others
+                          blockText = `${providingParentName} providing care for ${childNames}`;
                         }
                       }
                       
@@ -3029,7 +3036,7 @@ export default function SchedulePage() {
                           key={block.id}
                           className={`text-xs p-1 rounded cursor-pointer ${blockStyle} relative`}
                           onDoubleClick={() => handleBlockDoubleClick(block)}
-                          title={`${block.care_type === 'needed' ? 'Care Needed' : 'Care Provided'} - ${formatTime(block.start_time)} to ${formatTime(block.end_time)} - ${childNames}`}
+                          title={`${blockText} - ${formatTime(block.start_time)} to ${formatTime(block.end_time)}`}
                         >
                           <div className="font-medium truncate">
                             {blockText}
@@ -4015,8 +4022,21 @@ export default function SchedulePage() {
                 console.log("=== END TIME BLOCK RENDERING DEBUG ===");
                 
                 if (isUserProviding) {
+                  // Get ALL children for this block (sync logic like calendar view)
+                  const allChildren = childrenInCareBlocks[block.id] || [];
+                  
+                  let relevantChildren;
+                  if (allChildren.length > 0) {
+                    relevantChildren = allChildren;
+                  } else {
+                    // Fallback to single child from block
+                    relevantChildren = [{ children: block.children, child_id: block.child_id }];
+                  }
+                  
+                  const childNames = relevantChildren.map((child: any) => child.children?.full_name || getChildName((child.child_id || ''), undefined, block)).join(', ');
+                  
                   blockStyle = 'bg-green-100 text-green-800 border border-green-300';
-                  blockText = `Providing care for ${block.children?.full_name || getChildName(block.child_id, undefined, block)}`;
+                  blockText = `Providing care for ${childNames}`;
                 } else if (isUserChildNeeding) {
                   // For "needed" blocks, we need to find the providing parent from the related request/response
                   console.log("=== DISPLAY LOGIC DEBUG: Finding providing parent ===");
@@ -4053,8 +4073,21 @@ export default function SchedulePage() {
                   console.log("Final providing parent name:", providingParentName);
                   console.log("=== END DISPLAY LOGIC DEBUG ===");
                   
+                  // Get ALL children for this block too
+                  const allChildren = childrenInCareBlocks[block.id] || [];
+                  
+                  let relevantChildren;
+                  if (allChildren.length > 0) {
+                    relevantChildren = allChildren;
+                  } else {
+                    // Fallback to single child from block
+                    relevantChildren = [{ children: block.children, child_id: block.child_id }];
+                  }
+                  
+                  const childNames = relevantChildren.map((child: any) => child.children?.full_name || getChildName((child.child_id || ''), undefined, block)).join(', ');
+                  
                   blockStyle = 'bg-red-100 text-red-800 border border-red-300';
-                  blockText = `${providingParentName} providing care for ${block.children?.full_name || getChildName(block.child_id, undefined, block)}`;
+                  blockText = `${providingParentName} providing care for ${childNames}`;
                 } else {
                   if (block.care_type === 'needed') {
                     // For "needed" blocks, show who is providing care
@@ -4074,11 +4107,52 @@ export default function SchedulePage() {
                       }
                     }
                     
+                    // Get ALL children for this block too
+                    const allChildren = childrenInCareBlocks[block.id] || [];
+                    
+                    let relevantChildren;
+                    if (allChildren.length > 0) {
+                      relevantChildren = allChildren;
+                    } else {
+                      // Fallback to single child from block
+                      relevantChildren = [{ children: block.children, child_id: block.child_id }];
+                    }
+                    
+                    const childNames = relevantChildren.map((child: any) => {
+                      // Handle both data structures: childrenInCareBlocks format and fallback format
+                      if (child.child_name) {
+                        return child.child_name;
+                      }
+                      return child.children?.full_name || getChildName((child.child_id || ''), undefined, block);
+                    }).join(', ');
+                    
                     blockStyle = 'bg-blue-100 text-blue-800 border border-blue-300';
-                    blockText = `${providingParentName} providing care for ${block.children?.full_name || getChildName(block.child_id, undefined, block)}`;
+                    blockText = `${providingParentName} providing care for ${childNames}`;
                   } else {
-                    blockStyle = 'bg-gray-100 text-gray-800 border border-gray-300';
-                    blockText = `Providing care for ${block.children?.full_name || getChildName(block.child_id, undefined, block)}`;
+                    // For other "provided" blocks, also show the parent name
+                    const providingParentName = getParentName(block.parent_id);
+                    
+                    // Get ALL children for this block too
+                    const allChildren = childrenInCareBlocks[block.id] || [];
+                    
+                    let relevantChildren;
+                    if (allChildren.length > 0) {
+                      relevantChildren = allChildren;
+                    } else {
+                      // Fallback to single child from block
+                      relevantChildren = [{ children: block.children, child_id: block.child_id }];
+                    }
+                    
+                    const childNames = relevantChildren.map((child: any) => {
+                      // Handle both data structures: childrenInCareBlocks format and fallback format
+                      if (child.child_name) {
+                        return child.child_name;
+                      }
+                      return child.children?.full_name || getChildName((child.child_id || ''), undefined, block);
+                    }).join(', ');
+                    
+                    blockStyle = 'bg-blue-100 text-blue-800 border border-blue-300'; // Make it blue like others
+                    blockText = `${providingParentName} providing care for ${childNames}`;
                   }
                 }
                 
