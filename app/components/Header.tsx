@@ -440,10 +440,16 @@ export default function Header({ currentPage = "dashboard" }: HeaderProps) {
             )}
           </button>
           <button 
-            onClick={() => router.push('/schedule')}
-            className={`${getButtonClass('schedule')} relative`}
+            onClick={() => router.push('/calendar')}
+            className={getButtonClass('calendar')}
           >
-            Schedule
+            Calendar
+          </button>
+          <button 
+            onClick={() => router.push('/scheduler')}
+            className={`${getButtonClass('scheduler')} relative`}
+          >
+            Scheduler
                          {pendingScheduleItems > 0 && (
                <span className="absolute -top-2 -right-2 bg-red-500 text-white text-xs rounded-full h-6 w-6 flex items-center justify-center font-bold shadow-medium">
                  {pendingScheduleItems}
