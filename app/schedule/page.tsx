@@ -516,6 +516,11 @@ export default function SchedulePage() {
   };
 
   const fetchScheduledCare = async (userId: string, date: Date) => {
+    console.log("=== FETCH SCHEDULED CARE DEBUG ===");
+    console.log("Fetching scheduled care for user:", userId);
+    console.log("Date:", date);
+    console.log("Calendar view:", calendarView);
+    
     // Determine the date range based on calendar view
     let startDate: Date;
     let endDate: Date;
@@ -530,6 +535,8 @@ export default function SchedulePage() {
       startDate = new Date(date.getFullYear(), date.getMonth(), 1);
       endDate = new Date(date.getFullYear(), date.getMonth() + 1, 0);
     }
+    
+    console.log("Date range:", formatDateForDB(startDate), "to", formatDateForDB(endDate));
 
     // First, get all groups the user is a member of
     const { data: userGroups } = await supabase
@@ -551,8 +558,14 @@ export default function SchedulePage() {
       .eq("parent_id", userId);
 
     const userChildIds = userChildren?.map(child => child.id) || [];
+    
+    console.log("User groups:", userGroups);
+    console.log("Group IDs:", groupIds);
+    console.log("User children:", userChildren);
+    console.log("User child IDs:", userChildIds);
 
     // SIMPLIFIED: Fetch all blocks where the user is involved OR their children are involved
+    console.log("Fetching all user blocks...");
     const { data: allUserBlocks, error: allUserBlocksError } = await supabase
       .from("scheduled_care")
       .select(`
@@ -569,6 +582,7 @@ export default function SchedulePage() {
       .eq("status", "confirmed")
       .or(`parent_id.eq.${userId},child_id.in.(${userChildIds.join(',')})`);
 
+    console.log("All user blocks result:", allUserBlocks);
     if (allUserBlocksError) {
       console.error('Error fetching all user blocks:', allUserBlocksError);
     }
@@ -1936,27 +1950,43 @@ export default function SchedulePage() {
 
   // Updated function with new types
   const getChildName = (childId: string, request?: CareRequest, block?: ScheduledCare, response?: CareResponse) => {
+    console.log("=== GET CHILD NAME DEBUG ===");
+    console.log("Looking for child ID:", childId);
+    console.log("Block children data:", block?.children);
+    console.log("Request children data:", request?.children);
+    console.log("All group children count:", allGroupChildren.length);
+    console.log("User's children count:", children.length);
+    
     // If we have the block with child data, use that first
     if (block?.children?.full_name) {
+      console.log("Found child name in block data:", block.children.full_name);
       return block.children.full_name;
     }
     
     // If we have the request with child data, use that
     if (request?.children?.full_name) {
+      console.log("Found child name in request data:", request.children.full_name);
       return request.children.full_name;
     }
     
     // Try to find the child in all group children (for name resolution)
     const groupChild = allGroupChildren.find(c => c.id === childId);
     if (groupChild?.full_name) {
+      console.log("Found child name in all group children:", groupChild.full_name);
       return groupChild.full_name;
     }
     
     // Fallback to local children array (user's own children)
     const child = children.find(c => c.id === childId);
     if (child?.full_name) {
+      console.log("Found child name in user's children:", child.full_name);
       return child.full_name;
     }
+    
+    console.log("Could not find child name - using fallback");
+    console.log("Available group children:", allGroupChildren.map(c => ({ id: c.id, name: c.full_name })));
+    console.log("Available user children:", children.map(c => ({ id: c.id, name: c.full_name })));
+    console.log("=== END GET CHILD NAME DEBUG ===");
     
     // If we still don't have the name, try to fetch it directly from the database
     // This is a fallback for when the child data wasn't loaded with the blocks
@@ -2550,36 +2580,36 @@ export default function SchedulePage() {
         return;
       }
 
-      // 3. Get children for both parents
-      const { data: invitingChild } = await supabase
-        .from("children")
-        .select("id")
-        .eq("parent_id", invitation.inviting_parent_id)
-        .limit(1)
-        .single();
-
+      // 3. Get the specific child from the original block (not just any child)
+      console.log("Original block child_id:", originalBlock.child_id);
+      const invitingChildId = originalBlock.child_id; // Use the specific child from the original block
+      
       const { data: invitedChild } = await supabase
         .from("children")
         .select("id")
         .eq("parent_id", invitation.invited_parent_id)
         .limit(1)
         .single();
+        
+      console.log("Using inviting child ID from original block:", invitingChildId);
+      console.log("Using invited child ID:", invitedChild?.id);
 
             // 4. Create the new care block for invited parent (provides care)
       console.log("Creating provided care block for invited parent:", invitation.invited_parent_id);
+      console.log("Using child ID from original block:", invitingChildId);
       const { data: newBlock, error: createError } = await supabase
         .from("scheduled_care")
         .insert({
           group_id: originalBlock.group_id,
           parent_id: invitation.invited_parent_id,
-          child_id: invitingChild.id,
+          child_id: invitingChildId, // Use the specific child from the original block
           care_date: invitation.reciprocal_date,
           start_time: invitation.reciprocal_start_time,
           end_time: invitation.reciprocal_end_time,
           care_type: "provided",
           status: "confirmed",
           related_request_id: originalBlock.related_request_id, // Link to original request for display logic
-          notes: "Open block: invited parent provides care"
+          notes: "Open block: invited parent provides care for specific child from original block"
         })
         .select()
         .single();
@@ -2599,29 +2629,36 @@ export default function SchedulePage() {
       console.log("Skipping 'needs care' block creation for inviting parent - they already have the original 'provides care' block");
 
       // 6. Add invited parent's child to original block (only if not already added)
-      const { data: existingChild } = await supabase
-        .from("scheduled_care_children")
-        .select("id")
-        .eq("scheduled_care_id", invitation.open_block_id)
-        .eq("child_id", invitedChild.id)
-        .single();
-
-      if (!existingChild) {
-        await supabase
+      if (invitedChild?.id) {
+        const { data: existingChild } = await supabase
           .from("scheduled_care_children")
-          .insert({
-            scheduled_care_id: invitation.open_block_id,
-            child_id: invitedChild.id,
-            providing_parent_id: invitation.inviting_parent_id,
-            notes: "Open block: inviting parent provides care for invited parent's child"
-          });
+          .select("id")
+          .eq("scheduled_care_id", invitation.open_block_id)
+          .eq("child_id", invitedChild.id)
+          .single();
+
+        if (!existingChild) {
+          console.log("Adding invited parent's child to original block:", invitedChild.id);
+          await supabase
+            .from("scheduled_care_children")
+            .insert({
+              scheduled_care_id: invitation.open_block_id,
+              child_id: invitedChild.id,
+              providing_parent_id: invitation.inviting_parent_id,
+              notes: "Open block: inviting parent provides care for invited parent's child"
+            });
+        } else {
+          console.log("Invited parent's child already exists in original block");
+        }
+      } else {
+        console.log("No invited child found, skipping scheduled_care_children insertion");
       }
 
       console.log("Calendar blocks created successfully");
       console.log("Created blocks for:");
       console.log("- Invited parent (provides care):", invitation.invited_parent_id);
       console.log("- Inviting parent (needs care):", invitation.inviting_parent_id);
-      console.log("- Child:", invitingChild.id);
+      console.log("- Child:", invitingChildId);
       console.log("- Date:", invitation.reciprocal_date);
 
       // Check what blocks exist AFTER we created new ones
@@ -3956,11 +3993,26 @@ export default function SchedulePage() {
             
             <div className="space-y-4">
               {getBlocksForDate(selectedDateForDailyView).map(block => {
+                console.log("=== TIME BLOCK RENDERING DEBUG ===");
+                console.log("Rendering block:", block);
+                console.log("Current user ID:", user?.id);
+                console.log("User's children:", children);
+                console.log("Block parent_id:", block.parent_id);
+                console.log("Block care_type:", block.care_type);
+                console.log("Block child_id:", block.child_id);
+
                 const isUserProviding = block.parent_id === user?.id && block.care_type === 'provided';
                 const isUserChildNeeding = block.care_type === 'needed' && children.some(c => c.id === block.child_id);
                 
+                console.log("isUserProviding:", isUserProviding);
+                console.log("isUserChildNeeding:", isUserChildNeeding);
+                console.log("Block children data:", block.children);
+                console.log("All children in care blocks:", childrenInCareBlocks);
+                
                 let blockStyle = '';
                 let blockText = '';
+                
+                console.log("=== END TIME BLOCK RENDERING DEBUG ===");
                 
                 if (isUserProviding) {
                   blockStyle = 'bg-green-100 text-green-800 border border-green-300';
