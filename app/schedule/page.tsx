@@ -2580,9 +2580,16 @@ export default function SchedulePage() {
           return;
         }
 
-      // 3. Get the specific child from the original block (not just any child)
-      console.log("Original block child_id:", originalBlock.child_id);
-      const invitingChildId = originalBlock.child_id; // Use the specific child from the original block
+      // 3. Get Parent B's child (the inviting parent's child that needs care)
+      const { data: invitingChild } = await supabase
+        .from("children")
+        .select("id")
+        .eq("parent_id", invitation.inviting_parent_id)
+        .limit(1)
+        .single();
+      
+      console.log("Inviting parent's child (Parent B's child):", invitingChild?.id);
+      const invitingChildId = invitingChild?.id;
       
       const { data: invitedChild } = await supabase
         .from("children")
@@ -2591,12 +2598,12 @@ export default function SchedulePage() {
         .limit(1)
         .single();
         
-      console.log("Using inviting child ID from original block:", invitingChildId);
-      console.log("Using invited child ID:", invitedChild?.id);
+      console.log("Using inviting child ID (Parent B's child):", invitingChildId);
+      console.log("Using invited child ID (Parent C's child):", invitedChild?.id);
 
             // 4. Create the new care block for invited parent (provides care)
       console.log("Creating provided care block for invited parent:", invitation.invited_parent_id);
-      console.log("Using child ID from original block:", invitingChildId);
+      console.log("Parent C will provide care for Parent B's child:", invitingChildId);
       const { data: newBlock, error: createError } = await supabase
         .from("scheduled_care")
         .insert({
@@ -2609,7 +2616,7 @@ export default function SchedulePage() {
           care_type: "provided",
           status: "confirmed",
           related_request_id: originalBlock.related_request_id, // Link to original request for display logic
-          notes: "Open block: invited parent provides care for specific child from original block"
+          notes: "Open block: Parent C provides care for Parent B's child"
         })
         .select()
         .single();
@@ -2658,7 +2665,7 @@ export default function SchedulePage() {
       console.log("Created blocks for:");
       console.log("- Invited parent (provides care):", invitation.invited_parent_id);
       console.log("- Inviting parent (needs care):", invitation.inviting_parent_id);
-      console.log("- Child:", invitingChildId);
+      console.log("- Parent B's child (receiving care):", invitingChildId);
       console.log("- Date:", invitation.reciprocal_date);
 
       // Check what blocks exist AFTER we created new ones
