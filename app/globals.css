@@ -89,3 +89,12 @@ body {
 ::-webkit-scrollbar-thumb:hover {
   background: var(--border-secondary);
 }
+
+/* Custom shadow utilities */
+.shadow-soft {
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+}
+
+.shadow-medium {
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.1);
+}

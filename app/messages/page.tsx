@@ -2,9 +2,10 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { supabase } from "../lib/supabaseClient";
+import { supabase } from "../lib/supabase";
 import Header from "../components/Header";
 import LogoutButton from "../components/LogoutButton";
+import CareMessageComponent from "./CareMessageComponentNew";
 import type { User } from "@supabase/supabase-js";
 import { v4 as uuidv4 } from 'uuid';
 
@@ -18,6 +19,10 @@ interface Message {
   created_at: string;
   role?: string;
   status?: string; // 'pending', 'accepted', 'rejected'
+  message_type: string; // Required field for care messages
+  care_request_id?: string;
+  care_response_id?: string;
+  action_data?: any;
 }
 
 interface Profile {
@@ -91,7 +96,7 @@ export default function MessagesPage() {
         
         // Mark all messages as viewed when the page loads
         if (messagesData && messagesData.length > 0) {
-          await markMessagesAsViewed(data.user.id, messagesData.map(m => m.id));
+          await markMessagesAsViewed(data.user.id);
         }
         
         setLoading(false);
@@ -99,28 +104,20 @@ export default function MessagesPage() {
     });
   }, [router]);
 
-  // Function to mark messages as viewed
-  const markMessagesAsViewed = async (userId: string, messageIds: string[]) => {
+  // Function to mark messages as viewed using new backend function
+  const markMessagesAsViewed = async (userId: string) => {
     try {
-      // Insert view records for all messages
-      const viewRecords = messageIds.map(messageId => ({
-        user_id: userId,
-        message_id: messageId
-      }));
-
-      // Use upsert to avoid conflicts if already viewed
-      const { error } = await supabase
-        .from("message_views")
-        .upsert(viewRecords, { 
-          onConflict: 'user_id,message_id',
-          ignoreDuplicates: true 
-        });
+      // Use the new backend function to mark all messages as viewed
+      const { data, error } = await supabase.rpc('mark_all_messages_as_viewed', {
+        p_user_id: userId
+      });
 
       if (error) {
         console.error("Error marking messages as viewed:", error);
       } else {
+        console.log(`Marked ${data} messages as viewed`);
         // Trigger a refresh of the header notification count
-        window.dispatchEvent(new CustomEvent('messagesViewed'));
+        window.dispatchEvent(new CustomEvent('refreshUnreadCount'));
       }
     } catch (error) {
       console.error("Error marking messages as viewed:", error);
@@ -515,10 +512,22 @@ export default function MessagesPage() {
     }
   }
 
+  const refreshMessages = async () => {
+    if (!user) return;
+    
+    const { data: messagesData } = await supabase
+      .from("messages")
+      .select("*, group_id, sender_id")
+      .eq("recipient_id", user.id)
+      .order("created_at", { ascending: false });
+    
+    setMessages(messagesData || []);
+  };
+
   return (
     <div>
       <Header currentPage="messages" />
-      <div className="p-6 max-w-4xl mx-auto">
+      <div className="p-6 max-w-7xl mx-auto">
         <div className="bg-white rounded-lg shadow-md p-6">
         <h2 className="text-xl font-semibold mb-4">Inbox</h2>
         {messages.length === 0 ? (
@@ -527,10 +536,24 @@ export default function MessagesPage() {
           <div className="space-y-4">
             {messages.map((msg) => {
               const isInvite = msg.role === 'invite' && msg.recipient_id === profile?.id;
+              const isCareMessage = msg.message_type && ['care_request', 'care_response', 'care_accepted', 'care_declined'].includes(msg.message_type);
               const status = getStatusDisplay(msg.status);
               const isProcessing = processingInvite === msg.id;
               const hasActionTaken = msg.status === 'accepted' || msg.status === 'rejected';
 
+              // Render care messages with special component
+              if (isCareMessage) {
+                return (
+                  <div key={msg.id} className="border rounded p-4 bg-white">
+                    <CareMessageComponent 
+                      message={msg} 
+                      onActionComplete={refreshMessages}
+                    />
+                  </div>
+                );
+              }
+
+              // Render regular messages
               return (
                 <div key={msg.id} className={`border rounded p-4 ${
                   hasActionTaken ? 'bg-gray-50 opacity-75' : 'bg-gray-50'

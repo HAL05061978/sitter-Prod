@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { supabase } from "../lib/supabaseClient";
+import { supabase } from "../lib/supabase";
 import Header from "../components/Header";
 import LogoutButton from "../components/LogoutButton";
 import type { User } from "@supabase/supabase-js";
@@ -635,7 +635,7 @@ export default function ClientDashboard() {
     <div>
       <Header currentPage="dashboard" />
       
-      <div className="p-6 max-w-6xl mx-auto bg-white min-h-screen">
+      <div className="p-6 max-w-7xl mx-auto bg-white min-h-screen">
         {/* Tab Navigation */}
       <div className="flex border-b border-gray-200 mb-6">
         <button

@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { supabase } from "../lib/supabaseClient";
+import { supabase } from "../lib/supabase";
 import LogoutButton from "../components/LogoutButton";
 import { v4 as uuidv4 } from "uuid";
 

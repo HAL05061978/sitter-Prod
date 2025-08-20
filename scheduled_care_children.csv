@@ -1,0 +1,9 @@
+id,created_at,scheduled_care_id,child_id,providing_parent_id,notes
+169bbf55-a9da-4a24-9c1e-ae110a09936a,2025-08-20 14:14:39.047257+00,98a660bc-790c-483d-8a1a-32a64dd413bc,3fbea496-5314-4d27-b6f3-addb40c7c4e8,750d426c-1556-4efc-aeb6-c694311f0b50,Original child added to all blocks
+aab1161a-6711-4fab-965e-5461a56a461b,2025-08-20 14:14:39.047257+00,98a660bc-790c-483d-8a1a-32a64dd413bc,321a2c8b-a723-4631-9c16-d7a55c869cf8,9911b41f-bac0-4c4a-a7fb-72ea408e74f1,Reciprocal child added to all blocks
+6e143c79-3bab-4dcd-b639-5e014b2a4493,2025-08-20 14:14:39.047257+00,9b49094b-d877-43c7-bc00-c24441ff75ea,3fbea496-5314-4d27-b6f3-addb40c7c4e8,750d426c-1556-4efc-aeb6-c694311f0b50,Original child added to all blocks
+298df518-8514-4936-a3dd-5655293f966b,2025-08-20 14:14:39.047257+00,9b49094b-d877-43c7-bc00-c24441ff75ea,321a2c8b-a723-4631-9c16-d7a55c869cf8,9911b41f-bac0-4c4a-a7fb-72ea408e74f1,Reciprocal child added to all blocks
+d81eab7a-a3fc-4a44-81c4-58ca6dca18f8,2025-08-20 14:14:39.047257+00,bee52034-4ec9-405e-87cf-df9449c8ca59,3fbea496-5314-4d27-b6f3-addb40c7c4e8,750d426c-1556-4efc-aeb6-c694311f0b50,Original child added to all blocks
+6b67770c-68bd-47bc-83f8-8175d8bc90bc,2025-08-20 14:14:39.047257+00,bee52034-4ec9-405e-87cf-df9449c8ca59,321a2c8b-a723-4631-9c16-d7a55c869cf8,9911b41f-bac0-4c4a-a7fb-72ea408e74f1,Reciprocal child added to all blocks
+b3b7de9e-a1b4-4f8b-a30d-ca3b500b672a,2025-08-20 14:14:39.047257+00,cb8d1bfb-b0cd-430c-9727-5eac671cf7f9,3fbea496-5314-4d27-b6f3-addb40c7c4e8,750d426c-1556-4efc-aeb6-c694311f0b50,Original child added to all blocks
+5aabcaad-5ecb-4a76-ab8a-83a64dacdf15,2025-08-20 14:14:39.047257+00,cb8d1bfb-b0cd-430c-9727-5eac671cf7f9,321a2c8b-a723-4631-9c16-d7a55c869cf8,9911b41f-bac0-4c4a-a7fb-72ea408e74f1,Reciprocal child added to all blocks

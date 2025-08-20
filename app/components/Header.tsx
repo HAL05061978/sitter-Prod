@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { supabase } from "../lib/supabaseClient";
+import { supabase } from "../lib/supabase";
 import LogoutButton from "./LogoutButton";
 
 interface HeaderProps {
@@ -13,7 +13,7 @@ export default function Header({ currentPage = "dashboard" }: HeaderProps) {
   const router = useRouter();
   const [user, setUser] = useState<any>(null);
   const [pendingInvitations, setPendingInvitations] = useState<number>(0);
-  const [pendingScheduleItems, setPendingScheduleItems] = useState<number>(0);
+
   const [unreadChatMessages, setUnreadChatMessages] = useState<number>(0);
   const [unreadMessages, setUnreadMessages] = useState<number>(0);
 
@@ -51,77 +51,7 @@ export default function Header({ currentPage = "dashboard" }: HeaderProps) {
     }
   };
 
-  // Function to fetch pending schedule items (care requests and events)
-  const fetchPendingScheduleItems = async (userId: string) => {
-    try {
-      // Get groups the user is a member of
-      const { data: userGroups } = await supabase
-        .from("group_members")
-        .select("group_id")
-        .eq("profile_id", userId)
-        .eq("status", "active");
 
-      if (!userGroups || userGroups.length === 0) {
-        setPendingScheduleItems(0);
-        return;
-      }
-
-      const groupIds = userGroups.map(g => g.group_id);
-
-      let totalPendingItems = 0;
-
-      // 1. Count care requests that need responses (not responded to by current user)
-      const { data: careRequests } = await supabase
-        .from("care_requests")
-        .select("id")
-        .in("group_id", groupIds)
-        .neq("requester_id", userId) // Exclude requests created by current user
-        .neq("status", "cancelled"); // Exclude cancelled requests
-
-      if (careRequests && careRequests.length > 0) {
-        const requestIds = careRequests.map(r => r.id);
-        
-        // Check which requests the current user hasn't responded to
-        const { data: userResponses } = await supabase
-          .from("care_responses")
-          .select("request_id")
-          .in("request_id", requestIds)
-          .eq("responder_id", userId);
-
-        const respondedRequestIds = (userResponses || []).map(r => r.request_id);
-        const pendingRequests = careRequests.filter(r => !respondedRequestIds.includes(r.id));
-        
-        totalPendingItems += pendingRequests.length;
-      }
-
-      // 2. Count pending responses that need approval (responses to user's requests)
-      // First get the user's request IDs
-      const { data: userRequests } = await supabase
-        .from("care_requests")
-        .select("id")
-        .eq("requester_id", userId)
-        .neq("status", "cancelled");
-
-      if (userRequests && userRequests.length > 0) {
-        const requestIds = userRequests.map(r => r.id);
-        
-        // Then count pending responses for those requests
-        const { data: pendingResponses } = await supabase
-          .from("care_responses")
-          .select("id")
-          .eq("status", "pending")
-          .in("request_id", requestIds);
-
-        if (pendingResponses) {
-          totalPendingItems += pendingResponses.length;
-        }
-      }
-
-      setPendingScheduleItems(totalPendingItems);
-    } catch (error) {
-      console.error('Error fetching pending schedule items:', error);
-    }
-  };
 
   // Function to fetch unread chat messages
   const fetchUnreadChatMessages = async (userId: string) => {
@@ -172,37 +102,18 @@ export default function Header({ currentPage = "dashboard" }: HeaderProps) {
 
   const fetchUnreadMessages = async (userId: string) => {
     try {
-      // Get all regular messages for the user
-      const { data: regularMessages, error: messagesError } = await supabase
-        .from("messages")
-        .select("id")
-        .eq("recipient_id", userId);
-
-      if (messagesError) {
-        console.error('Error fetching messages for count:', messagesError);
-        setUnreadMessages(0);
-        return;
-      }
-
-      if (!regularMessages || regularMessages.length === 0) {
-        setUnreadMessages(0);
-        return;
-      }
-
-      const messageIds = regularMessages.map(m => m.id);
-
-      // Get messages that the user has viewed
-      const { data: viewedMessages } = await supabase
-        .from("message_views")
-        .select("message_id")
-        .eq("user_id", userId)
-        .in("message_id", messageIds);
-
-      const viewedMessageIds = (viewedMessages || []).map(v => v.message_id);
+      // Use the new backend function for better performance
+      const { data, error } = await supabase.rpc('get_unread_message_count', {
+        p_user_id: userId
+      });
       
-      // Count unviewed messages
-      const unviewedCount = messageIds.filter(id => !viewedMessageIds.includes(id)).length;
-      setUnreadMessages(unviewedCount);
+      if (error) {
+        console.error('Error fetching unread message count:', error);
+        setUnreadMessages(0);
+        return;
+      }
+      
+      setUnreadMessages(data || 0);
     } catch (error) {
       console.error('Error fetching unread messages:', error);
       setUnreadMessages(0);
@@ -215,7 +126,6 @@ export default function Header({ currentPage = "dashboard" }: HeaderProps) {
       console.log('Manual refresh triggered');
       await Promise.all([
         fetchPendingInvitations(user.id),
-        fetchPendingScheduleItems(user.id),
         fetchUnreadChatMessages(user.id),
         fetchUnreadMessages(user.id)
       ]);
@@ -230,7 +140,6 @@ export default function Header({ currentPage = "dashboard" }: HeaderProps) {
         setUser(data.user);
         await Promise.all([
           fetchPendingInvitations(data.user.id),
-          fetchPendingScheduleItems(data.user.id),
           fetchUnreadChatMessages(data.user.id),
           fetchUnreadMessages(data.user.id)
         ]);
@@ -255,15 +164,20 @@ export default function Header({ currentPage = "dashboard" }: HeaderProps) {
 
     const handleCareRequestUpdated = () => {
       if (user) {
-        fetchPendingScheduleItems(user.id);
+        // Removed fetchPendingScheduleItems - no longer needed
       }
     };
 
     const handleResponseStatusUpdated = () => {
       if (user) {
-        fetchPendingScheduleItems(user.id);
         fetchUnreadChatMessages(user.id);
         fetchUnreadMessages(user.id); // Refresh regular messages count
+      }
+    };
+
+    const handleRefreshUnreadCount = () => {
+      if (user) {
+        fetchUnreadMessages(user.id);
       }
     };
 
@@ -272,6 +186,7 @@ export default function Header({ currentPage = "dashboard" }: HeaderProps) {
     window.addEventListener('careRequestUpdated', handleCareRequestUpdated);
     window.addEventListener('responseStatusUpdated', handleResponseStatusUpdated);
     window.addEventListener('newMessageSent', handleMessagesViewed); // Refresh when new messages are sent
+    window.addEventListener('refreshUnreadCount', handleRefreshUnreadCount);
 
     return () => {
       window.removeEventListener('invitationAccepted', handleInvitationAccepted);
@@ -279,6 +194,7 @@ export default function Header({ currentPage = "dashboard" }: HeaderProps) {
       window.removeEventListener('careRequestUpdated', handleCareRequestUpdated);
       window.removeEventListener('responseStatusUpdated', handleResponseStatusUpdated);
       window.removeEventListener('newMessageSent', handleMessagesViewed);
+      window.removeEventListener('refreshUnreadCount', handleRefreshUnreadCount);
     };
   }, [user]);
 
@@ -323,6 +239,32 @@ export default function Header({ currentPage = "dashboard" }: HeaderProps) {
     getUserEmail();
   }, [user]);
 
+  // Set up real-time subscription for messages updates
+  useEffect(() => {
+    if (!user) return;
+    
+    const channel = supabase
+      .channel('header_messages_updates')
+      .on(
+        'postgres_changes',
+        {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'messages',
+          filter: `recipient_id=eq.${user.id}`
+        },
+        (payload) => {
+          // Refresh the count when new messages arrive
+          fetchUnreadMessages(user.id);
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [user]);
+
   // Set up real-time subscription for care responses updates
   useEffect(() => {
     if (!user) return;
@@ -339,7 +281,7 @@ export default function Header({ currentPage = "dashboard" }: HeaderProps) {
         },
         (payload) => {
           // Refresh the count when care responses change
-          fetchPendingScheduleItems(user.id);
+          // Removed fetchPendingScheduleItems - no longer needed
         }
       )
       .subscribe();
@@ -379,7 +321,7 @@ export default function Header({ currentPage = "dashboard" }: HeaderProps) {
           },
           (payload) => {
             // Refresh the count when care requests change
-            fetchPendingScheduleItems(user.id);
+            // Removed fetchPendingScheduleItems - no longer needed
           }
         )
         .subscribe();
@@ -414,20 +356,22 @@ export default function Header({ currentPage = "dashboard" }: HeaderProps) {
 
   return (
     <div className="bg-white shadow-soft border-b border-gray-200">
-      <div className="p-6 max-w-6xl mx-auto">
+      <div className="p-6 max-w-7xl mx-auto">
         <div className="flex justify-between items-center mb-6">
           <h1 className="text-3xl font-bold text-gray-900">SitterApp</h1>
-          <LogoutButton />
+          <div className="flex items-center gap-3">
+            <button 
+              onClick={() => router.push('/dashboard')}
+              className="px-4 py-2 rounded-lg transition font-medium shadow-soft bg-emerald-500 text-white hover:bg-emerald-600 hover:shadow-medium"
+            >
+              Profile
+            </button>
+            <LogoutButton />
+          </div>
         </div>
         
         {/* Navigation Buttons */}
         <div className="flex flex-wrap gap-4">
-          <button 
-            onClick={() => router.push('/dashboard')}
-            className={getButtonClass('dashboard')}
-          >
-            Profile
-          </button>
           <button 
             onClick={() => router.push('/messages')}
             className={`${getButtonClass('messages')} relative`}
@@ -445,16 +389,12 @@ export default function Header({ currentPage = "dashboard" }: HeaderProps) {
           >
             Calendar
           </button>
+
           <button 
             onClick={() => router.push('/scheduler')}
-            className={`${getButtonClass('scheduler')} relative`}
+            className={getButtonClass('scheduler')}
           >
             Scheduler
-                         {pendingScheduleItems > 0 && (
-               <span className="absolute -top-2 -right-2 bg-red-500 text-white text-xs rounded-full h-6 w-6 flex items-center justify-center font-bold shadow-medium">
-                 {pendingScheduleItems}
-               </span>
-             )}
           </button>
           <button 
             onClick={() => router.push('/chats')}
