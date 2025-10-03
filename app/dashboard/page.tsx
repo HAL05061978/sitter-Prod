@@ -7,6 +7,8 @@ import Header from "../components/Header";
 import LogoutButton from "../components/LogoutButton";
 import type { User } from "@supabase/supabase-js";
 import { v4 as uuidv4 } from 'uuid';
+import { emailService } from '../../lib/email-service';
+import RescheduleModal from '../../components/care/RescheduleModal';
 
 interface Profile {
   full_name: string | null;
@@ -40,6 +42,23 @@ interface ChildGroupMember {
   active: boolean;
 }
 
+interface CareBlock {
+  id: string;
+  title: string;
+  description: string;
+  start_time: string;
+  end_time: string;
+  date: string;
+  status: string;
+  type: 'receiving' | 'providing' | 'event';
+  group_id: string;
+  related_request_id: string;
+  group_name: string;
+  parent_providing: string;
+  child_participating: string;
+  parent_notes: string;
+  children: Array<{ id: string; full_name: string }>;
+}
 
 
 type TabType = 'profile' | 'children' | 'groups';
@@ -91,6 +110,17 @@ export default function ClientDashboard() {
   const [groupError, setGroupError] = useState("");
   const [groupManagementError, setGroupManagementError] = useState("");
 
+  // State for popup
+  const [showPopup, setShowPopup] = useState(false);
+  const [popupData, setPopupData] = useState<CareBlock[]>([]);
+  const [popupType, setPopupType] = useState<'receiving' | 'providing' | 'event'>('receiving');
+  const [popupTitle, setPopupTitle] = useState('');
+  
+  // State for reschedule modal
+  const [showRescheduleModal, setShowRescheduleModal] = useState(false);
+  const [selectedCareBlock, setSelectedCareBlock] = useState<any>(null);
+  const [rescheduleSuccessMessage, setRescheduleSuccessMessage] = useState('');
+
   useEffect(() => {
     supabase.auth.getUser().then(async ({ data }) => {
       if (!data.user) {
@@ -101,9 +131,16 @@ export default function ClientDashboard() {
         // Fetch profile from 'profiles' table
         const { data: profileData } = await supabase
           .from("profiles")
-          .select("full_name, email, phone")
+          .select("full_name, email, phone, role") // Select role
           .eq("id", data.user.id)
           .single();
+        
+        // Check if user is a tutor and redirect them
+        if (profileData?.role === "tutor") {
+          router.replace("/tutor-dashboard");
+          return;
+        }
+        
         setProfile(profileData as Profile | null);
         
         // Fetch children for this parent
@@ -116,6 +153,9 @@ export default function ClientDashboard() {
 
         // Fetch all groups (created and joined)
         await loadGroups(data.user.id, childrenData || []);
+        
+        // Calculate real care stats
+        await calculateStats();
         
         setLoading(false);
       }
@@ -207,6 +247,404 @@ export default function ClientDashboard() {
           setAllChildrenInGroups(childrenMap);
         }
       }
+    }
+  };
+
+  // Function to calculate real stats from scheduled_care data
+  const calculateStats = async () => {
+    if (!user) return;
+    
+    try {
+      console.log('Calculating stats for user:', user.id);
+      const { data, error } = await supabase
+        .from('scheduled_care')
+        .select('*')
+        .eq('parent_id', user.id);
+      
+      if (error) {
+        console.error('Error fetching care data for stats:', error);
+        return;
+      }
+      
+      const careData = data || [];
+      console.log('Raw care data for stats:', careData);
+      
+      const receivingCare = careData.filter(block => block.care_type === 'needed').length;
+      const providingCare = careData.filter(block => block.care_type === 'provided').length;
+      const events = careData.filter(block => block.is_group_event === true).length;
+      const totalBlocks = careData.length;
+      
+      console.log('Calculated stats:', { receivingCare, providingCare, events, totalBlocks });
+      
+      // Update the stats display
+      setStats({
+        receivingCare,
+        providingCare,
+        events,
+        totalBlocks
+      });
+      
+    } catch (error) {
+      console.error('Error calculating stats:', error);
+    }
+  };
+
+  // Add state for stats
+  const [stats, setStats] = useState({
+    receivingCare: 0,
+    providingCare: 0,
+    events: 0,
+    totalBlocks: 0
+  });
+
+  // Call calculateStats when user changes
+  useEffect(() => {
+    if (user) {
+      calculateStats();
+    }
+  }, [user]);
+
+  // Function to fetch care data for specific type
+  const fetchCareData = async (type: 'receiving' | 'providing') => {
+    if (!user) return [];
+    
+    try {
+      const { data, error } = await supabase
+        .from('scheduled_care')
+        .select(`
+          *,
+          groups!inner(name, description)
+        `)
+        .eq('parent_id', user.id)
+        .eq('care_type', type === 'receiving' ? 'needed' : 'provided');
+      
+      if (error) {
+        console.error('Error fetching care data:', error);
+        return [];
+      }
+      
+      // For each care block, get additional information
+      const careBlocks: CareBlock[] = await Promise.all((data || []).map(async (block) => {
+        // Get all children in the group
+        const { data: groupChildren } = await supabase
+          .from('child_group_members')
+          .select(`
+            children(id, full_name)
+          `)
+          .eq('group_id', block.group_id);
+        
+        const childrenNames = (groupChildren || []).map(gc => gc.children?.full_name).filter(Boolean);
+        const childrenData = (groupChildren || []).map(gc => ({
+          id: gc.children?.id,
+          full_name: gc.children?.full_name
+        })).filter(c => c.id && c.full_name);
+        
+        // For receiving care, find who is providing care
+        let parentProviding = 'Unknown';
+        
+        if (type === 'receiving') {
+          console.log('Processing receiving care block:', {
+            id: block.id,
+            date: block.care_date,
+            related_request_id: block.related_request_id,
+            notes: block.notes
+          });
+          
+          // Look for corresponding 'provided' care blocks with the same related_request_id
+          const { data: providingBlocks, error: providingError } = await supabase
+            .from('scheduled_care')
+            .select('parent_id, care_date, start_time, end_time')
+            .eq('related_request_id', block.related_request_id)
+            .eq('care_type', 'provided');
+          
+          if (providingError) {
+            console.log('Error finding providing blocks:', providingError);
+          }
+          
+          console.log('Finding parent providing care for request:', block.related_request_id, 'Result:', providingBlocks);
+          
+          if (providingBlocks && providingBlocks.length > 0) {
+            // If multiple blocks, find the one that matches the same date and time
+            let matchingBlock = providingBlocks.find(pb => 
+              pb.care_date === block.care_date && 
+              pb.start_time === block.start_time && 
+              pb.end_time === block.end_time
+            );
+            
+            // If no exact match, use the first one
+            if (!matchingBlock) {
+              matchingBlock = providingBlocks[0];
+              console.log('No exact time match, using first providing block:', matchingBlock);
+            } else {
+              console.log('Found exact time match:', matchingBlock);
+            }
+            
+            // Now get the parent's name using the parent_id
+            const { data: parentProfile } = await supabase
+              .from('profiles')
+              .select('full_name')
+              .eq('id', matchingBlock.parent_id)
+              .single();
+            
+            parentProviding = parentProfile?.full_name || 'Unknown';
+            console.log('Selected parent providing care:', parentProviding, 'from block:', matchingBlock);
+          } else {
+            console.log('No providing blocks found for related_request_id:', block.related_request_id);
+            
+            // Fallback: try to find by group_id and date if no related_request_id
+            if (!block.related_request_id) {
+              console.log('No related_request_id, trying fallback method...');
+              const { data: fallbackBlock } = await supabase
+                .from('scheduled_care')
+                .select('parent_id')
+                .eq('group_id', block.group_id)
+                .eq('care_date', block.care_date)
+                .eq('care_type', 'provided')
+                .single();
+              
+              if (fallbackBlock?.parent_id) {
+                const { data: fallbackParent } = await supabase
+                  .from('profiles')
+                  .select('full_name')
+                  .eq('id', fallbackBlock.parent_id)
+                  .single();
+                
+                parentProviding = fallbackParent?.full_name || 'Unknown';
+                console.log('Fallback found parent:', parentProviding);
+              }
+            }
+          }
+        } else {
+          parentProviding = 'You'; // For providing care, it's the current user
+        }
+        
+        return {
+          id: block.id,
+          title: '', // Removed as requested
+          description: '', // Removed as requested
+          start_time: block.start_time,
+          end_time: block.end_time,
+          date: block.care_date,
+          status: block.status,
+          type: type,
+          group_id: block.group_id, // Add group_id for RescheduleModal
+          related_request_id: block.related_request_id, // Add related_request_id for RescheduleModal
+          group_name: block.groups?.name || 'No Group',
+          parent_providing: parentProviding,
+                      child_participating: childrenNames.join(', ') || 'No Children',
+            parent_notes: '', // No longer needed
+            children: await getChildrenForCareBlock(block.id) // Add actual children data
+        };
+      }));
+      
+      return careBlocks;
+    } catch (error) {
+      console.error('Error fetching care data:', error);
+      return [];
+    }
+  };
+
+  // Function to handle stats box clicks
+  const handleStatsClick = async (type: 'receiving' | 'providing' | 'event' | 'total') => {
+    setPopupType(type);
+    setShowPopup(true);
+    
+    if (type === 'receiving') {
+      setPopupTitle('Receiving Care Blocks');
+      const data = await fetchCareData('receiving');
+      setPopupData(data);
+    } else if (type === 'providing') {
+      setPopupTitle('Providing Care Blocks');
+      const data = await fetchCareData('providing');
+      setPopupData(data);
+    } else if (type === 'event') {
+      setPopupTitle('Event Blocks');
+      const data = await fetchAllCareData();
+      setPopupData(data);
+    } else if (type === 'total') {
+      setPopupTitle('All Care Blocks');
+      const data = await fetchAllCareData();
+      setPopupData(data);
+    }
+  };
+
+  const handleRescheduleClick = (careBlock: any) => {
+    setSelectedCareBlock(careBlock);
+    setShowRescheduleModal(true);
+  };
+
+  const handleRescheduleSuccess = () => {
+    // Show success message
+    setRescheduleSuccessMessage('Reschedule request created successfully! Parents will be notified to accept or decline.');
+    
+    // Clear message after 5 seconds
+    setTimeout(() => setRescheduleSuccessMessage(''), 5000);
+    
+    // Refresh the stats after successful reschedule
+    calculateStats();
+    setShowRescheduleModal(false);
+    setSelectedCareBlock(null);
+  };
+
+  // Function to fetch all care data for total blocks
+  const fetchAllCareData = async () => {
+    if (!user) return [];
+    
+    try {
+      const { data, error } = await supabase
+        .from('scheduled_care')
+        .select(`
+          *,
+          groups!inner(name, description)
+        `)
+        .eq('parent_id', user.id);
+      
+      if (error) {
+        console.error('Error fetching all care data:', error);
+        return [];
+      }
+      
+      // For each care block, get additional information
+      const careBlocks: CareBlock[] = await Promise.all((data || []).map(async (block) => {
+        // Get all children in the group
+        const { data: groupChildren } = await supabase
+          .from('child_group_members')
+          .select(`
+            children(full_name)
+          `)
+          .eq('group_id', block.group_id);
+        
+        const childrenNames = (groupChildren || []).map(gc => gc.children?.full_name).filter(Boolean);
+        
+        // Determine parent providing care based on care type
+        let parentProviding = 'Unknown';
+        
+        if (block.care_type === 'needed') {
+          console.log('Processing care block in fetchAllCareData:', {
+            id: block.id,
+            date: block.care_date,
+            related_request_id: block.related_request_id,
+            notes: block.notes
+          });
+          
+          // Look for corresponding 'provided' care blocks with the same related_request_id
+          const { data: providingBlocks, error: providingError } = await supabase
+            .from('scheduled_care')
+            .select('parent_id, care_date, start_time, end_time')
+            .eq('related_request_id', block.related_request_id)
+            .eq('care_type', 'provided');
+          
+          if (providingError) {
+            console.log('Error finding providing blocks:', providingError);
+          }
+          
+          console.log('Finding parent providing care for request:', block.related_request_id, 'Result:', providingBlocks);
+          
+          if (providingBlocks && providingBlocks.length > 0) {
+            // If multiple blocks, find the one that matches the same date and time
+            let matchingBlock = providingBlocks.find(pb => 
+              pb.care_date === block.care_date && 
+              pb.start_time === block.start_time && 
+              pb.end_time === block.end_time
+            );
+            
+            // If no exact match, use the first one
+            if (!matchingBlock) {
+              matchingBlock = providingBlocks[0];
+              console.log('No exact time match, using first providing block:', matchingBlock);
+            } else {
+              console.log('Found exact time match:', matchingBlock);
+            }
+            
+            // Now get the parent's name using the parent_id
+            const { data: parentProfile } = await supabase
+              .from('profiles')
+              .select('full_name')
+              .eq('id', matchingBlock.parent_id)
+              .single();
+            
+            parentProviding = parentProfile?.full_name || 'Unknown';
+            console.log('Selected parent providing care:', parentProviding, 'from block:', matchingBlock);
+          } else {
+            console.log('No providing blocks found for related_request_id:', block.related_request_id);
+            
+            // Fallback: try to find by group_id and date if no related_request_id
+            if (!block.related_request_id) {
+              console.log('No related_request_id, trying fallback method...');
+              const { data: fallbackBlock } = await supabase
+                .from('scheduled_care')
+                .select('parent_id')
+                .eq('group_id', block.group_id)
+                .eq('care_date', block.care_date)
+                .eq('care_type', 'provided')
+                .single();
+              
+              if (fallbackBlock?.parent_id) {
+                const { data: fallbackParent } = await supabase
+                  .from('profiles')
+                  .select('full_name')
+                  .eq('id', fallbackBlock.parent_id)
+                  .single();
+                
+                parentProviding = fallbackParent?.full_name || 'Unknown';
+                console.log('Fallback found parent:', parentProviding);
+              }
+            }
+          }
+        } else {
+          parentProviding = 'You'; // For providing care, it's the current user
+        }
+        
+        return {
+          id: block.id,
+          title: '', // Removed as requested
+          description: '', // Removed as requested
+          start_time: block.start_time,
+          end_time: block.end_time,
+          date: block.care_date,
+          status: block.status,
+          type: block.care_type === 'needed' ? 'receiving' : 
+                block.care_type === 'provided' ? 'providing' : 'event',
+          group_name: block.groups?.name || 'No Group',
+          parent_providing: parentProviding,
+          child_participating: childrenNames.join(', ') || 'No Children',
+          parent_notes: '', // No longer needed
+          children: await getChildrenForCareBlock(block.id) // Add actual children data
+        };
+      }));
+      
+      return careBlocks;
+    } catch (error) {
+      console.error('Error fetching all care data:', error);
+      return [];
+    }
+  };
+
+  // Function to close popup
+  const closePopup = () => {
+    setShowPopup(false);
+    setPopupData([]);
+  };
+
+  // Add this helper function to get children for a specific care block
+  const getChildrenForCareBlock = async (careBlockId: string) => {
+    try {
+      const { data: careChildren, error } = await supabase
+        .from('scheduled_care_children')
+        .select(`
+          children(id, full_name)
+        `)
+        .eq('scheduled_care_id', careBlockId);
+      
+      if (error) {
+        console.error('Error fetching care block children:', error);
+        return [];
+      }
+      
+      return (careChildren || []).map(cc => cc.children).filter(Boolean);
+    } catch (error) {
+      console.error('Error in getChildrenForCareBlock:', error);
+      return [];
     }
   };
 
@@ -520,6 +958,7 @@ export default function ClientDashboard() {
       memberIds.push(user.id);
     }
     if (existingProfile) {
+      // User exists - send internal message
       const messageInsert = {
         group_id: group.id,
         sender_id: user?.id,
@@ -566,9 +1005,27 @@ export default function ClientDashboard() {
       setInvitingGroupId(null);
       alert("Invite sent as internal message!");
     } else {
+      // User doesn't exist - send external email invitation
+      const appUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000';
+      const signupLink = `${appUrl}/signup?invite=${inviteId}`;
+      
+      const emailResult = await emailService.sendGroupInviteEmail({
+        to: inviteEmail.trim().toLowerCase(),
+        groupName,
+        senderName,
+        customNote: inviteNote.trim() || undefined,
+        inviteId,
+        appUrl: signupLink
+      });
+
+      if (!emailResult.success) {
+        setInviteError(emailResult.error || 'Failed to send invitation email');
+        return;
+      }
+
       setInviteError("");
       setInvitingGroupId(null);
-      alert("Invite sent via email (stub). Implement real email sending in production.");
+      alert("Invitation email sent! The recipient will receive a link to create an account and join your group.");
     }
   }
 
@@ -649,16 +1106,6 @@ export default function ClientDashboard() {
           Profile
         </button>
         <button
-          onClick={() => setActiveTab('children')}
-          className={`px-6 py-3 font-medium transition-colors ${
-            activeTab === 'children'
-              ? 'border-b-2 border-blue-600 text-blue-600'
-              : 'text-gray-500 hover:text-gray-700'
-          }`}
-        >
-          Children
-        </button>
-        <button
           onClick={() => setActiveTab('groups')}
           className={`px-6 py-3 font-medium transition-colors ${
             activeTab === 'groups'
@@ -668,7 +1115,108 @@ export default function ClientDashboard() {
         >
           Groups
         </button>
+        <button
+          onClick={() => setActiveTab('children')}
+          className={`px-6 py-3 font-medium transition-colors ${
+            activeTab === 'children'
+              ? 'border-b-2 border-blue-600 text-blue-600'
+              : 'text-gray-500 hover:text-gray-700'
+          }`}
+        >
+          Children
+        </button>
 
+      </div>
+
+      {/* Care Overview - Stats Overview */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
+        <div 
+          className="bg-white overflow-hidden shadow rounded-lg cursor-pointer hover:shadow-lg transition-shadow duration-200"
+          onClick={() => handleStatsClick('receiving')}
+          title="Click to view receiving care blocks"
+        >
+          <div className="p-5">
+            <div className="flex items-center">
+              <div className="flex-shrink-0">
+                <svg className="h-6 w-6 text-blue-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197m13.5-9a2.5 2.5 0 11-5 0 2.5 2.5 0 015 0z" />
+                </svg>
+              </div>
+              <div className="ml-5 w-0 flex-1">
+                <dl>
+                  <dt className="text-sm font-medium text-gray-500 truncate">Receiving Care</dt>
+                  <dd className="text-lg font-medium text-gray-900">{stats.receivingCare}</dd>
+                </dl>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div 
+          className="bg-white overflow-hidden shadow rounded-lg cursor-pointer hover:shadow-lg transition-shadow duration-200"
+          onClick={() => handleStatsClick('providing')}
+          title="Click to view providing care blocks"
+        >
+          <div className="p-5">
+            <div className="flex items-center">
+              <div className="flex-shrink-0">
+                <svg className="h-6 w-6 text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+              </div>
+              <div className="ml-5 w-0 flex-1">
+                <dl>
+                  <dt className="text-sm font-medium text-gray-500 truncate">Providing Care</dt>
+                  <dd className="text-lg font-medium text-gray-900">{stats.providingCare}</dd>
+                </dl>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div 
+          className="bg-white overflow-hidden shadow rounded-lg cursor-pointer hover:shadow-lg transition-shadow duration-200"
+          onClick={() => handleStatsClick('event')}
+          title="Click to view event blocks"
+        >
+          <div className="p-5">
+            <div className="flex items-center">
+              <div className="flex-shrink-0">
+                <svg className="h-6 w-6 text-purple-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                </svg>
+              </div>
+              <div className="ml-5 w-0 flex-1">
+                <dl>
+                  <dt className="text-sm font-medium text-gray-500 truncate">Events</dt>
+                  <dd className="text-lg font-medium text-gray-900">{stats.events}</dd>
+                </dl>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div 
+          className="bg-white overflow-hidden shadow rounded-lg cursor-pointer hover:shadow-lg transition-shadow duration-200"
+          onClick={() => handleStatsClick('total')}
+          title="Click to view all care blocks"
+        >
+          <div className="p-5">
+            <div className="flex items-center">
+              <div className="flex-shrink-0">
+                <svg className="h-6 w-6 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+              </div>
+              <div className="ml-5 w-0 flex-1">
+                <dl>
+                  <dt className="text-sm font-medium text-gray-500 truncate">Total Blocks</dt>
+                  <dd className="text-lg font-medium text-gray-900">{stats.totalBlocks}</dd>
+                </dl>
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
 
       {/* Profile Tab */}
@@ -1114,7 +1662,121 @@ export default function ClientDashboard() {
           </div>
         </div>
       )}
-      </div>
     </div>
-  );
-} 
+
+    {/* Care Data Popup */}
+    {showPopup && (
+      <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+        <div className="bg-white rounded-lg p-6 w-full max-w-4xl mx-4 max-h-[80vh] overflow-y-auto">
+          <div className="flex justify-between items-center mb-4">
+            <h2 className="text-xl font-semibold text-gray-900">{popupTitle}</h2>
+            <button
+              onClick={() => setShowPopup(false)}
+              className="text-gray-400 hover:text-gray-600"
+            >
+              <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+          
+          <div className="p-6 overflow-y-auto max-h-[60vh]">
+            {!Array.isArray(popupData) || popupData.length === 0 ? (
+              <div className="text-center py-8 text-gray-500">
+                No {popupTitle.toLowerCase()} found.
+              </div>
+            ) : (
+              <div className="space-y-4">
+                {popupData.map((block) => (
+                  <div key={block.id} className="border border-gray-200 rounded-lg p-4 hover:bg-gray-50 transition-colors">
+                    <div className="flex justify-between items-start">
+                      <div className="flex-1">
+                        {/* Title and description removed as requested */}
+                        
+                        {/* Additional Information */}
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-3 text-sm">
+                          <div>
+                            <span className="font-medium text-gray-700">Group:</span>
+                            <span className="ml-2 text-gray-600">{block.group_name}</span>
+                          </div>
+                          <div>
+                            <span className="font-medium text-gray-700">Parent Providing Care:</span>
+                            <span className="ml-2 text-gray-600">{block.parent_providing}</span>
+                          </div>
+                                                     <div>
+                             <span className="font-medium text-gray-700">Children Participating:</span>
+                             <span className="ml-2 text-gray-600">
+                               {block.children && block.children.length > 0 
+                                 ? block.children.map(c => c.full_name).join(', ')
+                                 : 'No children assigned'}
+                             </span>
+                           </div>
+                        </div>
+
+                        {/* Reschedule Button for Providing Care Blocks */}
+                        {popupType === 'providing' && (
+                          <div className="mt-4 pt-4 border-t border-gray-200">
+                            <button
+                              onClick={() => handleRescheduleClick(block)}
+                              className="w-full px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors text-sm"
+                            >
+                              Request Reschedule
+                            </button>
+                          </div>
+                        )}
+                        
+                                                 {/* Date, Time, and Status - Keep the green highlighting */}
+                         <div className="flex flex-wrap gap-4 text-sm text-gray-500 bg-green-50 border border-green-200 rounded-lg p-3">
+                           <span>📅 {new Date(block.date + 'T00:00:00').toLocaleDateString()}</span>
+                           <span>🕐 {block.start_time} - {block.end_time}</span>
+                          <span className={`px-2 py-1 rounded-full text-xs font-medium ${
+                            block.status === 'scheduled' ? 'bg-green-100 text-green-800' :
+                            block.status === 'in_progress' ? 'bg-yellow-100 text-yellow-800' :
+                            block.status === 'completed' ? 'bg-blue-100 text-blue-800' :
+                            'bg-gray-800'
+                          }`}>
+                            {block.status}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    )}
+
+    {/* Success Message */}
+    {rescheduleSuccessMessage && (
+      <div className="fixed top-4 right-4 bg-green-500 text-white px-6 py-3 rounded-lg shadow-lg z-50">
+        {rescheduleSuccessMessage}
+      </div>
+    )}
+
+    {/* Reschedule Modal */}
+    {showRescheduleModal && selectedCareBlock && (
+      <RescheduleModal
+        isOpen={showRescheduleModal}
+        onClose={() => {
+          setShowRescheduleModal(false);
+          setSelectedCareBlock(null);
+        }}
+        careBlock={{
+          id: selectedCareBlock.id,
+          group_id: selectedCareBlock.group_id,
+          care_date: selectedCareBlock.date,
+          start_time: selectedCareBlock.start_time,
+          end_time: selectedCareBlock.end_time,
+          related_request_id: selectedCareBlock.related_request_id,
+          group_name: selectedCareBlock.group_name,
+          children: selectedCareBlock.children
+        }}
+        onRescheduleSuccess={handleRescheduleSuccess}
+      />
+    )}
+  </div>
+);
+}

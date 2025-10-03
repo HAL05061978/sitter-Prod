@@ -1,196 +1,324 @@
-"use client";
+'use client'
 
-import { useState } from "react";
-import { useRouter } from "next/navigation";
-import { supabase } from "../lib/supabase";
+import { useState, useEffect } from 'react'
+import { useRouter, useSearchParams } from 'next/navigation'
+import { createClient } from '@supabase/supabase-js'
+
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+)
 
 export default function SignupPage() {
-  const router = useRouter();
-  const [fullName, setFullName] = useState("");
-  const [email, setEmail] = useState("");
-  const [phone, setPhone] = useState("");
-  const [password, setPassword] = useState("");
-  const [error, setError] = useState("");
-  const [loading, setLoading] = useState(false);
+  const router = useRouter()
+  const searchParams = useSearchParams()
+  const inviteId = searchParams.get('invite')
+  
+  const [formData, setFormData] = useState({
+    fullName: '',
+    email: '',
+    password: '',
+    confirmPassword: ''
+  })
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+  const [inviteInfo, setInviteInfo] = useState<{
+    groupName: string
+    senderName: string
+    customNote?: string
+  } | null>(null)
 
-  // Helper to auto-format phone number as (xxx) xxx-xxxx
-  function formatPhoneInput(value: string) {
-    // Remove all non-digit characters
-    const digits = value.replace(/\D/g, "");
-    const len = digits.length;
-    if (len === 0) return "";
-    if (len < 4) return `(${digits}`;
-    if (len < 7) return `(${digits.slice(0, 3)}) ${digits.slice(3)}`;
-    return `(${digits.slice(0, 3)}) ${digits.slice(3, 6)}-${digits.slice(6, 10)}`;
+  // Load invite information if inviteId is present
+  useEffect(() => {
+    if (inviteId) {
+      loadInviteInfo(inviteId)
+    }
+  }, [inviteId])
+
+  const loadInviteInfo = async (inviteId: string) => {
+    try {
+      const { data, error } = await supabase
+        .from('group_invites')
+        .select(`
+          id,
+          group_id,
+          email,
+          groups!inner(name),
+          profiles!group_invites_invited_by_fkey(full_name)
+        `)
+        .eq('id', inviteId)
+        .eq('status', 'pending')
+        .single()
+
+      if (error) {
+        console.error('Error loading invite:', error)
+        setError('Invalid or expired invitation link')
+        return
+      }
+
+      setInviteInfo({
+        groupName: data.groups.name,
+        senderName: data.profiles.full_name || 'A parent',
+        customNote: data.custom_note
+      })
+    } catch (err) {
+      console.error('Error loading invite info:', err)
+      setError('Failed to load invitation details')
+    }
   }
 
-  const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
-    setLoading(true);
-    setError("");
+  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const { name, value } = e.target
+    setFormData(prev => ({
+      ...prev,
+      [name]: value
+    }))
+  }
+
+  const validateForm = () => {
+    if (!formData.fullName.trim()) {
+      setError('Full name is required')
+      return false
+    }
+    if (!formData.email.trim()) {
+      setError('Email is required')
+      return false
+    }
+    if (!formData.password) {
+      setError('Password is required')
+      return false
+    }
+    if (formData.password.length < 6) {
+      setError('Password must be at least 6 characters')
+      return false
+    }
+    if (formData.password !== formData.confirmPassword) {
+      setError('Passwords do not match')
+      return false
+    }
+    return true
+  }
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setError('')
+    
+    if (!validateForm()) return
+
+    setLoading(true)
 
     try {
-      // Sign up user with metadata
-      const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
-        email,
-        password,
+      // Check if email already exists
+      const { data: existingUser, error: checkError } = await supabase
+        .from('profiles')
+        .select('id, email')
+        .eq('email', formData.email.toLowerCase())
+        .single()
+
+      if (checkError && checkError.code !== 'PGRST116') {
+        setError(checkError.message)
+        setLoading(false)
+        return
+      }
+
+      if (existingUser) {
+        setError('An account with this email already exists. Please sign in instead.')
+        setLoading(false)
+        return
+      }
+
+      // Create user account
+      const { data: authData, error: authError } = await supabase.auth.signUp({
+        email: formData.email.toLowerCase(),
+        password: formData.password,
         options: {
           data: {
-            full_name: fullName,
-            phone: phone,
+            full_name: formData.fullName
           }
         }
-      });
+      })
 
-      if (signUpError) {
-        setError(signUpError.message);
-        setLoading(false);
-        return;
+      if (authError) {
+        setError(authError.message)
+        setLoading(false)
+        return
       }
 
-      if (!signUpData.user?.id) {
-        setError("User creation failed.");
-        setLoading(false);
-        return;
+      if (!authData.user) {
+        setError('Failed to create account')
+        setLoading(false)
+        return
       }
 
-      console.log("User created with ID:", signUpData.user.id);
-      console.log("User metadata:", signUpData.user.user_metadata);
-
-      // The trigger will automatically create the profile
-      // We just need to wait a moment for it to complete
-      await new Promise(resolve => setTimeout(resolve, 2000));
-
-      // Verify the profile was created
-      const { data: profileData, error: profileError } = await supabase
-        .from("profiles")
-        .select("*")
-        .eq("id", signUpData.user.id)
-        .single();
+      // Create profile
+      const { error: profileError } = await supabase
+        .from('profiles')
+        .insert({
+          id: authData.user.id,
+          full_name: formData.fullName,
+          email: formData.email.toLowerCase(),
+          role: 'parent'
+        })
 
       if (profileError) {
-        console.error("Profile fetch error:", profileError);
-        setError("Profile creation failed. Please try again.");
-        setLoading(false);
-        return;
+        console.error('Profile creation error:', profileError)
+        // Don't fail the signup if profile creation fails
+        // The user can still sign in and we'll handle it
       }
 
-      console.log("Profile created:", profileData);
-
-      // Update the profile with the user's data if needed
-      if (profileData.full_name !== fullName || profileData.phone !== phone) {
-        const { error: updateError } = await supabase
-          .from("profiles")
-          .update({
-            full_name: fullName,
-            phone: phone,
+      // If this was an invited user, update the invite status
+      if (inviteId) {
+        const { error: inviteError } = await supabase
+          .from('group_invites')
+          .update({ 
+            status: 'accepted',
+            accepted_at: new Date().toISOString()
           })
-          .eq("id", signUpData.user.id);
+          .eq('id', inviteId)
 
-        if (updateError) {
-          console.error("Profile update error:", updateError);
-          // Don't show error to user as profile was created by trigger
+        if (inviteError) {
+          console.error('Invite update error:', inviteError)
+          // Don't fail the signup for this
         }
       }
 
-      setLoading(false);
-      router.replace("/dashboard");
-
-    } catch (error) {
-      console.error("Signup error:", error);
-      setError("An unexpected error occurred. Please try again.");
-      setLoading(false);
+      // Show success message
+      setError('')
+      alert('Account created successfully! Please check your email to confirm your account before signing in.')
+      
+      // Redirect to sign in
+      router.push('/auth?message=Account created successfully. Please check your email to confirm your account.')
+      
+    } catch (err: any) {
+      console.error('Signup error:', err)
+      setError(err.message || 'An error occurred during signup')
+    } finally {
+      setLoading(false)
     }
-  };
+  }
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-gray-50">
-      <div className="w-full max-w-md space-y-8">
-        <div>
-          <h2 className="mt-6 text-center text-3xl font-bold tracking-tight text-gray-900">
-            Create your account
-          </h2>
-        </div>
-        <form className="mt-8 space-y-6" onSubmit={handleSubmit}>
-          <div className="space-y-4">
+    <div className="min-h-screen bg-gray-50 flex flex-col justify-center py-12 sm:px-6 lg:px-8">
+      <div className="sm:mx-auto sm:w-full sm:max-w-md">
+        <h2 className="mt-6 text-center text-3xl font-extrabold text-gray-900">
+          {inviteInfo ? 'Join the Group!' : 'Create Your Account'}
+        </h2>
+        {inviteInfo && (
+          <div className="mt-4 p-4 bg-blue-50 border border-blue-200 rounded-md">
+            <p className="text-sm text-blue-800">
+              <strong>{inviteInfo.senderName}</strong> has invited you to join the group{' '}
+              <strong>"{inviteInfo.groupName}"</strong>
+            </p>
+            {inviteInfo.customNote && (
+              <p className="mt-2 text-sm text-blue-700 italic">
+                "{inviteInfo.customNote}"
+              </p>
+            )}
+          </div>
+        )}
+        <p className="mt-2 text-center text-sm text-gray-600">
+          Or{' '}
+          <button
+            onClick={() => router.push('/auth')}
+            className="font-medium text-indigo-600 hover:text-indigo-500"
+          >
+            sign in to your existing account
+          </button>
+        </p>
+      </div>
+
+      <div className="mt-8 sm:mx-auto sm:w-full sm:max-w-md">
+        <div className="bg-white py-8 px-4 shadow sm:rounded-lg sm:px-10">
+          <form className="space-y-6" onSubmit={handleSubmit}>
             <div>
               <label htmlFor="fullName" className="block text-sm font-medium text-gray-700">
                 Full Name
               </label>
-              <input
-                id="fullName"
-                name="fullName"
-                type="text"
-                required
-                value={fullName}
-                onChange={(e) => setFullName(e.target.value)}
-                className="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-indigo-500"
-                placeholder="Enter your full name"
-              />
+              <div className="mt-1">
+                <input
+                  id="fullName"
+                  name="fullName"
+                  type="text"
+                  required
+                  value={formData.fullName}
+                  onChange={handleInputChange}
+                  className="appearance-none block w-full px-3 py-2 border border-gray-300 rounded-md placeholder-gray-400 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
+                />
+              </div>
             </div>
+
             <div>
               <label htmlFor="email" className="block text-sm font-medium text-gray-700">
-                Email address
+                Email Address
               </label>
-              <input
-                id="email"
-                name="email"
-                type="email"
-                autoComplete="email"
-                required
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                className="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-indigo-500"
-                placeholder="Enter your email"
-              />
+              <div className="mt-1">
+                <input
+                  id="email"
+                  name="email"
+                  type="email"
+                  autoComplete="email"
+                  required
+                  value={formData.email}
+                  onChange={handleInputChange}
+                  className="appearance-none block w-full px-3 py-2 border border-gray-300 rounded-md placeholder-gray-400 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
+                />
+              </div>
             </div>
-            <div>
-              <label htmlFor="phone" className="block text-sm font-medium text-gray-700">
-                Phone Number
-              </label>
-              <input
-                id="phone"
-                name="phone"
-                type="tel"
-                value={phone}
-                onChange={(e) => setPhone(formatPhoneInput(e.target.value))}
-                className="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-indigo-500"
-                placeholder="(555) 123-4567"
-              />
-            </div>
+
             <div>
               <label htmlFor="password" className="block text-sm font-medium text-gray-700">
                 Password
               </label>
-              <input
-                id="password"
-                name="password"
-                type="password"
-                autoComplete="new-password"
-                required
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                className="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-indigo-500"
-                placeholder="Enter your password"
-              />
+              <div className="mt-1">
+                <input
+                  id="password"
+                  name="password"
+                  type="password"
+                  autoComplete="new-password"
+                  required
+                  value={formData.password}
+                  onChange={handleInputChange}
+                  className="appearance-none block w-full px-3 py-2 border border-gray-300 rounded-md placeholder-gray-400 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
+                />
+              </div>
             </div>
-          </div>
 
-          {error && (
-            <div className="text-red-600 text-sm text-center">{error}</div>
-          )}
+            <div>
+              <label htmlFor="confirmPassword" className="block text-sm font-medium text-gray-700">
+                Confirm Password
+              </label>
+              <div className="mt-1">
+                <input
+                  id="confirmPassword"
+                  name="confirmPassword"
+                  type="password"
+                  autoComplete="new-password"
+                  required
+                  value={formData.confirmPassword}
+                  onChange={handleInputChange}
+                  className="appearance-none block w-full px-3 py-2 border border-gray-300 rounded-md placeholder-gray-400 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
+                />
+              </div>
+            </div>
 
-          <div>
-            <button
-              type="submit"
-              disabled={loading}
-              className="group relative flex w-full justify-center rounded-md border border-transparent bg-indigo-600 py-2 px-4 text-sm font-medium text-white hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 disabled:opacity-50"
-            >
-              {loading ? "Creating account..." : "Sign up"}
-            </button>
-          </div>
-        </form>
+            {error && (
+              <div className="rounded-md bg-red-50 p-4">
+                <div className="text-sm text-red-700">{error}</div>
+              </div>
+            )}
+
+            <div>
+              <button
+                type="submit"
+                disabled={loading}
+                className="w-full flex justify-center py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {loading ? 'Creating Account...' : 'Create Account'}
+              </button>
+            </div>
+          </form>
+        </div>
       </div>
     </div>
-  );
-} 
+  )
+}

@@ -1,0 +1,910 @@
+'use client';
+
+import { useState, useEffect } from 'react';
+import Header from '../components/Header';
+import { supabase } from '../lib/supabase';
+import { formatDateOnly, formatTime, formatTimestampDate } from '../lib/date-utils';
+
+interface CareRequest {
+  care_request_id: string;
+  group_id: string;
+  group_name: string;
+  requester_id: string;           // Changed from requesting_parent_id
+  requester_name: string;         // Changed from requesting_parent_name
+  requested_date: string;         // Changed from care_date
+  start_time: string;
+  end_time: string;
+  notes: string;
+  status: string;
+  created_at: string;
+  response_count: number;
+  accepted_response_count: number;
+}
+
+interface CareResponse {
+  care_response_id: string;
+  care_request_id: string;
+  group_id: string;
+  group_name: string;
+  requester_id: string;           // Changed from requesting_parent_id
+  requester_name: string;         // Changed from requesting_parent_name
+  requested_date: string;         // Changed from care_date
+  start_time: string;
+  end_time: string;
+  response_notes?: string;        // Added for response notes
+  responder_id?: string;          // Added for responses to my requests
+  responder_name?: string;        // Added for responses to my requests
+  status: string;
+  created_at: string;
+  reciprocal_date: string;
+  reciprocal_start_time: string;
+  reciprocal_end_time: string;
+}
+
+interface Group {
+   id: string;
+  name: string;
+}
+
+interface Child {
+  id: string;
+  name: string;
+  group_id: string;
+ }
+
+// Open Block Invitations Section Component
+function OpenBlockInvitationsSection() {
+  const [invitations, setInvitations] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [acceptingInvitation, setAcceptingInvitation] = useState<any>(null);
+  const [availableChildren, setAvailableChildren] = useState<Array<{ id: string; full_name: string }>>([]);
+  const [processing, setProcessing] = useState(false);
+  const [expandedInvitations, setExpandedInvitations] = useState<Set<string>>(new Set());
+
+  const toggleExpanded = (invitationId: string) => {
+    const newExpanded = new Set(expandedInvitations);
+    if (newExpanded.has(invitationId)) {
+      newExpanded.delete(invitationId);
+    } else {
+      newExpanded.delete(invitationId);
+      newExpanded.add(invitationId);
+    }
+    setExpandedInvitations(newExpanded);
+  };
+
+  useEffect(() => {
+    fetchOpenBlockInvitations();
+  }, []);
+
+  const fetchOpenBlockInvitations = async () => {
+    try {
+      setLoading(true);
+      
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) {
+        console.error('User not authenticated');
+        return;
+      }
+
+      console.log('🔍 DEBUG: Fetching open block invitations for user:', user.id);
+
+      // First, let's see what's actually in the database
+      const { data: rawData, error: rawError } = await supabase
+        .from('care_responses')
+        .select(`
+          *,
+          care_requests!inner(
+            *,
+            groups!inner(name)
+          )
+        `)
+        .eq('responder_id', user.id)
+        .eq('response_type', 'pending')
+        .eq('status', 'pending');
+
+      if (rawError) {
+        console.error('🔍 DEBUG: Raw data error:', rawError);
+        return;
+      }
+
+      console.log('🔍 DEBUG: Raw care_responses data:', rawData);
+
+      // Now get the actual invitations using the function
+      const { data, error } = await supabase.rpc('get_open_block_invitations', {
+        p_parent_id: user.id
+      });
+
+      if (error) {
+        console.error('🔍 DEBUG: Function error:', error);
+        return;
+      }
+
+      console.log('🔍 DEBUG: Function returned data:', data);
+
+      setInvitations(data || []);
+    } catch (error) {
+      console.error('Error fetching invitations:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleAccept = async (invitation: any) => {
+    try {
+      setProcessing(true);
+      
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) throw new Error('User not authenticated');
+
+      // Get active children from child_group_members using parent_id
+      const { data: childrenData, error: childrenError } = await supabase
+        .from('child_group_members')
+        .select(`
+          child_id,
+          children!inner(id, full_name, parent_id)
+        `)
+        .eq('parent_id', user.id)
+        .eq('active', true);
+
+      if (childrenError) throw childrenError;
+
+      // Transform the nested data structure
+      const transformedChildren: Array<{id: string, full_name: string}> = [];
+      
+      if (childrenData) {
+        childrenData.forEach(item => {
+          if (item.children && item.children.id) {
+            transformedChildren.push({
+              id: item.children.id,
+              full_name: item.children.full_name
+            });
+          }
+        });
+      }
+
+      // Auto-select the first child
+      if (transformedChildren.length > 0) {
+        const activeChild = transformedChildren[0];
+        
+        // Call the accept function
+        const { error } = await supabase.rpc('accept_open_block_invitation', {
+          p_care_response_id: invitation.care_response_id,
+          p_accepting_parent_id: user.id,
+          p_accepted_child_id: activeChild.id
+        });
+
+        if (error) throw error;
+
+        // Refresh the invitations list
+        await fetchOpenBlockInvitations();
+        alert('Invitation accepted successfully! Your child has been added to the care block.');
+      } else {
+        throw new Error('No active children found');
+      }
+    } catch (error) {
+      console.error('Error accepting invitation:', error);
+      alert('Error accepting invitation. Please try again.');
+    } finally {
+      setProcessing(false);
+    }
+  };
+
+  const handleDecline = async (invitation: any) => {
+    if (!confirm('Are you sure you want to decline this invitation?')) return;
+
+    try {
+      setProcessing(true);
+      
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) throw new Error('User not authenticated');
+
+      const { error } = await supabase.rpc('decline_open_block_invitation', {
+        p_care_response_id: invitation.care_response_id,
+        p_declining_parent_id: user.id
+      });
+
+      if (error) throw error;
+
+      // Refresh the invitations list
+      await fetchOpenBlockInvitations();
+      alert('Invitation declined successfully.');
+    } catch (error) {
+      console.error('Error declining invitation:', error);
+      alert('Error declining invitation. Please try again.');
+    } finally {
+      setProcessing(false);
+    }
+  };
+
+  if (loading) {
+    return (
+      <div className="text-center py-8">
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto"></div>
+        <p className="text-gray-600 mt-2">Loading open block invitations...</p>
+      </div>
+    );
+  }
+
+  if (invitations.length === 0) {
+    return (
+      <div className="text-center py-6 bg-gray-50 rounded-lg">
+        <p className="text-gray-500">No pending open block invitations at the moment.</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      {invitations.map((invitation) => (
+        <div key={invitation.invitation_id || `invitation-${invitation.care_response_id}`} className="border border-gray-200 rounded-lg overflow-hidden">
+          {/* Header - Always Visible */}
+          <div 
+            className="p-4 bg-gray-50 hover:bg-gray-100 cursor-pointer transition-colors"
+            onClick={() => toggleExpanded(invitation.invitation_id || `invitation-${invitation.care_response_id}`)}
+          >
+            <div className="flex items-center justify-between">
+              <div className="flex-1">
+                <h4 className="font-medium text-gray-900">
+                  {invitation.open_block_parent_name} is inviting you to join their care block
+                </h4>
+                <p className="text-sm text-gray-600">
+                  Reciprocal care: {
+                    invitation.reciprocal_date && invitation.reciprocal_start_time && invitation.reciprocal_end_time
+                      ? `${formatDateOnly(invitation.reciprocal_date)} from ${invitation.reciprocal_start_time} to ${invitation.reciprocal_end_time}`
+                      : 'Details will be available after acceptance'
+                  }
+                </p>
+              </div>
+              <div className="flex items-center space-x-2">
+                <span className="text-xs text-gray-500">
+                  {formatTimestampDate(invitation.created_at)}
+                </span>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    toggleExpanded(invitation.invitation_id || `invitation-${invitation.care_response_id}`);
+                  }}
+                  className="text-gray-400 hover:text-gray-600"
+                >
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                  </svg>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* Expanded Content */}
+          {expandedInvitations.has(invitation.invitation_id || `invitation-${invitation.care_response_id}`) && (
+            <div className="p-4 bg-white border-t">
+              <div className="space-y-3">
+                <div className="bg-blue-50 rounded-lg p-3 border-l-4 border-blue-500">
+                  <p className="text-sm text-blue-900">
+                    <strong>Notes:</strong> {invitation.notes || 'No additional notes provided'}
+                  </p>
+                </div>
+                
+                <div className="bg-green-50 rounded-lg p-3 border-l-4 border-green-500">
+                  <p className="text-sm text-green-900">
+                    <strong>Group:</strong> {invitation.group_name || 'N/A'}
+                  </p>
+                </div>
+
+                {invitation.status === 'pending' && (
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => handleAccept(invitation)}
+                      disabled={processing}
+                      className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 disabled:bg-gray-400"
+                    >
+                      Accept
+                    </button>
+                    <button
+                      onClick={() => handleDecline(invitation)}
+                      disabled={processing}
+                      className="px-4 py-2 bg-red-600 text-white rounded hover:bg-red-700 disabled:bg-gray-400"
+                    >
+                      Decline
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+export default function SchedulerPage() {
+  const [careRequests, setCareRequests] = useState<CareRequest[]>([]);
+  const [careResponses, setCareResponses] = useState<CareResponse[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [showNewRequestForm, setShowNewRequestForm] = useState(false);
+  const [newRequest, setNewRequest] = useState({
+    group_id: '',
+    child_id: '',
+    care_date: '',
+    start_time: '',
+    end_time: '',
+    notes: ''
+  });
+  const [groups, setGroups] = useState<Group[]>([]);
+  const [children, setChildren] = useState<Child[]>([]);
+  const [invitations, setInvitations] = useState<any[]>([]);
+  const [unreadMessages, setUnreadMessages] = useState<Set<string>>(new Set());
+  const [expandedMessages, setExpandedMessages] = useState<Set<string>>(new Set());
+  const [processing, setProcessing] = useState(false);
+
+  useEffect(() => {
+    fetchData();
+    loadUnreadMessages();
+  }, []);
+
+  const fetchData = async () => {
+    try {
+      setLoading(true);
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return;
+
+      // Fetch care requests and responses
+      const [careRequestsResult, careResponsesResult, invitationsResult] = await Promise.all([
+        supabase.rpc('get_care_requests', { p_parent_id: user.id }),
+        supabase.rpc('get_reciprocal_care_requests', { parent_id: user.id }),
+        supabase.rpc('get_open_block_invitations', { p_parent_id: user.id })
+      ]);
+
+      if (careRequestsResult.error) console.error('Error fetching care requests:', careRequestsResult.error);
+      if (careResponsesResult.error) console.error('Error fetching care responses:', careResponsesResult.error);
+      if (invitationsResult.error) console.error('Error fetching invitations:', invitationsResult.error);
+
+      setCareRequests(careRequestsResult.data || []);
+      setCareResponses(careResponsesResult.data || []);
+      setInvitations(invitationsResult.data || []);
+
+      // Fetch groups and children
+      const [groupsResult, childrenResult] = await Promise.all([
+        supabase.from('groups').select('id, name'),
+        supabase.from('children').select('id, name, group_id')
+      ]);
+
+      if (groupsResult.error) console.error('Error fetching groups:', groupsResult.error);
+      if (childrenResult.error) console.error('Error fetching children:', childrenResult.error);
+
+      setGroups(groupsResult.data || []);
+      setChildren(childrenResult.data || []);
+    } catch (error) {
+      console.error('Error fetching data:', error);
+      setError('Failed to fetch data');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const loadUnreadMessages = () => {
+    const saved = localStorage.getItem('schedulerUnreadMessages');
+    if (saved) {
+      try {
+        setUnreadMessages(new Set(JSON.parse(saved)));
+      } catch (error) {
+        console.error('Error parsing saved unread messages:', error);
+      }
+    }
+  };
+
+  const toggleExpanded = (messageId: string) => {
+    const newExpanded = new Set(expandedMessages);
+    if (newExpanded.has(messageId)) {
+      newExpanded.delete(messageId);
+    } else {
+      newExpanded.add(messageId);
+    }
+    setExpandedMessages(newExpanded);
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    try {
+      setProcessing(true);
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) throw new Error('User not authenticated');
+
+      const { error } = await supabase.rpc('create_care_request', {
+        p_group_id: newRequest.group_id,
+        p_child_id: newRequest.child_id,
+        p_care_date: newRequest.care_date,
+        p_start_time: newRequest.start_time,
+        p_end_time: newRequest.end_time,
+        p_notes: newRequest.notes
+      });
+
+      if (error) throw error;
+
+      resetNewRequestForm();
+      fetchData();
+      alert('Care request created successfully!');
+    } catch (error) {
+      console.error('Error creating care request:', error);
+      setError('Failed to create care request');
+    } finally {
+      setProcessing(false);
+    }
+  };
+
+  const handleAcceptResponse = async (response: CareResponse) => {
+    try {
+      setProcessing(true);
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) throw new Error('User not authenticated');
+
+      const { error } = await supabase.rpc('accept_reciprocal_care_response', {
+        p_care_response_id: response.care_response_id,
+        p_accepting_parent_id: user.id
+      });
+
+      if (error) {
+        console.error('Error accepting response:', error);
+        setError('Failed to accept response');
+        return;
+      }
+
+      fetchData();
+    } catch (err) {
+      console.error('Error:', err);
+      setError('An unexpected error occurred');
+    }
+  };
+
+  const formatTime = (time: string | undefined | null) => {
+    if (!time) return '';
+    try {
+      return time.substring(0, 5);
+    } catch (error) {
+      console.warn('formatTime error:', { time, error });
+      return '';
+    }
+  };
+
+  const resetNewRequestForm = () => {
+    setNewRequest({
+      group_id: '',
+      child_id: '',
+      care_date: '',
+      start_time: '',
+      end_time: '',
+      notes: ''
+    });
+    setChildren([]);
+    setShowNewRequestForm(false);
+  };
+
+  // Open block invitation handlers
+  const handleAccept = async (invitation: any) => {
+    try {
+      setProcessing(true);
+      
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) throw new Error('User not authenticated');
+
+      // Get active children from child_group_members using parent_id
+      const { data: childrenData, error: childrenError } = await supabase
+        .from('child_group_members')
+        .select(`
+          child_id,
+          children!inner(id, full_name, parent_id)
+        `)
+        .eq('parent_id', user.id)
+        .eq('active', true);
+
+      if (childrenError) throw childrenError;
+
+      // Transform the nested data structure
+      const transformedChildren: Array<{id: string, full_name: string}> = [];
+      
+      if (childrenData) {
+        childrenData.forEach(item => {
+          if (item.children && item.children.id) {
+            transformedChildren.push({
+              id: item.children.id,
+              full_name: item.children.full_name
+            });
+          }
+        });
+      }
+
+      // Auto-select the first child
+      if (transformedChildren.length > 0) {
+        const activeChild = transformedChildren[0];
+        
+        // Call the accept function
+        const { error } = await supabase.rpc('accept_open_block_invitation', {
+          p_care_response_id: invitation.care_response_id,
+          p_accepting_parent_id: user.id,
+          p_accepted_child_id: activeChild.id
+        });
+
+        if (error) throw error;
+
+        // Refresh the invitations list
+        await fetchOpenBlockInvitations();
+        alert('Invitation accepted successfully! Your child has been added to the care block.');
+      } else {
+        throw new Error('No active children found');
+      }
+    } catch (error) {
+      console.error('Error accepting invitation:', error);
+      alert('Error accepting invitation. Please try again.');
+    } finally {
+      setProcessing(false);
+    }
+  };
+
+  const handleDecline = async (invitation: any) => {
+    if (!confirm('Are you sure you want to decline this invitation?')) return;
+
+    try {
+      setProcessing(true);
+      
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) throw new Error('User not authenticated');
+
+      const { error } = await supabase.rpc('decline_open_block_invitation', {
+        p_care_response_id: invitation.care_response_id,
+        p_declining_parent_id: user.id
+      });
+
+      if (error) throw error;
+
+      // Refresh the invitations list
+      await fetchOpenBlockInvitations();
+      alert('Invitation declined successfully.');
+    } catch (error) {
+      console.error('Error declining invitation:', error);
+      alert('Error declining invitation. Please try again.');
+    } finally {
+      setProcessing(false);
+    }
+  };
+
+  const fetchOpenBlockInvitations = async () => {
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return;
+
+      const { data, error } = await supabase.rpc('get_open_block_invitations', {
+        p_parent_id: user.id
+      });
+
+      if (error) {
+        console.error('Error fetching invitations:', error);
+        return;
+      }
+
+      setInvitations(data || []);
+    } catch (error) {
+      console.error('Error fetching invitations:', error);
+    }
+  };
+
+  // Mark message as read
+  const markMessageAsRead = (messageId: string) => {
+    setUnreadMessages(prev => {
+      const newUnread = new Set(prev);
+      newUnread.delete(messageId);
+      
+      // Update localStorage for persistence
+      localStorage.setItem('schedulerUnreadMessages', JSON.stringify(Array.from(newUnread)));
+      
+      // Update Header's unread count via localStorage
+      const headerUnreadCount = newUnread.size;
+      localStorage.setItem('headerSchedulerUnreadCount', headerUnreadCount.toString());
+      
+      // Dispatch event to notify Header component
+      window.dispatchEvent(new Event('schedulerUpdated'));
+      
+      return newUnread;
+    });
+  };
+
+  // Check if message has pending actions (unread)
+  const hasPendingActions = (message: any) => {
+    if (message.type === 'open_block_invitation') {
+      return message.data.status === 'pending';
+    }
+    if (message.type === 'care_request') {
+      return true; // Always unread until responded to
+    }
+    if (message.type === 'care_response') {
+      return message.data.responses.some((r: any) => r.status === 'submitted');
+    }
+    return false;
+  };
+
+  // Initialize unread messages when data loads
+  useEffect(() => {
+    if (careRequests.length > 0 || careResponses.length > 0 || invitations.length > 0) {
+      const pendingMessages = new Set<string>();
+      
+      // Check invitations
+      invitations.forEach((invitation, index) => {
+        if (invitation.status === 'pending') {
+          // Use the grouped invitation ID instead of individual invitation ID
+          const key = `${invitation.open_block_parent_id || invitation.open_block_parent_name}-${invitation.care_response_id}`;
+          pendingMessages.add(`invitation-group-${key}`);
+        }
+      });
+      
+      // Check care requests
+      careResponses
+        .filter(response => response.status === 'pending')
+        .forEach((response, index) => {
+          pendingMessages.add(`pending-${response.care_response_id || index}`);
+        });
+      
+      // Check care requests (already responded ones)
+      careResponses
+        .filter(response => response.status === 'responded' || response.status === 'accepted')
+        .forEach((response, index) => {
+          pendingMessages.add(`responded-${response.care_response_id || index}`);
+        });
+      
+      // Check responses to my requests
+      careRequests.forEach(request => {
+        const requestResponses = careResponses.filter(
+          response => response.care_request_id === request.care_request_id && response.status === 'submitted'
+        );
+        
+        if (requestResponses.length > 0) {
+          pendingMessages.add(`request-${request.care_request_id}`);
+        }
+      });
+
+      setUnreadMessages(pendingMessages);
+    }
+  }, [careRequests, careResponses, invitations]);
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-gray-50">
+        <Header />
+        <div className="max-w-4xl mx-auto py-8 px-4">
+          <div className="text-center">
+            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto"></div>
+            <p className="text-gray-600 mt-2">Loading...</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen bg-gray-50">
+      <Header />
+      <div className="max-w-4xl mx-auto py-8 px-4">
+        <div className="flex justify-between items-center mb-8">
+          <h1 className="text-3xl font-bold text-gray-900">Messages</h1>
+          <button
+            onClick={() => setShowNewRequestForm(!showNewRequestForm)}
+            className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
+          >
+            {showNewRequestForm ? 'Cancel' : 'New Care Request'}
+          </button>
+        </div>
+
+        {error && (
+          <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-lg">
+            <p className="text-red-800">{error}</p>
+          </div>
+        )}
+
+        {showNewRequestForm && (
+          <div className="mb-8 p-6 bg-white rounded-lg shadow">
+            <h2 className="text-xl font-semibold mb-4">Create New Care Request</h2>
+            <form onSubmit={handleSubmit} className="space-y-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Group</label>
+                  <select
+                    value={newRequest.group_id}
+                    onChange={(e) => setNewRequest({ ...newRequest, group_id: e.target.value })}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-md"
+                    required
+                  >
+                    <option value="">Select a group</option>
+                    {groups.map(group => (
+                      <option key={group.id} value={group.id}>{group.name}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Child</label>
+                  <select
+                    value={newRequest.child_id}
+                    onChange={(e) => setNewRequest({ ...newRequest, child_id: e.target.value })}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-md"
+                    required
+                  >
+                    <option value="">Select a child</option>
+                    {children
+                      .filter(child => !newRequest.group_id || child.group_id === newRequest.group_id)
+                      .map(child => (
+                        <option key={child.id} value={child.id}>{child.name}</option>
+                      ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Date</label>
+                  <input
+                    type="date"
+                    value={newRequest.care_date}
+                    onChange={(e) => setNewRequest({ ...newRequest, care_date: e.target.value })}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-md"
+                    required
+                  />
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Start Time</label>
+                    <input
+                      type="time"
+                      value={newRequest.start_time}
+                      onChange={(e) => setNewRequest({ ...newRequest, start_time: e.target.value })}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-md"
+                      required
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">End Time</label>
+                    <input
+                      type="time"
+                      value={newRequest.end_time}
+                      onChange={(e) => setNewRequest({ ...newRequest, end_time: e.target.value })}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-md"
+                      required
+                    />
+                  </div>
+                </div>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Notes</label>
+                <textarea
+                  value={newRequest.notes}
+                  onChange={(e) => setNewRequest({ ...newRequest, notes: e.target.value })}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md"
+                  rows={3}
+                  placeholder="Any additional notes or requirements..."
+                />
+              </div>
+              <div className="flex gap-3">
+                <button
+                  type="submit"
+                  disabled={processing}
+                  className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:bg-gray-400"
+                >
+                  {processing ? 'Creating...' : 'Create Request'}
+                </button>
+                <button
+                  type="button"
+                  onClick={resetNewRequestForm}
+                  className="px-4 py-2 border border-gray-300 text-gray-700 rounded hover:bg-gray-50"
+                >
+                  Cancel
+                </button>
+              </div>
+            </form>
+          </div>
+        )}
+
+        {/* Open Block Invitations Section */}
+        <div className="mb-8">
+          <h2 className="text-2xl font-semibold text-gray-900 mb-4">Open Block Invitations</h2>
+          <OpenBlockInvitationsSection />
+        </div>
+
+        {/* Care Requests Section */}
+        <div className="mb-8">
+          <h2 className="text-2xl font-semibold text-gray-900 mb-4">Care Requests</h2>
+          {careRequests.length === 0 ? (
+            <p className="text-gray-500">No care requests found.</p>
+          ) : (
+            <div className="space-y-4">
+              {careRequests.map((request) => (
+                <div key={request.care_request_id} className="bg-white rounded-lg shadow p-6">
+                  <div className="flex justify-between items-start mb-4">
+                    <div>
+                      <h3 className="text-lg font-semibold text-gray-900">
+                        Care Request from {request.requester_name}
+                      </h3>
+                      <p className="text-sm text-gray-600">
+                        {formatDateOnly(request.requested_date)} from {formatTime(request.start_time)} to {formatTime(request.end_time)}
+                      </p>
+                      <p className="text-sm text-gray-600">Group: {request.group_name}</p>
+                    </div>
+                    <span className={`px-2 py-1 text-xs rounded-full ${
+                      request.status === 'pending' ? 'bg-yellow-100 text-yellow-800' :
+                      request.status === 'accepted' ? 'bg-green-100 text-green-800' :
+                      'bg-gray-100 text-gray-800'
+                    }`}>
+                      {request.status}
+                    </span>
+                  </div>
+                  
+                  {request.notes && (
+                    <p className="text-gray-700 mb-4">{request.notes}</p>
+                  )}
+                  
+                  <div className="text-sm text-gray-600">
+                    <p>Responses: {request.response_count}</p>
+                    <p>Accepted: {request.accepted_response_count}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Care Responses Section */}
+        <div className="mb-8">
+          <h2 className="text-2xl font-semibold text-gray-900 mb-4">Care Responses</h2>
+          {careResponses.length === 0 ? (
+            <p className="text-gray-500">No care responses found.</p>
+          ) : (
+            <div className="space-y-4">
+              {careResponses.map((response) => (
+                <div key={response.care_response_id} className="bg-white rounded-lg shadow p-6">
+                  <div className="flex justify-between items-start mb-4">
+                    <div>
+                      <h3 className="text-lg font-semibold text-gray-900">
+                        Response to {response.requester_name}'s Request
+                      </h3>
+                      <p className="text-sm text-gray-600">
+                        {formatDateOnly(response.requested_date)} from {formatTime(response.start_time)} to {formatTime(response.end_time)}
+                      </p>
+                      <p className="text-sm text-gray-600">Group: {response.group_name}</p>
+                    </div>
+                    <span className={`px-2 py-1 text-xs rounded-full ${
+                      response.status === 'pending' ? 'bg-yellow-100 text-yellow-800' :
+                      response.status === 'accepted' ? 'bg-green-100 text-green-800' :
+                      response.status === 'declined' ? 'bg-red-100 text-red-800' :
+                      'bg-gray-100 text-gray-800'
+                    }`}>
+                      {response.status}
+                    </span>
+                  </div>
+                  
+                  {response.response_notes && (
+                    <p className="text-gray-700 mb-4">{response.response_notes}</p>
+                  )}
+                  
+                  <div className="text-sm text-gray-600 mb-4">
+                    <p>Reciprocal care: {formatDateOnly(response.reciprocal_date)} from {formatTime(response.reciprocal_start_time)} to {formatTime(response.reciprocal_end_time)}</p>
+                  </div>
+                  
+                  {response.status === 'pending' && (
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => handleAcceptResponse(response)}
+                        disabled={processing}
+                        className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 disabled:bg-gray-400"
+                      >
+                        Accept
+                      </button>
+                      <button
+                        disabled={processing}
+                        className="px-4 py-2 bg-red-600 text-white rounded hover:bg-red-700 disabled:bg-gray-400"
+                      >
+                        Decline
+                      </button>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}

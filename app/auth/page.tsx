@@ -11,9 +11,35 @@ export default function AuthPage() {
   const router = useRouter();
 
   useEffect(() => {
-    const { data: listener } = supabase.auth.onAuthStateChange((event, session) => {
+    const { data: listener } = supabase.auth.onAuthStateChange(async (event, session) => {
       if (event === "SIGNED_IN" && session) {
-        router.replace("/dashboard");
+        try {
+          // Fetch the user's profile to check their role
+          const { data: profileData, error } = await supabase
+            .from("profiles")
+            .select("role")
+            .eq("id", session.user.id)
+            .single();
+
+          if (error) {
+            console.error("Error fetching profile:", error);
+            // Default to parent dashboard if there's an error
+            router.replace("/dashboard");
+            return;
+          }
+
+          // Redirect based on role
+          if (profileData?.role === "tutor") {
+            router.replace("/tutor-dashboard");
+          } else {
+            // Default to parent dashboard for any other role
+            router.replace("/dashboard");
+          }
+        } catch (error) {
+          console.error("Error during role check:", error);
+          // Default to parent dashboard if there's an error
+          router.replace("/dashboard");
+        }
       }
     });
     return () => {

@@ -1,0 +1,16 @@
+# Vercel ignore file
+node_modules
+.next
+.env.local
+.env.production
+*.log
+.DS_Store
+*.sql
+scripts/
+auth-ui/
+supabase/
+*.bat
+*.sh
+*.md
+!README.md
+!NOTIFICATION_SYSTEM_README.md

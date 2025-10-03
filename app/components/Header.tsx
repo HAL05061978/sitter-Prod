@@ -4,6 +4,8 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "../lib/supabase";
 import LogoutButton from "./LogoutButton";
+import Link from "next/link";
+import { usePathname } from "next/navigation";
 
 interface HeaderProps {
   currentPage?: string;
@@ -11,11 +13,13 @@ interface HeaderProps {
 
 export default function Header({ currentPage = "dashboard" }: HeaderProps) {
   const router = useRouter();
+  const pathname = usePathname();
   const [user, setUser] = useState<any>(null);
+  const [userRole, setUserRole] = useState<string>('parent');
   const [pendingInvitations, setPendingInvitations] = useState<number>(0);
 
   const [unreadChatMessages, setUnreadChatMessages] = useState<number>(0);
-  const [unreadMessages, setUnreadMessages] = useState<number>(0);
+  const [unreadSchedulerMessages, setUnreadSchedulerMessages] = useState<number>(0);
 
   // Function to fetch pending invitations count
   const fetchPendingInvitations = async (userId: string) => {
@@ -40,14 +44,14 @@ export default function Header({ currentPage = "dashboard" }: HeaderProps) {
         .eq('status', 'pending');
       
       if (error) {
-        console.error('Error fetching pending invitations:', error);
+        // Error fetching pending invitations
         return;
       }
       
       const count = data?.length || 0;
       setPendingInvitations(count);
     } catch (error) {
-      console.error('Error fetching pending invitations:', error);
+      // Error fetching pending invitations
     }
   };
 
@@ -96,40 +100,159 @@ export default function Header({ currentPage = "dashboard" }: HeaderProps) {
       const unviewedChatCount = messageIds.filter(id => !viewedMessageIds.includes(id)).length;
       setUnreadChatMessages(unviewedChatCount);
     } catch (error) {
-      console.error('Error fetching unread chat messages:', error);
+      // Error fetching unread chat messages
     }
   };
 
-  const fetchUnreadMessages = async (userId: string) => {
+  // Function to fetch unread scheduler messages count
+  const fetchUnreadSchedulerMessages = async (userId: string) => {
     try {
-      // Use the new backend function for better performance
-      const { data, error } = await supabase.rpc('get_unread_message_count', {
+      // Get open block invitations
+      const { data: invitations } = await supabase.rpc('get_open_block_invitations', {
+        p_parent_id: userId
+      });
+
+      // Get care requests that I need to respond to
+      const { data: careRequests, error: careRequestsError } = await supabase.rpc('get_reciprocal_care_requests', {
+        parent_id: userId
+      });
+
+      if (careRequestsError) {
+        // Error fetching care requests
+      }
+
+      // Get care responses that I need to respond to (for invited parents)
+      const { data: careResponses, error: careResponsesError } = await supabase.rpc('get_reciprocal_care_responses', {
+        parent_id: userId
+      });
+
+      if (careResponsesError) {
+        // Error fetching care responses
+      }
+
+      // Get responses to my requests
+      const { data: responsesToMyRequests, error: responsesToMyRequestsError } = await supabase.rpc('get_responses_for_requester', {
+        p_requester_id: userId
+      });
+
+      if (responsesToMyRequestsError) {
+        // Error fetching responses to my requests
+      }
+
+      // Get pending group invitations
+      const { data: groupInvitations, error: groupInvitationsError } = await supabase.rpc('get_pending_group_invitations', {
         p_user_id: userId
       });
-      
-      if (error) {
-        console.error('Error fetching unread message count:', error);
-        setUnreadMessages(0);
-        return;
+
+      if (groupInvitationsError) {
+        // Error fetching group invitations
       }
-      
-      setUnreadMessages(data || 0);
+
+      // Get pending event invitations
+      const { data: eventInvitations, error: eventInvitationsError } = await supabase.rpc('get_pending_event_invitations', {
+        p_user_id: userId
+      });
+
+      if (eventInvitationsError) {
+        // Error fetching event invitations
+      }
+
+      // Get pending reschedule requests
+      const { data: rescheduleRequests, error: rescheduleRequestsError } = await supabase.rpc('get_reschedule_requests', {
+        p_parent_id: userId
+      });
+
+      if (rescheduleRequestsError) {
+        // Error fetching reschedule requests
+      }
+
+      let unreadCount = 0;
+
+      // Count pending open block invitations (grouped by parent)
+      if (invitations) {
+        const pendingInvitations = invitations.filter((inv: any) => inv.status === 'pending');
+        const invitationGroups = new Map();
+        
+        // Group invitations by parent
+        pendingInvitations.forEach((invitation: any) => {
+          const key = invitation.open_block_parent_id || invitation.open_block_parent_name;
+          if (!invitationGroups.has(key)) {
+            invitationGroups.set(key, []);
+          }
+          invitationGroups.get(key).push(invitation);
+        });
+        
+        // Count one per parent group
+        unreadCount += invitationGroups.size;
+      }
+
+      // Count pending care requests that I need to respond to
+      if (careRequests) {
+        const pendingCareRequests = careRequests.filter((req: any) => req.status === 'pending' || req.status === 'submitted');
+        unreadCount += pendingCareRequests.length;
+      }
+
+      // CRITICAL FIX: Count care responses that are pending (for invited parents)
+      // This is what was missing - we need to count responses that the user needs to act on
+      if (careResponses) {
+        const pendingCareResponses = careResponses.filter((resp: any) => resp.status === 'pending');
+        unreadCount += pendingCareResponses.length;
+      }
+
+
+
+      // Count requests that have responses in 'submitted' status (for the Messages counter)
+      if (responsesToMyRequests) {
+        const requestsWithSubmittedResponses = responsesToMyRequests.filter((resp: any) => resp.status === 'submitted');
+        // REMOVED: Don't count responses to your requests in the Messages button count
+        // These are responses that others made to your requests - they don't require action from you
+        // The Messages button should only count things YOU need to act on
+      }
+
+      // CRITICAL FIX: Count reciprocal requests that are still pending response
+      // This ensures invited parents see the count for requests they haven't responded to yet
+      if (careRequests) {
+        const unrespondedReciprocalRequests = careRequests.filter((req: any) => {
+          // Count requests that are still waiting for a response from the invited parent
+          return req.status === 'pending' && req.response_type === 'pending';
+        });
+        // Note: We don't add to unreadCount here because these are already counted above
+        // This is just for debugging to ensure we're seeing the right requests
+      }
+
+      // Count pending group invitations
+      if (groupInvitations) {
+        const pendingGroupInvitations = groupInvitations.filter((inv: any) => inv.status === 'pending');
+        unreadCount += pendingGroupInvitations.length;
+      }
+
+      // Count pending event invitations
+      if (eventInvitations) {
+        unreadCount += eventInvitations.length;
+      }
+
+      // Count pending reschedule requests
+      if (rescheduleRequests) {
+        const pendingRescheduleRequests = rescheduleRequests.filter((req: any) => req.status === 'pending');
+        unreadCount += pendingRescheduleRequests.length;
+      }
+
+      setUnreadSchedulerMessages(unreadCount);
     } catch (error) {
-      console.error('Error fetching unread messages:', error);
-      setUnreadMessages(0);
+      // Error fetching unread scheduler messages
     }
   };
+
+
 
   // Manual refresh function for debugging (can be called from console)
   const manualRefresh = async () => {
     if (user) {
-      console.log('Manual refresh triggered');
       await Promise.all([
         fetchPendingInvitations(user.id),
         fetchUnreadChatMessages(user.id),
-        fetchUnreadMessages(user.id)
+        fetchUnreadSchedulerMessages(user.id)
       ]);
-      console.log('Manual refresh completed');
     }
   };
 
@@ -138,10 +261,22 @@ export default function Header({ currentPage = "dashboard" }: HeaderProps) {
     supabase.auth.getUser().then(async ({ data }) => {
       if (data.user) {
         setUser(data.user);
+        
+        // Fetch user role
+        const { data: profileData } = await supabase
+          .from("profiles")
+          .select("role")
+          .eq("id", data.user.id)
+          .single();
+        
+        if (profileData?.role) {
+          setUserRole(profileData.role);
+        }
+        
         await Promise.all([
           fetchPendingInvitations(data.user.id),
           fetchUnreadChatMessages(data.user.id),
-          fetchUnreadMessages(data.user.id)
+          fetchUnreadSchedulerMessages(data.user.id)
         ]);
       }
     });
@@ -149,16 +284,9 @@ export default function Header({ currentPage = "dashboard" }: HeaderProps) {
 
   // Listen for invitation acceptance events
   useEffect(() => {
-    const handleInvitationAccepted = () => {
-      if (user) {
-        fetchPendingInvitations(user.id);
-      }
-    };
-
     const handleMessagesViewed = () => {
       if (user) {
         fetchUnreadChatMessages(user.id);
-        fetchUnreadMessages(user.id);
       }
     };
 
@@ -171,30 +299,53 @@ export default function Header({ currentPage = "dashboard" }: HeaderProps) {
     const handleResponseStatusUpdated = () => {
       if (user) {
         fetchUnreadChatMessages(user.id);
-        fetchUnreadMessages(user.id); // Refresh regular messages count
       }
     };
 
-    const handleRefreshUnreadCount = () => {
+    const handleSchedulerUpdated = () => {
       if (user) {
-        fetchUnreadMessages(user.id);
+        fetchUnreadSchedulerMessages(user.id);
+      }
+    };
+
+    const handleInvitationAccepted = () => {
+      if (user) {
+        fetchUnreadSchedulerMessages(user.id);
+      }
+    };
+
+    const handleInvitationDeclined = () => {
+      if (user) {
+        fetchUnreadSchedulerMessages(user.id);
+      }
+    };
+
+    const handleCareRequestResponded = () => {
+      if (user) {
+        fetchUnreadSchedulerMessages(user.id);
       }
     };
 
     window.addEventListener('invitationAccepted', handleInvitationAccepted);
+    window.addEventListener('invitationDeclined', handleInvitationDeclined);
+    window.addEventListener('careRequestResponded', handleCareRequestResponded);
+    window.addEventListener('groupInvitationUpdated', handleCareRequestResponded); // Use same handler for group invitations
     window.addEventListener('messagesViewed', handleMessagesViewed);
     window.addEventListener('careRequestUpdated', handleCareRequestUpdated);
     window.addEventListener('responseStatusUpdated', handleResponseStatusUpdated);
     window.addEventListener('newMessageSent', handleMessagesViewed); // Refresh when new messages are sent
-    window.addEventListener('refreshUnreadCount', handleRefreshUnreadCount);
+    window.addEventListener('schedulerUpdated', handleSchedulerUpdated); // Refresh when scheduler is updated
 
     return () => {
       window.removeEventListener('invitationAccepted', handleInvitationAccepted);
+      window.removeEventListener('invitationDeclined', handleInvitationDeclined);
+      window.removeEventListener('careRequestResponded', handleCareRequestResponded);
+      window.removeEventListener('groupInvitationUpdated', handleCareRequestResponded);
       window.removeEventListener('messagesViewed', handleMessagesViewed);
       window.removeEventListener('careRequestUpdated', handleCareRequestUpdated);
       window.removeEventListener('responseStatusUpdated', handleResponseStatusUpdated);
       window.removeEventListener('newMessageSent', handleMessagesViewed);
-      window.removeEventListener('refreshUnreadCount', handleRefreshUnreadCount);
+      window.removeEventListener('schedulerUpdated', handleSchedulerUpdated);
     };
   }, [user]);
 
@@ -239,31 +390,7 @@ export default function Header({ currentPage = "dashboard" }: HeaderProps) {
     getUserEmail();
   }, [user]);
 
-  // Set up real-time subscription for messages updates
-  useEffect(() => {
-    if (!user) return;
-    
-    const channel = supabase
-      .channel('header_messages_updates')
-      .on(
-        'postgres_changes',
-        {
-          event: 'INSERT',
-          schema: 'public',
-          table: 'messages',
-          filter: `recipient_id=eq.${user.id}`
-        },
-        (payload) => {
-          // Refresh the count when new messages arrive
-          fetchUnreadMessages(user.id);
-        }
-      )
-      .subscribe();
 
-    return () => {
-      supabase.removeChannel(channel);
-    };
-  }, [user]);
 
   // Set up real-time subscription for care responses updates
   useEffect(() => {
@@ -342,6 +469,34 @@ export default function Header({ currentPage = "dashboard" }: HeaderProps) {
     };
   }, [user]);
 
+  // Listen for localStorage changes to update scheduler unread count
+  useEffect(() => {
+    const handleStorageChange = (e: any) => {
+      if (e.key === 'headerSchedulerUnreadCount' && e.newValue) {
+        setUnreadSchedulerMessages(parseInt(e.newValue));
+      }
+    };
+
+    window.addEventListener('storage', handleStorageChange);
+    return () => {
+      window.removeEventListener('storage', handleStorageChange);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (user) {
+      fetchPendingInvitations(user.id);
+      fetchUnreadChatMessages(user.id);
+      fetchUnreadSchedulerMessages(user.id);
+      
+      // Load scheduler unread count from localStorage
+      const savedSchedulerUnread = localStorage.getItem('headerSchedulerUnreadCount');
+      if (savedSchedulerUnread) {
+        setUnreadSchedulerMessages(parseInt(savedSchedulerUnread));
+      }
+    }
+  }, [user]);
+
   const getButtonClass = (page: string) => {
     const baseClass = "px-6 py-3 rounded-lg transition font-medium shadow-soft";
     const isActive = currentPage === page;
@@ -361,7 +516,7 @@ export default function Header({ currentPage = "dashboard" }: HeaderProps) {
           <h1 className="text-3xl font-bold text-gray-900">SitterApp</h1>
           <div className="flex items-center gap-3">
             <button 
-              onClick={() => router.push('/dashboard')}
+              onClick={() => router.push(userRole === 'tutor' ? '/tutor-dashboard' : '/dashboard')}
               className="px-4 py-2 rounded-lg transition font-medium shadow-soft bg-emerald-500 text-white hover:bg-emerald-600 hover:shadow-medium"
             >
               Profile
@@ -372,17 +527,33 @@ export default function Header({ currentPage = "dashboard" }: HeaderProps) {
         
         {/* Navigation Buttons */}
         <div className="flex flex-wrap gap-4">
+          {/* Messages Button */}
           <button 
-            onClick={() => router.push('/messages')}
-            className={`${getButtonClass('messages')} relative`}
+            onClick={() => router.push('/scheduler')}
+            className={`${getButtonClass('scheduler')} relative`}
           >
             Messages
-            {unreadMessages > 0 && (
+            {unreadSchedulerMessages > 0 && (
               <span className="absolute -top-2 -right-2 bg-red-500 text-white text-xs rounded-full h-6 w-6 flex items-center justify-center font-bold shadow-medium">
-                {unreadMessages}
+                {unreadSchedulerMessages}
               </span>
             )}
           </button>
+
+          {/* Chats Button */}
+          <button 
+            onClick={() => router.push('/chats')}
+            className={`${getButtonClass('chats')} relative`}
+          >
+            Chats
+            {unreadChatMessages > 0 && (
+              <span className="absolute -top-2 -right-2 bg-red-500 text-white text-xs rounded-full h-6 w-6 flex items-center justify-center font-bold shadow-medium">
+                {unreadChatMessages}
+              </span>
+            )}
+          </button>
+
+          {/* Calendar Button */}
           <button 
             onClick={() => router.push('/calendar')}
             className={getButtonClass('calendar')}
@@ -390,28 +561,20 @@ export default function Header({ currentPage = "dashboard" }: HeaderProps) {
             Calendar
           </button>
 
+          {/* Bites Button */}
           <button 
-            onClick={() => router.push('/scheduler')}
-            className={getButtonClass('scheduler')}
+            onClick={() => router.push('/coaching')}
+            className={getButtonClass('coaching')}
           >
-            Scheduler
+            Bites
           </button>
-          <button 
-            onClick={() => router.push('/chats')}
-            className={`${getButtonClass('chats')} relative`}
-          >
-            Chats
-                         {unreadChatMessages > 0 && (
-               <span className="absolute -top-2 -right-2 bg-red-500 text-white text-xs rounded-full h-6 w-6 flex items-center justify-center font-bold shadow-medium">
-                 {unreadChatMessages}
-               </span>
-             )}
-          </button>
+
+          {/* Collective Button */}
           <button 
             onClick={() => router.push('/activities')}
             className={getButtonClass('activities')}
           >
-            Activities
+            Collective
           </button>
         </div>
       </div>

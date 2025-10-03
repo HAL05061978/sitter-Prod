@@ -1,0 +1,303 @@
+'use client';
+
+import { useState, useEffect } from 'react';
+import { supabase } from '../lib/supabase';
+import Link from 'next/link';
+
+export default function Header() {
+  const [user, setUser] = useState<any>(null);
+  const [unreadChatMessages, setUnreadChatMessages] = useState(0);
+  const [unreadSchedulerMessages, setUnreadSchedulerMessages] = useState(0);
+  const [pendingInvitations, setPendingInvitations] = useState(0);
+
+  useEffect(() => {
+    // Get the current user
+    const getUser = async () => {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (user) {
+        setUser(user);
+        fetchUnreadChatMessages(user.id);
+        fetchUnreadSchedulerMessages(user.id);
+        fetchPendingInvitations(user.id);
+      }
+    };
+
+    getUser();
+
+    // Listen for auth state changes
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
+      if (event === 'SIGNED_IN' && session?.user) {
+        setUser(session.user);
+        fetchUnreadChatMessages(session.user.id);
+        fetchUnreadSchedulerMessages(session.user.id);
+        fetchPendingInvitations(session.user.id);
+      } else if (event === 'SIGNED_OUT') {
+        setUser(null);
+        setUnreadChatMessages(0);
+        setUnreadSchedulerMessages(0);
+        setPendingInvitations(0);
+      }
+    });
+
+    return () => subscription.unsubscribe();
+  }, []);
+
+  const fetchUnreadChatMessages = async (userId: string) => {
+    try {
+      // Get unread chat messages count
+      const { data: messages, error } = await supabase
+        .from('chat_messages')
+        .select('id')
+        .eq('recipient_id', userId)
+        .eq('read', false);
+
+      if (error) {
+        console.error('Error fetching unread chat messages:', error);
+        return;
+      }
+
+      setUnreadChatMessages(messages?.length || 0);
+    } catch (error) {
+      console.error('Error in fetchUnreadChatMessages:', error);
+    }
+  };
+
+  const fetchUnreadSchedulerMessages = async (userId: string) => {
+    try {
+      // Get unread scheduler messages count
+      const { data: careRequests, error: careRequestsError } = await supabase.rpc('get_reciprocal_care_requests', {
+        parent_id: userId
+      });
+
+      const { data: invitations, error: invitationsError } = await supabase.rpc('get_open_block_invitations', {
+        p_parent_id: userId
+      });
+
+      if (careRequestsError) {
+        console.error('Error fetching care requests:', careRequestsError);
+      }
+
+      if (invitationsError) {
+        console.error('Error fetching invitations:', invitationsError);
+      }
+
+      let unreadCount = 0;
+
+      // Count pending care requests
+      if (careRequests) {
+        const pendingCareRequests = careRequests.filter((req: any) => req.status === 'pending');
+        unreadCount += pendingCareRequests.length;
+      }
+
+      // Count pending invitations
+      if (invitations) {
+        const pendingInvitations = invitations.filter((inv: any) => inv.status === 'pending');
+        unreadCount += pendingInvitations.length;
+      }
+
+      setUnreadSchedulerMessages(unreadCount);
+    } catch (error) {
+      console.error('Error in fetchUnreadSchedulerMessages:', error);
+    }
+  };
+
+  const fetchPendingInvitations = async (userId: string) => {
+    try {
+      // Get pending group invitations count
+      const { data: invitations, error } = await supabase
+        .from('group_invites')
+        .select('id')
+        .eq('email', user?.email)
+        .eq('status', 'pending');
+
+      if (error) {
+        console.error('Error fetching pending invitations:', error);
+        return;
+      }
+
+      setPendingInvitations(invitations?.length || 0);
+    } catch (error) {
+      console.error('Error in fetchPendingInvitations:', error);
+    }
+  };
+
+  useEffect(() => {
+    // Listen for new messages
+    const handleNewMessage = () => {
+      if (user) {
+        fetchUnreadChatMessages(user.id);
+      }
+    };
+
+    // Listen for messages being viewed
+    const handleMessagesViewed = () => {
+      if (user) {
+        fetchUnreadChatMessages(user.id);
+      }
+    };
+
+    // Listen for care request updates
+    const handleCareRequestUpdated = () => {
+      if (user) {
+        fetchPendingScheduleItems(user.id);
+      }
+    };
+
+    // Listen for response status updates
+    const handleResponseStatusUpdated = () => {
+      if (user) {
+        fetchUnreadChatMessages(user.id);
+      }
+    };
+
+    // Listen for scheduler updates
+    const handleSchedulerUpdated = () => {
+      if (user) {
+        fetchUnreadSchedulerMessages(user.id);
+      }
+    };
+
+    window.addEventListener('newMessageSent', handleNewMessage);
+    window.addEventListener('messagesViewed', handleMessagesViewed);
+    window.addEventListener('careRequestUpdated', handleCareRequestUpdated);
+    window.addEventListener('responseStatusUpdated', handleResponseStatusUpdated);
+    window.addEventListener('newMessageSent', handleMessagesViewed); // Refresh when new messages are sent
+    window.addEventListener('schedulerUpdated', handleSchedulerUpdated); // Refresh when scheduler is updated
+
+    return () => {
+      window.removeEventListener('newMessageSent', handleNewMessage);
+      window.removeEventListener('messagesViewed', handleMessagesViewed);
+      window.removeEventListener('careRequestUpdated', handleCareRequestUpdated);
+      window.removeEventListener('responseStatusUpdated', handleResponseStatusUpdated);
+      window.removeEventListener('newMessageSent', handleMessagesViewed);
+      window.removeEventListener('schedulerUpdated', handleSchedulerUpdated);
+    };
+  }, [user]);
+
+  // Set up real-time subscription for invitation updates
+  useEffect(() => {
+    if (!user) return;
+    
+    // Get the user's email from profile for the filter
+    const getUserEmail = async () => {
+      const { data: profileData } = await supabase
+        .from("profiles")
+        .select("email")
+        .eq("id", user.id)
+        .single();
+      
+      if (profileData?.email) {
+        const userEmail = profileData.email.toLowerCase();
+        
+        const channel = supabase
+          .channel('header_invitation_updates')
+          .on(
+            'postgres_changes',
+            {
+              event: '*',
+              schema: 'public',
+              table: 'group_invites',
+              filter: `email=eq.${userEmail}`
+            },
+            (payload) => {
+              // Refresh the count when invitations change
+              fetchPendingInvitations(user.id);
+            }
+          )
+          .subscribe();
+
+        return () => {
+          supabase.removeChannel(channel);
+        };
+      }
+    };
+
+    getUserEmail();
+  }, [user]);
+
+  const fetchPendingScheduleItems = async (userId: string) => {
+    // This function was removed as it's no longer needed
+    // The scheduler messages count is now handled by fetchUnreadSchedulerMessages
+  };
+
+  if (!user) {
+    return (
+      <header className="bg-white shadow-sm border-b">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+          <div className="flex justify-between items-center h-16">
+            <div className="flex items-center">
+              <h1 className="text-xl font-semibold text-gray-900">SitterApp</h1>
+            </div>
+            <div className="flex items-center space-x-4">
+              <Link href="/auth" className="text-gray-600 hover:text-gray-900">
+                Sign In
+              </Link>
+            </div>
+          </div>
+        </div>
+      </header>
+    );
+  }
+
+  return (
+    <header className="bg-white shadow-sm border-b">
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div className="flex justify-between items-center h-16">
+          <div className="flex items-center space-x-8">
+            <h1 className="text-xl font-semibold text-gray-900">SitterApp</h1>
+            <nav className="flex space-x-4">
+              <Link href="/dashboard" className="text-gray-600 hover:text-gray-900 px-3 py-2 rounded-md text-sm font-medium">
+                Dashboard
+              </Link>
+              <Link href="/calendar" className="text-gray-600 hover:text-gray-900 px-3 py-2 rounded-md text-sm font-medium">
+                Calendar
+              </Link>
+              <Link href="/scheduler" className="text-gray-600 hover:text-gray-900 px-3 py-2 rounded-md text-sm font-medium relative">
+                Messages
+                {unreadSchedulerMessages > 0 && (
+                  <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs rounded-full h-5 w-5 flex items-center justify-center">
+                    {unreadSchedulerMessages}
+                  </span>
+                )}
+              </Link>
+              <Link href="/chats" className="text-gray-600 hover:text-gray-900 px-3 py-2 rounded-md text-sm font-medium relative">
+                Chats
+                {unreadChatMessages > 0 && (
+                  <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs rounded-full h-5 w-5 flex items-center justify-center">
+                    {unreadChatMessages}
+                  </span>
+                )}
+              </Link>
+              <Link href="/activities" className="text-gray-600 hover:text-gray-900 px-3 py-2 rounded-md text-sm font-medium">
+                Activities
+              </Link>
+              <Link href="/business" className="text-gray-600 hover:text-gray-900 px-3 py-2 rounded-md text-sm font-medium">
+                Business
+              </Link>
+              <Link href="/coaching" className="text-gray-600 hover:text-gray-900 px-3 py-2 rounded-md text-sm font-medium">
+                Coaching
+              </Link>
+              <Link href="/marketplace" className="text-gray-600 hover:text-gray-900 px-3 py-2 rounded-md text-sm font-medium">
+                Marketplace
+              </Link>
+              <Link href="/children" className="text-gray-600 hover:text-gray-900 px-3 py-2 rounded-md text-sm font-medium">
+                Children
+              </Link>
+              <Link href="/onboarding/profile" className="text-gray-600 hover:text-gray-900 px-3 py-2 rounded-md text-sm font-medium">
+                Profile
+              </Link>
+            </nav>
+          </div>
+          <div className="flex items-center space-x-4">
+            <Link href="/signup" className="text-gray-600 hover:text-gray-900 px-3 py-2 rounded-md text-sm font-medium">
+              Sign Up
+            </Link>
+            <Link href="/auth" className="text-gray-600 hover:text-gray-900 px-3 py-2 rounded-md text-sm font-medium">
+              Sign In
+            </Link>
+          </div>
+        </div>
+      </div>
+    </header>
+  );
+}

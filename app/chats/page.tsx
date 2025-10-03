@@ -175,7 +175,7 @@ export default function ChatsPage() {
       // Store the unread counts for display
       setUnreadCounts(unreadCounts);
     } catch (error) {
-      console.error('Error checking groups with unread messages:', error);
+      // Error checking groups with unread messages
     }
   };
 
@@ -192,7 +192,7 @@ export default function ChatsPage() {
       .order("created_at", { ascending: true });
     
     if (error) {
-      console.error("Error loading chat messages:", error);
+      // Error loading chat messages
       return;
     }
     
@@ -229,7 +229,7 @@ export default function ChatsPage() {
       }]);
     
     if (error) {
-      console.error("Error sending message:", error);
+      // Error sending message
       alert("Failed to send message. Please try again.");
     } else {
       setNewMessage("");
@@ -282,7 +282,6 @@ export default function ChatsPage() {
           filter: `group_id=eq.${group.id}`
         }, 
         (payload) => {
-          console.log('New message received:', payload);
           const newMessage = payload.new as ChatMessage;
           setChatMessages(prev => [...prev, newMessage]);
           
@@ -341,13 +340,13 @@ export default function ChatsPage() {
         });
 
       if (error) {
-        console.error("Error marking messages as viewed:", error);
+        // Error marking messages as viewed
       } else {
         // Trigger a refresh of the header notification count
         window.dispatchEvent(new CustomEvent('messagesViewed'));
       }
     } catch (error) {
-      console.error("Error marking messages as viewed:", error);
+      // Error marking messages as viewed
     }
   };
 
@@ -463,7 +462,7 @@ export default function ChatsPage() {
                           <input
                             type="text"
                             value={newMessage}
-                            onChange={(e) => setNewMessage(e.target.value)}
+                            onChange={(e: React.ChangeEvent<HTMLInputElement>) => setNewMessage(e.target.value)}
                             placeholder="Type your message..."
                             className="flex-1 px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
                             disabled={sendingMessage}

@@ -48,6 +48,14 @@ export default function OpenBlockInvitationCard({
     });
   };
 
+  // Utility function to extract actual end time from notes for next-day care
+  const getActualEndTime = (notes: string, fallbackEndTime: string): string => {
+    if (!notes) return fallbackEndTime;
+    
+    const match = notes.match(/\[Next-day care: Actual end time is ([0-9]{2}:[0-9]{2})\]/);
+    return match ? match[1] : fallbackEndTime;
+  };
+
   return (
     <Card className="w-full hover:shadow-md transition-shadow">
       <CardHeader className="pb-3">
@@ -95,7 +103,7 @@ export default function OpenBlockInvitationCard({
             <div className="flex items-center gap-2">
               <Clock className="h-4 w-4 text-gray-500" />
               <span className="text-sm">
-                <span className="font-medium">Time:</span> {formatTime(invitation.existing_block_start_time)} - {formatTime(invitation.existing_block_end_time)}
+                <span className="font-medium">Time:</span> {formatTime(invitation.existing_block_start_time)} - {formatTime(getActualEndTime(invitation.notes || '', invitation.existing_block_end_time))}
               </span>
             </div>
           </div>

@@ -4,9 +4,24 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
+    "dev:prod": "set NODE_ENV=production && next dev",
     "build": "next build",
+    "build:prod": "set NODE_ENV=production && next build",
     "start": "next start",
-    "lint": "next lint"
+    "start:prod": "set NODE_ENV=production && next start",
+    "lint": "next lint",
+    "lint:fix": "next lint --fix",
+    "setup": "setup.bat",
+    "setup:env": "scripts\\setup-environments.bat",
+    "deploy:prod": "scripts\\deploy-production.bat",
+    "deploy:functions": "supabase functions deploy --project-ref $SUPABASE_PROJECT_REF",
+    "deploy:db": "supabase db push --project-ref $SUPABASE_PROJECT_REF",
+    "db:sync": "chmod +x scripts/sync-database.sh && ./scripts/sync-database.sh",
+    "setup:db": "powershell -ExecutionPolicy Bypass -File run-production-setup.ps1",
+    "test": "echo 'No tests configured yet'",
+    "test:notifications": "echo 'Testing notification system...' && npm run dev",
+    "clean": "if exist .next rmdir /s /q .next && if exist node_modules\\.cache rmdir /s /q node_modules\\.cache",
+    "type-check": "tsc --noEmit"
   },
   "dependencies": {
     "@supabase/auth-ui-react": "^0.4.7",
@@ -30,7 +45,7 @@
     "@types/react-dom": "^18.2.18",
     "encoding": "^0.1.13",
     "eslint": "^8",
-    "eslint-config-next": "^14.0.0"
+    "eslint-config-next": "^14.0.0",
+    "supabase": "^2.34.3"
   }
 }
-
