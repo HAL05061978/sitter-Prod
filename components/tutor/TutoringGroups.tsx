@@ -171,11 +171,11 @@ export default function TutoringGroups({ tutorId }: { tutorId: string }) {
               </label>
               <div className="grid grid-cols-2 gap-2 max-h-40 overflow-y-auto border border-gray-200 rounded-md p-3">
                 {students.map((student) => (
-                  <label key={student.id} className="flex items-center space-x-2">
+                  <label key={student.student_id} className="flex items-center space-x-2">
                     <input
                       type="checkbox"
-                      checked={formData.selectedStudentIds.includes(student.id)}
-                      onChange={() => handleStudentToggle(student.id)}
+                      checked={formData.selectedStudentIds.includes(student.student_id)}
+                      onChange={() => handleStudentToggle(student.student_id)}
                       className="rounded border-gray-300 text-blue-600"
                     />
                     <span className="text-sm">
@@ -224,10 +224,10 @@ export default function TutoringGroups({ tutorId }: { tutorId: string }) {
                     </span>
                     <div className="mt-2 flex flex-wrap gap-2">
                       {students
-                        .filter(student => group.student_ids.includes(student.id))
+                        .filter(student => group.student_ids.includes(student.student_id))
                         .map(student => (
                           <span
-                            key={student.id}
+                            key={student.student_id}
                             className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800"
                           >
                             {student.first_name} {student.last_name}

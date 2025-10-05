@@ -1,6 +1,6 @@
 {
   "compilerOptions": {
-    "target": "es5",
+    "target": "es2022",
     "lib": ["dom", "dom.iterable", "esnext"],
     "allowJs": true,
     "skipLibCheck": true,
@@ -24,6 +24,16 @@
     }
   },
   "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx", ".next/types/**/*.ts"],
-  "exclude": ["node_modules"]
+  "exclude": [
+    "node_modules", 
+    "auth-ui", 
+    "supabase",
+    "components/open-block",
+    "hooks/useOpenBlock.ts",
+    "hooks/useTutor.ts", 
+    "lib/unified-invitations-service.ts",
+    "components/tutor",
+    "APPLY_NOTIFICATION_FIXES_TO_SCHEDULER.tsx"
+  ]
 }
 

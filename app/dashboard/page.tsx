@@ -113,7 +113,7 @@ export default function ClientDashboard() {
   // State for popup
   const [showPopup, setShowPopup] = useState(false);
   const [popupData, setPopupData] = useState<CareBlock[]>([]);
-  const [popupType, setPopupType] = useState<'receiving' | 'providing' | 'event'>('receiving');
+  const [popupType, setPopupType] = useState<'receiving' | 'providing' | 'event' | 'total'>('receiving');
   const [popupTitle, setPopupTitle] = useState('');
   
   // State for reschedule modal
@@ -333,11 +333,17 @@ export default function ClientDashboard() {
           `)
           .eq('group_id', block.group_id);
         
-        const childrenNames = (groupChildren || []).map(gc => gc.children?.full_name).filter(Boolean);
-        const childrenData = (groupChildren || []).map(gc => ({
-          id: gc.children?.id,
-          full_name: gc.children?.full_name
-        })).filter(c => c.id && c.full_name);
+        const childrenNames = (groupChildren || []).map(gc => {
+          const child = Array.isArray(gc.children) ? gc.children[0] : gc.children;
+          return child?.full_name;
+        }).filter(Boolean);
+        const childrenData = (groupChildren || []).map(gc => {
+          const child = Array.isArray(gc.children) ? gc.children[0] : gc.children;
+          return child ? {
+            id: String(child.id),
+            full_name: String(child.full_name)
+          } : null;
+        }).filter((c): c is { id: string; full_name: string } => c !== null);
         
         // For receiving care, find who is providing care
         let parentProviding = 'Unknown';
@@ -514,7 +520,10 @@ export default function ClientDashboard() {
           `)
           .eq('group_id', block.group_id);
         
-        const childrenNames = (groupChildren || []).map(gc => gc.children?.full_name).filter(Boolean);
+        const childrenNames = (groupChildren || []).map(gc => {
+          const child = Array.isArray(gc.children) ? gc.children[0] : gc.children;
+          return child?.full_name;
+        }).filter(Boolean);
         
         // Determine parent providing care based on care type
         let parentProviding = 'Unknown';
@@ -605,6 +614,8 @@ export default function ClientDashboard() {
           status: block.status,
           type: block.care_type === 'needed' ? 'receiving' : 
                 block.care_type === 'provided' ? 'providing' : 'event',
+          group_id: block.group_id,
+          related_request_id: block.related_request_id,
           group_name: block.groups?.name || 'No Group',
           parent_providing: parentProviding,
           child_participating: childrenNames.join(', ') || 'No Children',
@@ -641,7 +652,13 @@ export default function ClientDashboard() {
         return [];
       }
       
-      return (careChildren || []).map(cc => cc.children).filter(Boolean);
+      return (careChildren || []).map(cc => {
+        const child = Array.isArray(cc.children) ? cc.children[0] : cc.children;
+        return child ? {
+          id: String(child.id),
+          full_name: String(child.full_name)
+        } : null;
+      }).filter((child): child is { id: string; full_name: string } => child !== null);
     } catch (error) {
       console.error('Error in getChildrenForCareBlock:', error);
       return [];

@@ -62,260 +62,11 @@ interface Child {
 
 
 
-// Open Block Invitations Section Component
-function OpenBlockInvitationsSection() {
-  const [invitations, setInvitations] = useState<any[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [acceptingInvitation, setAcceptingInvitation] = useState<any>(null);
-  const [availableChildren, setAvailableChildren] = useState<Array<{ id: string; full_name: string }>>([]);
-  const [processing, setProcessing] = useState(false);
-  const [expandedInvitations, setExpandedInvitations] = useState<Set<string>>(new Set());
-
-  const toggleExpanded = (invitationId: string) => {
-    const newExpanded = new Set(expandedInvitations);
-    if (newExpanded.has(invitationId)) {
-      newExpanded.delete(invitationId);
-    } else {
-      newExpanded.delete(invitationId);
-      newExpanded.add(invitationId);
-    }
-    setExpandedInvitations(newExpanded);
-  };
-
-  useEffect(() => {
-    fetchOpenBlockInvitations();
-  }, []);
-
-  const fetchOpenBlockInvitations = async () => {
-    try {
-      setLoading(true);
-      
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) {
-        // User not authenticated
-        return;
-      }
-
-      // Call the Supabase function to get open block invitations
-      const { data, error } = await supabase.rpc('get_open_block_invitations', {
-        p_parent_id: user.id
-      });
-
-      if (error) {
-        // Error fetching invitations
-        return;
-      }
-
-      setInvitations(data || []);
-    } catch (error) {
-      // Error fetching invitations
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleAccept = async (invitation: any) => {
-    try {
-      // Fetch available children for the current user
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) throw new Error('User not authenticated');
-
-      // Get active children from child_group_members using parent_id (not profile_id)
-      const { data: childrenData, error: childrenError } = await supabase
-        .from('child_group_members')
-        .select(`
-          child_id,
-          children!inner(id, full_name, parent_id)
-        `)
-        .eq('parent_id', user.id)  // Use parent_id, not profile_id
-        .eq('active', true);  // Filter by active status in child_group_members
-
-      if (childrenError) throw childrenError;
-
-      // Transform the nested data structure to match the expected format
-      const transformedChildren: Array<{id: string, full_name: string}> = [];
-      
-      if (childrenData) {
-        childrenData.forEach(item => {
-          if (item.children && Array.isArray(item.children) && item.children[0]?.id) {
-            transformedChildren.push({
-              id: item.children[0].id,
-              full_name: item.children[0].full_name
-            });
-          }
-        });
-      }
-
-      // Auto-select the first (or only) child
-      if (transformedChildren.length > 0) {
-        const activeChild = transformedChildren[0]; // Get the first child
-        
-        // Set available children first
-        setAvailableChildren(transformedChildren);
-        
-        // Auto-accept with the active child (don't set acceptingInvitation to avoid showing UI)
-        await handleAcceptanceSubmit(invitation, activeChild.id);
-        return; // Exit early, no need to show selection UI
-      }
-
-      // Fallback: show selection if no children found
-      setAvailableChildren(transformedChildren);
-      setAcceptingInvitation(invitation);
-    } catch (error) {
-      showAlertOnce('Error preparing acceptance. Please try again.');
-    }
-  };
-
-
-  if (loading) {
-    return (
-      <div className="text-center py-8">
-        <div className="animate-spulse">
-          <div className="h-8 bg-gray-200 rounded w-48 mx-auto mb-4"></div>
-          <p className="text-gray-600">Loading open block invitations...</p>
-        </div>
-      </div>
-    );
-  }
-
-  if (acceptingInvitation) {
-    return (
-      <div className="border rounded-lg p-4 bg-blue-50">
-        <h4 className="font-medium text-blue-900 mb-3">Accept Open Block Invitation</h4>
-        <p className="text-sm text-blue-700 mb-4">
-          You're accepting an invitation to join {acceptingInvitation.open_block_parent_name}'s care block
-        </p>
-        
-        <div className="space-y-3">
-          <label className="block text-sm font-medium text-gray-700">Select Child to Join Care Block</label>
-          <select 
-            onChange={(e) => {
-              if (e.target.value) {
-                handleAcceptanceSubmit(acceptingInvitation, e.target.value);
-              }
-            }}
-            className="w-full px-3 py-2 border border-gray-300 rounded-md"
-            disabled={processing}
-          >
-            <option value="">Select a child...</option>
-            {availableChildren.map((child) => (
-              <option key={child.id} value={child.id}>
-                {child.full_name}
-              </option>
-            ))}
-          </select>
-          
-          <div className="flex gap-3">
-            <button
-              onClick={() => setAcceptingInvitation(null)}
-              className="px-4 py-2 border border-gray-300 text-gray-700 rounded hover:bg-gray-50"
-              disabled={processing}
-            >
-              Cancel
-            </button>
-            <button
-              onClick={() => setAcceptingInvitation(null)}
-              className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
-              disabled={processing}
-            >
-              {processing ? 'Processing...' : 'Accept Invitation'}
-            </button>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  if (invitations.length === 0) {
-    return (
-      <div className="text-center py-6 bg-gray-50 rounded-lg">
-        <p className="text-gray-500">No pending open block invitations at the moment.</p>
-      </div>
-    );
-  }
-
-  return (
-    <div className="space-y-3">
-      {invitations.map((invitation) => (
-        <div key={invitation.invitation_id || `invitation-${invitation.care_response_id}`} className="border border-gray-200 rounded-lg overflow-hidden">
-          {/* Header - Always Visible */}
-          <div 
-            className="p-4 bg-gray-50 hover:bg-gray-100 cursor-pointer transition-colors"
-            onClick={() => toggleExpanded(invitation.invitation_id || `invitation-${invitation.care_response_id}`)}
-          >
-            <div className="flex items-center justify-between">
-              <div className="flex-1">
-                <h4 className="font-medium text-gray-900">
-                  {invitation.open_block_parent_name} is inviting you to join their care block
-                </h4>
-                <p className="text-sm text-gray-600">
-                  Reciprocal care: {
-                    invitation.reciprocal_date && invitation.reciprocal_start_time && invitation.reciprocal_end_time
-                      ? `${formatDateOnly(invitation.reciprocal_date)} from ${invitation.reciprocal_start_time} to ${invitation.reciprocal_end_time}`
-                      : 'Details will be available after acceptance'
-                  }
-                </p>
-                <p className="text-sm text-gray-500 mt-1">
-                  Group: {invitation.group_name} • {formatDateOnly(invitation.created_at)}
-                </p>
-              </div>
-              <div className="flex items-center space-x-2">
-                <span className="px-2 py-1 text-xs rounded-full bg-yellow-100 text-yellow-800">
-                  {invitation.status}
-                </span>
-                <svg 
-                  className={`w-5 h-5 text-gray-400 transition-transform ${
-                    expandedInvitations.has(invitation.invitation_id || `invitation-${invitation.care_response_id}`) ? 'rotate-180' : ''
-                  }`} 
-                  fill="none" 
-                  stroke="currentColor" 
-                  viewBox="0 0 24 24"
-                >
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-                </svg>
-              </div>
-            </div>
-          </div>
-
-          {/* Expandable Content */}
-          {expandedInvitations.has(invitation.invitation_id || `invitation-${invitation.care_response_id}`) && (
-            <div className="p-4 bg-white border-t border-gray-200">
-              <div className="space-y-3">
-                {invitation.notes && (
-                  <p className="text-sm text-gray-600">
-                    <strong>Notes:</strong> {invitation.notes}
-                  </p>
-                )}
-                {invitation.status === 'pending' && (
-                  <div className="flex gap-2">
-                    <button
-                      onClick={() => handleAccept(invitation)}
-                      disabled={processing}
-                      className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 disabled:bg-gray-400 transition-colors"
-                    >
-                      Accept Invitation
-                    </button>
-                    <button
-                      onClick={() => handleDecline(invitation)}
-                      disabled={processing}
-                      className="px-4 py-2 bg-red-600 text-white rounded hover:bg-red-700 disabled:bg-gray-400 transition-colors"
-                    >
-                      Decline Invitation
-                    </button>
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
-        </div>
-      ))}
-    </div>
-  );
-}
 
 // RescheduleRequestsSection component removed - reschedule requests are now integrated into UnifiedMessagesInbox
 
 export default function SchedulerPage() {
+  console.log('🚀 SCHEDULER PAGE LOADED - NEW VERSION WITH FIXES!');
   const [user, setUser] = useState<User | null>(null);
   const [careRequests, setCareRequests] = useState<CareRequest[]>([]);
   const [careResponses, setCareResponses] = useState<CareResponse[]>([]);
@@ -334,7 +85,7 @@ export default function SchedulerPage() {
   // Reschedule requests state (integrated into unified system)
   const [rescheduleRequests, setRescheduleRequests] = useState<any[]>([]);
   const [processingReschedule, setProcessingReschedule] = useState(false);
-  
+
   // Group invitations state
   const [groupInvitations, setGroupInvitations] = useState<any[]>([]);
   
@@ -350,6 +101,187 @@ export default function SchedulerPage() {
   // Alert cooldown system to prevent duplicate notifications
   let lastAlertTime = 0;
   const ALERT_COOLDOWN = 2000; // 2 seconds
+
+  // Helper function to prevent duplicate alerts
+  const showAlertOnce = (message: string) => {
+    console.log('🔍 DEBUG: showAlertOnce called with message:', message);
+    const now = Date.now();
+    console.log('🔍 DEBUG: Time since last alert:', now - lastAlertTime, 'Cooldown:', ALERT_COOLDOWN);
+    
+    // Always show success messages, bypass cooldown for important messages
+    const isSuccessMessage = message.includes('successfully') || message.includes('accepted') || message.includes('created');
+    console.log('🔍 DEBUG: Is success message?', isSuccessMessage);
+    
+    // Temporarily disable cooldown to ensure success messages show
+    if (true) { // Always show alerts for now
+      console.log('🔍 DEBUG: Showing alert:', message);
+      alert(message);
+      lastAlertTime = now;
+    } else {
+      console.log('🔍 DEBUG: Alert blocked by cooldown');
+    }
+  };
+
+  // Function to handle acceptance submission
+  const handleAcceptanceSubmit = async (invitation?: any, childId?: string) => {
+    // Use passed invitation or fall back to acceptingInvitation state
+    const targetInvitation = invitation || acceptingInvitation;
+    
+    if (!targetInvitation) {
+      // No invitation provided
+      return;
+    }
+    
+    try {
+      setProcessing(true);
+      
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) throw new Error('User not authenticated');
+
+      // Log the exact parameters being sent to the function
+      const functionParams = {
+        p_care_response_id: targetInvitation.care_response_id,
+        p_accepting_parent_id: user.id,
+        p_accepted_child_id: childId || (availableChildren && availableChildren.length > 0 ? availableChildren[0].id : null)
+      };
+
+      console.log('🔍 DEBUG: Calling accept_open_block_invitation with params:', functionParams);
+      console.log('🔍 DEBUG: Target invitation data:', targetInvitation);
+      
+      const { error } = await supabase.rpc('accept_open_block_invitation', functionParams);
+      
+      console.log('🔍 DEBUG: RPC call result - error:', error);
+
+      if (!childId && (!availableChildren || availableChildren.length === 0)) {
+        throw new Error('No child selected and no children available');
+      }
+
+      if (error) throw error;
+
+      console.log('🔍 DEBUG: RPC call succeeded! Proceeding with success flow...');
+
+      // Success! Refresh the invitations list
+      console.log('🔍 DEBUG: Refreshing invitations list...');
+      await fetchOpenBlockInvitations();
+      setAcceptingInvitation(null);
+      
+      console.log('🔍 DEBUG: Dispatching invitationAccepted event...');
+      // Dispatch event to update header counter
+      window.dispatchEvent(new CustomEvent('invitationAccepted'));
+      
+      console.log('🔍 DEBUG: Creating acceptance messages...');
+      // Create confirmation messages for both parties
+      await createOpenBlockAcceptanceMessages(targetInvitation, user.id);
+      
+      console.log('🔍 DEBUG: Showing success alert...');
+      showAlertOnce('Invitation accepted successfully! Your child has been added to the care block.');
+      console.log('🔍 DEBUG: Success flow completed!');
+    } catch (error) {
+      console.error('Error in handleAcceptanceSubmit:', error);
+      showAlertOnce('Error accepting invitation. Please try again.');
+    } finally {
+      setProcessing(false);
+    }
+  };
+
+  const handleDecline = async (invitation: any) => {
+    if (!confirm('Are you sure you want to decline this invitation?')) return;
+
+    try {
+      setProcessing(true);
+      
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) throw new Error('User not authenticated');
+
+      const { error } = await supabase.rpc('decline_open_block_invitation', {
+        p_care_response_id: invitation.care_response_id,
+        p_declining_parent_id: user.id
+      });
+
+      if (error) throw error;
+
+      // Refresh the invitations list
+      await fetchOpenBlockInvitations();
+      
+      // Dispatch event to update header counter
+      window.dispatchEvent(new CustomEvent('invitationDeclined'));
+      
+      showAlertOnce('Invitation declined successfully.');
+    } catch (error) {
+      showAlertOnce('Error declining invitation. Please try again.');
+    } finally {
+      setProcessing(false);
+    }
+  };
+
+  const handleAccept = async (invitation: any) => {
+    console.log('🔍 DEBUG: handleAccept called with invitation:', invitation);
+    try {
+      console.log('🔍 DEBUG: Starting handleAccept process...');
+      // Fetch available children for the current user
+      const { data: { user } } = await supabase.auth.getUser();
+      console.log('🔍 DEBUG: Got user:', user?.id);
+      if (!user) throw new Error('User not authenticated');
+
+      // Get active children from child_group_members using parent_id (not profile_id)
+      console.log('🔍 DEBUG: Fetching children for user:', user.id);
+      const { data: childrenData, error: childrenError } = await supabase
+        .from('child_group_members')
+        .select(`
+          child_id,
+          children!inner(id, full_name, parent_id)
+        `)
+        .eq('parent_id', user.id)  // Use parent_id, not profile_id
+        .eq('active', true);  // Filter by active status in child_group_members
+
+      console.log('🔍 DEBUG: Children query result:', { childrenData, childrenError });
+      if (childrenError) throw childrenError;
+
+      // Transform the nested data structure to match the expected format
+      const transformedChildren: Array<{id: string, full_name: string}> = [];
+      console.log('🔍 DEBUG: Processing children data...');
+      
+      if (childrenData) {
+        childrenData.forEach(item => {
+          console.log('🔍 DEBUG: Processing child item:', item);
+          console.log('🔍 DEBUG: item.children type:', typeof item.children);
+          console.log('🔍 DEBUG: item.children is array:', Array.isArray(item.children));
+          console.log('🔍 DEBUG: item.children value:', item.children);
+          
+          // Check if children is an object (not array) - this is the actual structure
+          if (item.children && typeof item.children === 'object' && !Array.isArray(item.children) && (item.children as any).id) {
+            console.log('🔍 DEBUG: Found child object:', item.children);
+            transformedChildren.push({
+              id: (item.children as any).id,
+              full_name: (item.children as any).full_name
+            });
+          }
+        });
+      }
+      
+      console.log('🔍 DEBUG: Transformed children:', transformedChildren);
+
+      // Auto-select the first (or only) child
+      if (transformedChildren.length > 0) {
+        const activeChild = transformedChildren[0]; // Get the first child
+        
+        // Set available children first
+        setAvailableChildren(transformedChildren);
+        
+        // Auto-accept with the active child (don't set acceptingInvitation to avoid showing UI)
+        console.log('🔍 DEBUG: Auto-accepting invitation:', invitation);
+        console.log('🔍 DEBUG: Active child:', activeChild);
+        await handleAcceptanceSubmit(invitation, activeChild.id);
+        return; // Exit early, no need to show selection UI
+      }
+
+      // Fallback: show selection if no children found
+      setAvailableChildren(transformedChildren);
+      setAcceptingInvitation(invitation);
+    } catch (error) {
+      showAlertOnce('Error preparing acceptance. Please try again.');
+    }
+  };
   
   // Form state for new care request
   const [showNewRequestForm, setShowNewRequestForm] = useState(false);
@@ -640,7 +572,7 @@ export default function SchedulerPage() {
       // Add one message per request that has responses
       requestResponseMap.forEach(({ request, responses }) => {
         const responseCount = responses.length;
-        const latestResponse = responses.sort((a, b) => 
+        const latestResponse = responses.sort((a: any, b: any) =>
           new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
         )[0];
 
@@ -875,7 +807,10 @@ export default function SchedulerPage() {
                           {invitation.status === 'pending' && (
                             <div className="flex gap-2 ml-4">
                               <button
-                                onClick={() => handleAccept(invitation)}
+                                onClick={() => {
+                                  console.log('🔍 DEBUG: Accept button clicked for invitation:', invitation);
+                                  handleAccept(invitation);
+                                }}
                                 disabled={processing}
                                 className="px-3 py-1 bg-green-600 text-white text-sm rounded hover:bg-green-700 disabled:bg-gray-400"
                               >
@@ -1101,7 +1036,7 @@ export default function SchedulerPage() {
         return;
       }
       
-      const userGroups = groupsData.map(item => ({
+      const userGroups = groupsData.map((item: any) => ({
         id: item.groups.id,
         name: item.groups.name
       }));
@@ -1221,11 +1156,11 @@ export default function SchedulerPage() {
         return;
       }
 
-       const groupChildren = data.map(item => ({
-         id: item.children?.id,
-         name: item.children?.full_name,
-         group_id: item.group_id
-       }));
+        const groupChildren = data.map((item: any) => ({
+          id: item.children?.id,
+          name: item.children?.full_name,
+          group_id: item.group_id
+        }));
 
        setChildren(groupChildren);
     } catch (err) {
@@ -1458,14 +1393,6 @@ export default function SchedulerPage() {
     }
   };
 
-  // Helper function to prevent duplicate alerts
-  const showAlertOnce = (message: string) => {
-    const now = Date.now();
-    if (now - lastAlertTime > ALERT_COOLDOWN) {
-      alert(message);
-      lastAlertTime = now;
-    }
-  };
 
   const resetNewRequestForm = () => {
     setNewRequest({
@@ -1480,141 +1407,8 @@ export default function SchedulerPage() {
     setShowNewRequestForm(false);
   };
 
-  // Open block invitation handlers
-  const handleAccept = async (invitation: any) => {
-    try {
-      // Fetch available children for the current user
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) throw new Error('User not authenticated');
 
-      // Get active children from child_group_members using parent_id (not profile_id)
-      const { data: childrenData, error: childrenError } = await supabase
-        .from('child_group_members')
-        .select(`
-          child_id,
-          children!inner(id, full_name, parent_id)
-        `)
-        .eq('parent_id', user.id)  // Use parent_id, not profile_id
-        .eq('active', true);  // Filter by active status in child_group_members
 
-      if (childrenError) throw childrenError;
-
-      // Transform the nested data structure to match the expected format
-      const transformedChildren: Array<{id: string, full_name: string}> = [];
-      
-      if (childrenData) {
-        childrenData.forEach(item => {
-          if (item.children && item.children.id) {
-            transformedChildren.push({
-              id: item.children.id,
-              full_name: item.children.full_name
-            });
-          }
-        });
-      }
-
-      // Auto-select the first (or only) child
-      if (transformedChildren.length > 0) {
-        const activeChild = transformedChildren[0]; // Get the first child
-        
-        console.log('🔍 DEBUG: Found children, auto-accepting with:', activeChild);
-        
-        // Auto-accept with the active child
-        await handleAcceptanceSubmit(invitation, activeChild.id);
-        return; // Exit early, no need to show selection UI
-      }
-      
-      console.log('🔍 DEBUG: No children found, transformedChildren:', transformedChildren);
-
-      // Fallback: show selection if no children found
-      setAvailableChildren(transformedChildren);
-      setAcceptingInvitation(invitation);
-    } catch (error) {
-      showAlertOnce('Error preparing acceptance. Please try again.');
-    }
-  };
-
-  const handleAcceptanceSubmit = async (invitation?: any, childId?: string) => {
-    // Use passed invitation or fall back to acceptingInvitation state
-    const targetInvitation = invitation || acceptingInvitation;
-    
-    if (!targetInvitation) {
-      // No invitation provided
-      return;
-    }
-    
-    try {
-      setProcessing(true);
-      
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) throw new Error('User not authenticated');
-
-      // Log the exact parameters being sent to the function
-      const functionParams = {
-        p_care_response_id: targetInvitation.care_response_id,
-        p_accepting_parent_id: user.id,
-        p_accepted_child_id: childId || (availableChildren && availableChildren.length > 0 ? availableChildren[0].id : null)
-      };
-
-      console.log('🔍 DEBUG: Calling accept_open_block_invitation with params:', functionParams);
-      
-      const { error } = await supabase.rpc('accept_open_block_invitation', functionParams);
-      
-      console.log('🔍 DEBUG: RPC call result - error:', error);
-
-      if (!childId && (!availableChildren || availableChildren.length === 0)) {
-        throw new Error('No child selected and no children available');
-      }
-
-      if (error) throw error;
-
-      // Success! Refresh the invitations list
-      await fetchOpenBlockInvitations();
-      setAcceptingInvitation(null);
-      
-      // Dispatch event to update header counter
-      window.dispatchEvent(new CustomEvent('invitationAccepted'));
-      
-      // Create confirmation messages for both parties
-      await createOpenBlockAcceptanceMessages(targetInvitation, user.id);
-      
-      showAlertOnce('Invitation accepted successfully! Your child has been added to the care block.');
-    } catch (error) {
-      showAlertOnce('Error accepting invitation. Please try again.');
-    } finally {
-      setProcessing(false);
-    }
-  };
-
-  const handleDecline = async (invitation: any) => {
-    if (!confirm('Are you sure you want to decline this invitation?')) return;
-
-    try {
-      setProcessing(true);
-      
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) throw new Error('User not authenticated');
-
-      const { error } = await supabase.rpc('decline_open_block_invitation', {
-        p_care_response_id: invitation.care_response_id,
-        p_declining_parent_id: user.id
-      });
-
-      if (error) throw error;
-
-      // Refresh the invitations list
-      await fetchOpenBlockInvitations();
-      
-      // Dispatch event to update header counter
-      window.dispatchEvent(new CustomEvent('invitationDeclined'));
-      
-      showAlertOnce('Invitation declined successfully.');
-    } catch (error) {
-      showAlertOnce('Error declining invitation. Please try again.');
-    } finally {
-      setProcessing(false);
-    }
-  };
 
   // Function to send notifications to all parents with children in the care blocks for open block acceptances
   const sendOpenBlockAcceptanceNotifications = async (invitation: any, acceptingParentId: string, acceptedChildId: string) => {
@@ -1719,7 +1513,7 @@ export default function SchedulerPage() {
       const acceptingParentMessage = {
         type: 'open_block_accepted',
         title: `You accepted ${invitation.open_block_parent_name}'s open block offer`,
-        subtitle: `Care block: ${formatDateOnly(invitation.existing_block_date)} from ${formatTime(invitation.existing_block_start_time)} to ${formatTime(getActualEndTime(invitation.notes || '', invitation.existing_block_end_time))}`,
+        subtitle: `Care block: ${formatDateOnly(invitation.existing_block_date)} from ${formatTime(invitation.existing_block_start_time)} to ${formatTime(invitation.existing_block_end_time)}`,
         timestamp: new Date().toISOString(),
         data: {
           invitation,
@@ -2000,11 +1794,11 @@ export default function SchedulerPage() {
       const savedUnread = localStorage.getItem('schedulerUnreadMessages');
       if (savedUnread) {
         const savedUnreadArray = JSON.parse(savedUnread);
-        const savedUnreadSet = new Set(savedUnreadArray);
+        const savedUnreadSet = new Set<string>(savedUnreadArray);
         
         // Merge with current pending messages, keeping only valid ones
         const mergedUnread = new Set<string>();
-        savedUnreadSet.forEach(id => {
+        savedUnreadSet.forEach((id: string) => {
           if (pendingMessages.has(id)) {
             mergedUnread.add(id);
           }

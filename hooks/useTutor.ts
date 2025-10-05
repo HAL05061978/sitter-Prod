@@ -49,7 +49,7 @@ export function useTutor() {
 
       // Apply filters if provided
       if (filters) {
-        tutors = tutors.filter(tutor => {
+        tutors = tutors.filter((tutor: any) => {
           if (filters.subjects && filters.subjects.length > 0) {
             const hasMatchingSubject = filters.subjects.some(subject =>
               tutor.curricular_topics?.includes(subject)
@@ -330,7 +330,7 @@ export function useTutor() {
           zip_code: profileData.zip_code || null,
           is_active: profileData.is_active,
           services_description: profileData.services_description || null,
-          curricular_topics: profileData.curricular_topics || null
+          curricular_topic_ids: profileData.curricular_topic_ids || null
         })
         .eq('id', tutorId);
       

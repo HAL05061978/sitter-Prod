@@ -23,6 +23,7 @@ interface ScheduledCare {
   group_id?: string;
   related_request_id?: string;
   children_data?: Array<{ id: string; full_name: string }>;
+  event_title?: string;
 }
 
 interface NewRequestData {
@@ -777,7 +778,7 @@ export default function CalendarPage() {
         return;
       }
       
-      const userGroups = groupsData.map(item => ({
+      const userGroups = groupsData.map((item: any) => ({
         id: item.groups.id,
         name: item.groups.name,
         group_type: item.groups.group_type
@@ -833,10 +834,10 @@ export default function CalendarPage() {
         }
 
         console.log('✅ Children fetched for event group (user filtered):', data);
-        const groupChildren = data?.map(item => ({
+        const groupChildren = data?.map((item: any) => ({
           id: item.children.id,
-          full_name: item.children.full_name,
-          parent_id: item.children.parent_id
+          name: item.children.full_name,
+          group_id: groupId
         })) || [];
 
         setChildren(groupChildren);
@@ -860,10 +861,10 @@ export default function CalendarPage() {
         }
 
         console.log('✅ Children fetched for care group (user filtered):', data);
-        const groupChildren = data?.map(item => ({
+        const groupChildren = data?.map((item: any) => ({
           id: item.children.id,
-          full_name: item.children.full_name,
-          parent_id: item.children.parent_id
+          name: item.children.full_name,
+          group_id: groupId
         })) || [];
 
         setChildren(groupChildren);
@@ -1794,7 +1795,7 @@ export default function CalendarPage() {
                         <option value="">Select a child</option>
                         {children.map(child => (
                           <option key={child.id} value={child.id}>
-                            {child.full_name}
+                            {child.name}
                           </option>
                         ))}
                       </select>
@@ -2057,7 +2058,7 @@ export default function CalendarPage() {
             care_date: selectedCare.care_date,
             start_time: selectedCare.start_time,
             end_time: selectedCare.end_time,
-            related_request_id: selectedCare.related_request_id,
+            related_request_id: selectedCare.related_request_id || '',
             group_name: selectedCare.group_name,
             children: selectedCare.children_data || []
           }}

@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, Suspense } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { createClient } from '@supabase/supabase-js'
 
@@ -9,7 +9,7 @@ const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 )
 
-export default function SignupPage() {
+function SignupForm() {
   const router = useRouter()
   const searchParams = useSearchParams()
   const inviteId = searchParams.get('invite')
@@ -57,9 +57,9 @@ export default function SignupPage() {
       }
 
       setInviteInfo({
-        groupName: data.groups.name,
-        senderName: data.profiles.full_name || 'A parent',
-        customNote: data.custom_note
+        groupName: Array.isArray(data.groups) ? (data.groups as any)[0]?.name : (data.groups as any)?.name,
+        senderName: Array.isArray(data.profiles) ? (data.profiles as any)[0]?.full_name : (data.profiles as any)?.full_name || 'A parent',
+        customNote: (data as any).custom_note
       })
     } catch (err) {
       console.error('Error loading invite info:', err)
@@ -320,5 +320,13 @@ export default function SignupPage() {
         </div>
       </div>
     </div>
+  )
+}
+
+export default function SignupPage() {
+  return (
+    <Suspense fallback={<div>Loading...</div>}>
+      <SignupForm />
+    </Suspense>
   )
 }
