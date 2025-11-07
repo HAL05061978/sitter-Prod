@@ -1,11 +1,13 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, Suspense } from 'react';
+import { useSearchParams } from 'next/navigation';
 import { format, startOfMonth, endOfMonth, eachDayOfInterval, isSameMonth, isSameDay, addMonths, subMonths, startOfWeek, endOfWeek, eachDayOfInterval as eachDayOfWeek, addDays, isSameDay as isSameDayUtil } from 'date-fns';
 import Header from '../components/Header';
 import { supabase } from '../lib/supabase';
 import { formatDateOnly, formatTime, parseDateSafely, normalizeDateForCalendar, formatDateForInput } from '../lib/date-utils';
 import RescheduleModal from '../../components/care/RescheduleModal';
+import LocationTrackingPanel from '../../components/care/LocationTrackingPanel';
 
 interface ScheduledCare {
   id: string;
@@ -19,31 +21,84 @@ interface ScheduledCare {
   notes: string;
   children_count: number;
   providing_parent_name: string;
+  providing_parent_id?: string; // Add for location tracking
+  receiving_parent_id?: string; // Add for location tracking
+  receiving_parent_name?: string; // Add for location tracking
   children_names: string[];
   group_id?: string;
   related_request_id?: string;
   children_data?: Array<{ id: string; full_name: string }>;
-  event_title?: string;
+  is_host?: boolean;
+  photo_urls?: string[];
 }
 
 interface NewRequestData {
-  type: 'care' | 'event';
+  type: 'care' | 'hangout' | 'sleepover';
   group_id: string;
   child_id: string;
+  pet_id?: string; // For pet care requests
   date: string;
   start_time: string;
   end_time: string;
+  end_date: string;
+  hosting_child_ids: string[];
+  invited_child_ids: string[];
   notes: string;
-  event_title?: string;
 }
 
-export default function CalendarPage() {
+// Helper component for location tracking
+// SIMPLIFIED: Just pass the current user and care block info
+function LocationTrackingComponent({ selectedCare }: { selectedCare: ScheduledCare }) {
+  const [user, setUser] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    loadUser();
+  }, []);
+
+  const loadUser = async () => {
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return;
+      setUser(user);
+    } catch (error) {
+      console.error('Error loading user:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  if (!user || loading) return (
+    <div className="mt-6 pt-6 border-t border-gray-200 text-center py-4">
+      <p className="text-gray-500">Loading location tracking...</p>
+    </div>
+  );
+
+  // Determine if current user is provider or receiver based on care_type
+  const isProvider = selectedCare.care_type === 'provided';
+
+  return (
+    <div className="mt-6 pt-6 border-t border-gray-200">
+      <LocationTrackingPanel
+        scheduledCareId={selectedCare.id}
+        currentUserId={user.id}
+        isProvider={isProvider}
+        careDate={formatDateOnly(selectedCare.care_date)}
+        startTime={formatTime(selectedCare.start_time)}
+        endTime={formatTime(selectedCare.end_time)}
+      />
+    </div>
+  );
+}
+
+function CalendarPageContent() {
   const [currentDate, setCurrentDate] = useState(new Date());
+  const [careType, setCareType] = useState<'child' | 'pet'>('child'); // Toggle between child and pet care
 
   // Utility function to extract actual end time from notes for next-day care
   const getActualEndTime = (notes: string, fallbackEndTime: string): string => {
     if (!notes) return fallbackEndTime;
-    
+
     const match = notes.match(/\[Next-day care: Actual end time is ([0-9]{2}:[0-9]{2})\]/);
     return match ? match[1] : fallbackEndTime;
   };
@@ -54,11 +109,14 @@ export default function CalendarPage() {
   const [error, setError] = useState<string | null>(null);
   const [selectedCare, setSelectedCare] = useState<ScheduledCare | null>(null);
   const [showDetailModal, setShowDetailModal] = useState(false);
+  const [notesModified, setNotesModified] = useState(false);
   const [showOpenBlockModal, setShowOpenBlockModal] = useState(false);
   const [showNewRequestModal, setShowNewRequestModal] = useState(false);
   const [showRescheduleModal, setShowRescheduleModal] = useState(false);
   const [groups, setGroups] = useState<Array<{ id: string; name: string; group_type: string }>>([]);
   const [children, setChildren] = useState<Array<{ id: string; name: string; group_id: string }>>([]);
+  const [pets, setPets] = useState<Array<{ id: string; name: string; group_id: string; species?: string }>>([]);
+  const [groupChildren, setGroupChildren] = useState<Array<{ id: string; name: string; group_id: string; parent_id?: string }>>([]);
   const [newRequestData, setNewRequestData] = useState<NewRequestData>({
     type: 'care',
     group_id: '',
@@ -66,8 +124,10 @@ export default function CalendarPage() {
     date: '',
     start_time: '',
     end_time: '',
-    notes: '',
-    event_title: ''
+    end_date: '',
+    hosting_child_ids: [],
+    invited_child_ids: [],
+    notes: ''
   });
   const [openBlockData, setOpenBlockData] = useState<{
     invitedParents: Array<{ id: string; name: string; children: Array<{ id: string; full_name: string }> }>;
@@ -80,11 +140,36 @@ export default function CalendarPage() {
   const [availableParents, setAvailableParents] = useState<Array<{ id: string; name: string; children: Array<{ id: string; full_name: string }> }>>([]);
   const [loadingParents, setLoadingParents] = useState(false);
   const [timeValidationError, setTimeValidationError] = useState<string | null>(null);
-  
-  // Initialize with today's date selected
+  const [uploadingPhoto, setUploadingPhoto] = useState(false);
+  const [photoError, setPhotoError] = useState<string | null>(null);
+
+  // Get search params for navigation from scheduler
+  const searchParams = useSearchParams();
+
+  // Initialize with today's date selected OR date from query params
   useEffect(() => {
-    setSelectedDate(new Date());
-  }, []);
+    const dateParam = searchParams.get('date');
+    if (dateParam) {
+      const targetDate = new Date(dateParam);
+      setSelectedDate(targetDate);
+      setCurrentDate(targetDate);
+    } else {
+      setSelectedDate(new Date());
+    }
+  }, [searchParams]);
+
+  // Handle selectBlock parameter to auto-open detail modal
+  useEffect(() => {
+    const selectBlockParam = searchParams.get('selectBlock');
+    if (selectBlockParam && scheduledCare.length > 0) {
+      // Find the block with this ID
+      const block = scheduledCare.find(care => care.id === selectBlockParam);
+      if (block) {
+        setSelectedCare(block);
+        setShowDetailModal(true);
+      }
+    }
+  }, [searchParams, scheduledCare]);
 
 
 
@@ -130,7 +215,102 @@ export default function CalendarPage() {
   useEffect(() => {
     fetchScheduledCare();
     fetchUserGroups();
-  }, [currentDate]);
+  }, [currentDate, careType]); // Re-fetch when careType changes
+
+  // Mark all calendar acceptances as "seen" after user has viewed calendar for 2 seconds
+  useEffect(() => {
+    if (loading || scheduledCare.length === 0) return;
+
+    // Wait 2 seconds to give user time to see the counter, then mark everything as seen
+    const timer = setTimeout(async () => {
+      const savedSeenAcceptances = localStorage.getItem('seenCalendarAcceptances');
+      const seenAcceptances = savedSeenAcceptances ? new Set(JSON.parse(savedSeenAcceptances)) : new Set<string>();
+
+      // Mark all current blocks as seen
+      // Note: We don't have direct access to the notification/invitation data here,
+      // so we'll mark blocks based on their IDs and related_request_id
+      scheduledCare.forEach(block => {
+        // For reciprocal care blocks
+        if (block.related_request_id) {
+          seenAcceptances.add(`reciprocal-${block.related_request_id}`);
+        }
+        // For general blocks
+        seenAcceptances.add(`block-${block.id}`);
+      });
+
+      // Save to localStorage
+      localStorage.setItem('seenCalendarAcceptances', JSON.stringify(Array.from(seenAcceptances)));
+
+      // Clear the calendar counter since user has now viewed the blocks
+      localStorage.setItem('newCalendarBlocksCount', '0');
+
+      // Mark care_accepted notifications as read in the database
+      try {
+        const { data: { user } } = await supabase.auth.getUser();
+        if (user) {
+          const { error } = await supabase
+            .from('notifications')
+            .update({ is_read: true })
+            .eq('user_id', user.id)
+            .eq('type', 'care_accepted')
+            .eq('is_read', false);
+
+          if (error) {
+            console.error('Error marking care_accepted notifications as read:', error);
+          } else {
+            console.log('✅ Marked care_accepted notifications as read');
+          }
+        }
+      } catch (error) {
+        console.error('Error updating notifications:', error);
+      }
+
+      // Trigger counter update
+      window.dispatchEvent(new Event('calendarCountUpdated'));
+
+      console.log('📅 Marked calendar blocks as seen');
+    }, 2000); // 2 second delay
+
+    return () => clearTimeout(timer);
+  }, [loading, scheduledCare]);
+
+  // Listen for care notes updates from other users
+  useEffect(() => {
+    const handleCareNotesUpdated = (event: CustomEvent) => {
+      console.log('Received care notes update event:', event.detail);
+      // Refresh the calendar data when notes are updated
+      fetchScheduledCare();
+    };
+
+    window.addEventListener('careNotesUpdated', handleCareNotesUpdated as EventListener);
+    
+    return () => {
+      window.removeEventListener('careNotesUpdated', handleCareNotesUpdated as EventListener);
+    };
+  }, []);
+
+  // Set up real-time subscription for scheduled_care table changes
+  useEffect(() => {
+    const channel = supabase
+      .channel('scheduled_care_changes')
+      .on('postgres_changes', 
+        { 
+          event: 'UPDATE', 
+          schema: 'public', 
+          table: 'scheduled_care' 
+        }, 
+        (payload) => {
+          console.log('Real-time update received:', payload);
+          // Refresh the calendar data when scheduled_care records are updated
+          fetchScheduledCare();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, []);
 
   // Fetch children when group changes
   useEffect(() => {
@@ -144,32 +324,242 @@ export default function CalendarPage() {
   const fetchScheduledCare = async () => {
     try {
       setLoading(true);
-      
+
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) {
         setError('User not authenticated');
         return;
       }
-      
+
       const startDate = startOfMonth(currentDate);
       const endDate = endOfMonth(currentDate);
 
-      const { data, error } = await supabase.rpc('get_scheduled_care_for_calendar', {
+      // Use appropriate RPC function based on care type
+      const rpcFunction = careType === 'child'
+        ? 'get_scheduled_care_for_calendar'
+        : 'get_scheduled_pet_care_for_calendar';
+
+      const { data, error } = await supabase.rpc(rpcFunction, {
         p_parent_id: user.id,
         p_start_date: startDate.toISOString().split('T')[0],
         p_end_date: endDate.toISOString().split('T')[0]
       });
 
       if (error) {
-        setError('Error fetching scheduled care');
-      return;
-    }
-    
+        setError(`Error fetching scheduled ${careType} care`);
+        console.error(`Error fetching ${careType} care:`, error);
+        return;
+      }
+
       setScheduledCare(data || []);
     } catch (err) {
-      setError('Error fetching scheduled care');
+      setError(`Error fetching scheduled ${careType} care`);
+      console.error(`Error fetching ${careType} care:`, err);
     } finally {
       setLoading(false);
+    }
+  };
+
+  // Image compression function
+  const compressImage = async (file: File): Promise<Blob> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const img = new Image();
+        img.onload = () => {
+          const canvas = document.createElement('canvas');
+          const MAX_WIDTH = 1920;
+          const MAX_HEIGHT = 1920;
+          let width = img.width;
+          let height = img.height;
+
+          // Calculate new dimensions while maintaining aspect ratio
+          if (width > height) {
+            if (width > MAX_WIDTH) {
+              height = Math.round((height * MAX_WIDTH) / width);
+              width = MAX_WIDTH;
+            }
+          } else {
+            if (height > MAX_HEIGHT) {
+              width = Math.round((width * MAX_HEIGHT) / height);
+              height = MAX_HEIGHT;
+            }
+          }
+
+          canvas.width = width;
+          canvas.height = height;
+          const ctx = canvas.getContext('2d');
+          if (!ctx) {
+            reject(new Error('Failed to get canvas context'));
+            return;
+          }
+          ctx.drawImage(img, 0, 0, width, height);
+
+          // Convert to blob with 0.8 quality (good balance between size and quality)
+          canvas.toBlob(
+            (blob) => {
+              if (blob) {
+                resolve(blob);
+              } else {
+                reject(new Error('Failed to compress image'));
+              }
+            },
+            'image/jpeg',
+            0.8
+          );
+        };
+        img.onerror = () => reject(new Error('Failed to load image'));
+        img.src = e.target?.result as string;
+      };
+      reader.onerror = () => reject(new Error('Failed to read file'));
+      reader.readAsDataURL(file);
+    });
+  };
+
+  // Upload photo to Supabase Storage
+  const handlePhotoUpload = async (file: File) => {
+    if (!selectedCare) return;
+
+    setUploadingPhoto(true);
+    setPhotoError(null);
+
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) {
+        setPhotoError('Please log in to upload photos');
+        return;
+      }
+
+      // Validate file type
+      if (!file.type.startsWith('image/')) {
+        setPhotoError('Please select an image file');
+        return;
+      }
+
+      // Validate file size (max 10MB before compression)
+      if (file.size > 10 * 1024 * 1024) {
+        setPhotoError('Image file is too large. Please select an image under 10MB.');
+        return;
+      }
+
+      // Compress the image
+      const compressedBlob = await compressImage(file);
+      const compressedFile = new File(
+        [compressedBlob],
+        file.name,
+        { type: 'image/jpeg' }
+      );
+
+      // Upload to Supabase Storage
+      const fileName = `${user.id}/${selectedCare.id}/${Date.now()}_${file.name.replace(/[^a-zA-Z0-9.-]/g, '_')}`;
+      const { data: uploadData, error: uploadError } = await supabase.storage
+        .from('care-photos')
+        .upload(fileName, compressedFile, {
+          cacheControl: '3600',
+          upsert: false
+        });
+
+      if (uploadError) {
+        console.error('Upload error:', uploadError);
+        setPhotoError('Failed to upload photo. Please try again.');
+        return;
+      }
+
+      // Get public URL
+      const { data: { publicUrl } } = supabase.storage
+        .from('care-photos')
+        .getPublicUrl(fileName);
+
+      // Update scheduled_care record with new photo URL
+      const currentPhotos = selectedCare.photo_urls || [];
+      const updatedPhotos = [...currentPhotos, publicUrl];
+
+      const { error: updateError } = await supabase
+        .from('scheduled_care')
+        .update({ photo_urls: updatedPhotos })
+        .eq('id', selectedCare.id);
+
+      if (updateError) {
+        console.error('Error updating photo URLs:', updateError);
+        setPhotoError('Failed to save photo reference. Please try again.');
+        return;
+      }
+
+      // Update local state
+      setSelectedCare(prev => prev ? { ...prev, photo_urls: updatedPhotos } : null);
+      await fetchScheduledCare();
+
+      // Send notification to receiving parents/attendees
+      try {
+        const { error: notifyError } = await supabase.rpc('notify_photo_upload', {
+          p_scheduled_care_id: selectedCare.id,
+          p_uploader_id: user.id,
+          p_photo_count: updatedPhotos.length
+        });
+
+        if (notifyError) {
+          console.error('Error sending notification:', notifyError);
+          // Don't fail the upload if notification fails
+        }
+      } catch (notifyError) {
+        console.error('Error sending notification:', notifyError);
+      }
+
+      alert('Photo uploaded successfully!');
+    } catch (error) {
+      console.error('Photo upload error:', error);
+      setPhotoError('Failed to upload photo. Please try again.');
+    } finally {
+      setUploadingPhoto(false);
+    }
+  };
+
+  // Delete photo from storage and database
+  const handleDeletePhoto = async (photoUrl: string) => {
+    if (!selectedCare) return;
+
+    if (!confirm('Are you sure you want to delete this photo?')) return;
+
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return;
+
+      // Extract file path from URL
+      const urlParts = photoUrl.split('/care-photos/');
+      if (urlParts.length < 2) return;
+      const filePath = urlParts[1];
+
+      // Delete from storage
+      const { error: deleteError } = await supabase.storage
+        .from('care-photos')
+        .remove([filePath]);
+
+      if (deleteError) {
+        console.error('Error deleting photo:', deleteError);
+        alert('Failed to delete photo. Please try again.');
+        return;
+      }
+
+      // Update database
+      const updatedPhotos = (selectedCare.photo_urls || []).filter(url => url !== photoUrl);
+      const { error: updateError } = await supabase
+        .from('scheduled_care')
+        .update({ photo_urls: updatedPhotos })
+        .eq('id', selectedCare.id);
+
+      if (updateError) {
+        console.error('Error updating photo URLs:', updateError);
+        return;
+      }
+
+      // Update local state
+      setSelectedCare(prev => prev ? { ...prev, photo_urls: updatedPhotos } : null);
+      await fetchScheduledCare();
+
+      alert('Photo deleted successfully!');
+    } catch (error) {
+      console.error('Photo deletion error:', error);
+      alert('Failed to delete photo. Please try again.');
     }
   };
 
@@ -437,20 +827,57 @@ export default function CalendarPage() {
 
       console.log('✅ Group children details found:', groupChildren);
 
-      // Filter out children already in the care block
+      // Get parent IDs of children already in the block
+      const parentsWithChildrenInBlock = new Set(
+        groupChildren
+          .filter(item => Array.from(blockChildIds).includes(item.id))
+          .map(item => item.parent_id)
+      );
+
+      console.log('✅ Parents with children already in block:', Array.from(parentsWithChildrenInBlock));
+      console.log('✅ Current user (block creator):', user.id);
+      console.log('✅ Care block parent_id:', careBlock.parent_id);
+
+      // Also add the current user (creator of the block) to excluded parents
+      parentsWithChildrenInBlock.add(user.id);
+      parentsWithChildrenInBlock.add(careBlock.parent_id);
+
+      // Filter out children whose parents already have a child in the care block OR are the current user
       const availableChildren = groupChildren
         .filter(item => !Array.from(blockChildIds).includes(item.id))
+        .filter(item => !parentsWithChildrenInBlock.has(item.parent_id))
+        .filter(item => item.parent_id !== user.id) // Extra safety check
         .map(item => ({
           id: item.id,
           full_name: item.full_name
         }));
-      
-      console.log('✅ Available children (not in block):', availableChildren);
+
+      console.log('✅ Available children (not in block and parent not in block):', availableChildren);
 
       // Get available parents for these children
       const available = await Promise.all(
         availableChildren.map(async (child) => {
           console.log('🔍 Fetching parent for child:', child);
+          
+          // CRITICAL FIX: First check if the child is still active in the group
+          const { data: childGroupStatus, error: childGroupError } = await supabase
+            .from('child_group_members')
+            .select('active')
+            .eq('child_id', child.id)
+            .eq('group_id', careBlock.group_id)
+            .single();
+            
+          if (childGroupError) {
+            console.log('❌ Error checking child group status:', childGroupError);
+            return null;
+          }
+          
+          if (!childGroupStatus.active) {
+            console.log('❌ Child is not active in group:', child.full_name);
+            return null;
+          }
+          
+          console.log('✅ Child is active in group:', child.full_name);
           
           // First, get the child's parent_id directly from the children table
           const { data: childData, error: childError } = await supabase
@@ -590,10 +1017,30 @@ export default function CalendarPage() {
 
   const handleCreateOpenBlock = async () => {
     if (!selectedCare || openBlockData.invitedParents.length === 0) return;
-    
+
+    // Validate all reciprocal times are in the future
+    const now = new Date();
+    for (const timeBlock of openBlockData.reciprocalTimes) {
+      const inputDateTime = new Date(`${timeBlock.date}T${timeBlock.startTime}:00`);
+      if (inputDateTime <= now) {
+        alert('Cannot schedule reciprocal care in the past. Please select future dates and times for all reciprocal time blocks.');
+        return;
+      }
+    }
+
     try {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) return;
+
+      console.log('🚀 Creating open block invitations with data:', {
+        existingBlockId: selectedCare.id,
+        invitingParentId: user.id,
+        invitedParentIds: openBlockData.invitedParents.map(p => p.id),
+        reciprocalDates: openBlockData.reciprocalTimes.map(t => t.date),
+        reciprocalStartTimes: openBlockData.reciprocalTimes.map(t => t.startTime),
+        reciprocalEndTimes: openBlockData.reciprocalTimes.map(t => t.endTime),
+        notes: openBlockData.notes || ''
+      });
 
       // Call the Supabase function to create open block invitations
       const { data, error } = await supabase.rpc('create_open_block_invitation', {
@@ -606,21 +1053,30 @@ export default function CalendarPage() {
         p_notes: openBlockData.notes || ''
       });
 
+      console.log('✅ RPC response:', { data, error });
+
       if (error) {
+        console.error('❌ Error creating open block invitations:', error);
         alert('Error creating open block invitations: ' + error.message);
         return;
       }
 
-      alert(`Successfully created ${data?.length || 0} open block invitations!`);
+      console.log(`✅ Successfully created ${data || 0} open block invitations`);
+      alert('Open block invitations have been sent');
       setShowOpenBlockModal(false);
+      setShowDetailModal(false); // Close the detail modal and return to calendar
+      setSelectedCare(null); // Clear the selected care block
       setOpenBlockData({
         invitedParents: [],
         reciprocalTimes: []
       });
-      
+
       // Refresh the calendar data
+      console.log('🔄 Refreshing calendar data...');
       await fetchScheduledCare();
+      console.log('✅ Calendar data refreshed');
     } catch (error) {
+      console.error('❌ Exception in handleCreateOpenBlock:', error);
       setError('Error creating open block');
       alert('Error creating open block invitations');
     }
@@ -703,12 +1159,22 @@ export default function CalendarPage() {
   };
 
   // Get care type color styling
-  const getCareTypeColor = (careType: string, actionType?: string, status?: string) => {
+  const getCareTypeColor = (careType: string, actionType?: string, status?: string, isHost?: boolean) => {
     // Check for rescheduled blocks first (highest priority)
-    if (actionType === 'rescheduled' && status === 'rescheduled') {
+    if (actionType === 'rescheduled') {
       return 'bg-orange-100 border border-orange-300 text-orange-800';
     }
-    
+
+    // Handle hangout/sleepover blocks with proper colors
+    if (careType === 'hangout' || careType === 'sleepover') {
+      // If host (hosting) -> green, if not host (attending) -> blue
+      if (isHost) {
+        return 'bg-green-100 border border-green-300 text-green-800';
+      } else {
+        return 'bg-blue-100 border border-blue-300 text-blue-800';
+      }
+    }
+
     // Then check regular care types
     switch (careType) {
       case 'needed':
@@ -723,12 +1189,22 @@ export default function CalendarPage() {
   };
 
   // Get care type background color for indicators (no border)
-  const getCareTypeBgColor = (careType: string, actionType?: string, status?: string) => {
+  const getCareTypeBgColor = (careType: string, actionType?: string, status?: string, isHost?: boolean) => {
     // Check for rescheduled blocks first (highest priority)
-    if (actionType === 'rescheduled' && status === 'rescheduled') {
+    if (actionType === 'rescheduled') {
       return 'bg-orange-200';
     }
-    
+
+    // Handle hangout/sleepover blocks with proper colors
+    if (careType === 'hangout' || careType === 'sleepover') {
+      // If host (hosting) -> green, if not host (attending) -> blue
+      if (isHost) {
+        return 'bg-green-200';
+      } else {
+        return 'bg-blue-200';
+      }
+    }
+
     // Then check regular care types
     switch (careType) {
       case 'needed':
@@ -791,13 +1267,17 @@ export default function CalendarPage() {
 
   // Function to get filtered groups based on request type
   const getFilteredGroups = () => {
-    const filtered = newRequestData.type === 'care' 
-      ? groups.filter(group => group.group_type === 'care')
-      : newRequestData.type === 'event'
-      ? groups.filter(group => group.group_type === 'event')
-      : groups;
-    
-    return filtered;
+    // Filter groups based on careType
+    if (careType === 'pet') {
+      // Pet care mode: only show pet groups
+      return groups.filter(group => group.group_type === 'pet');
+    } else {
+      // Child care mode: Hangout and sleepover use care groups
+      if (newRequestData.type === 'care' || newRequestData.type === 'hangout' || newRequestData.type === 'sleepover') {
+        return groups.filter(group => group.group_type === 'care');
+      }
+      return groups;
+    }
   };
 
   const fetchChildrenForGroup = async (groupId: string) => {
@@ -821,7 +1301,7 @@ export default function CalendarPage() {
           .from('child_group_members')
           .select(`
             child_id,
-            children!inner(id, full_name, parent_id)
+            children(id, full_name, parent_id)
           `)
           .eq('group_id', groupId)
           .eq('active', true)
@@ -834,25 +1314,46 @@ export default function CalendarPage() {
         }
 
         console.log('✅ Children fetched for event group (user filtered):', data);
-        const groupChildren = data?.map((item: any) => ({
-          id: item.children.id,
-          name: item.children.full_name,
-          group_id: groupId
+        const groupChildren = data?.map(item => ({
+          id: item.children[0]?.id || '',
+          name: item.children[0]?.full_name || '',
+          group_id: item.child_id
         })) || [];
 
         setChildren(groupChildren);
       } else {
         // For care groups, also get children from child_group_members (same approach)
         // But only show the current user's children in this group
-        const { data, error } = await supabase
+        // First get all child_group_members for this group that are active
+        const { data: memberships, error: membershipsError } = await supabase
           .from('child_group_members')
           .select(`
             child_id,
-            children!inner(id, full_name, parent_id)
+            group_id
           `)
           .eq('group_id', groupId)
-          .eq('active', true)
-          .eq('parent_id', user.id); // Only show current user's children
+          .eq('active', true);
+
+        if (membershipsError) {
+          console.log('❌ Error fetching memberships:', membershipsError);
+          setError('Error fetching memberships');
+          return;
+        }
+
+        if (!memberships || memberships.length === 0) {
+          setChildren([]);
+          return;
+        }
+
+        // Get the child IDs
+        const childIds = memberships.map(m => m.child_id);
+
+        // Now get the children details, filtering by parent_id
+        const { data, error } = await supabase
+          .from('children')
+          .select('id, full_name, parent_id')
+          .in('id', childIds)
+          .eq('parent_id', user.id);
 
         if (error) {
           console.log('❌ Error fetching children for care group:', error);
@@ -861,9 +1362,9 @@ export default function CalendarPage() {
         }
 
         console.log('✅ Children fetched for care group (user filtered):', data);
-        const groupChildren = data?.map((item: any) => ({
-          id: item.children.id,
-          name: item.children.full_name,
+        const groupChildren = data?.map(child => ({
+          id: child.id,
+          name: child.full_name,
           group_id: groupId
         })) || [];
 
@@ -871,6 +1372,103 @@ export default function CalendarPage() {
       }
     } catch (err) {
       setError('Error in fetchChildren');
+    }
+  };
+
+  const fetchPetsForGroup = async (groupId: string) => {
+    try {
+      console.log('🔍 Starting fetchPetsForGroup for group:', groupId);
+
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) {
+        console.log('❌ No user found');
+        return;
+      }
+
+      // Get pets from pet_group_members
+      // Only show the current user's pets in this group
+      const { data: memberships, error: membershipsError } = await supabase
+        .from('pet_group_members')
+        .select(`
+          pet_id,
+          group_id
+        `)
+        .eq('group_id', groupId)
+        .eq('active', true);
+
+      if (membershipsError) {
+        console.log('❌ Error fetching pet memberships:', membershipsError);
+        setError('Error fetching pet memberships');
+        return;
+      }
+
+      if (!memberships || memberships.length === 0) {
+        setPets([]);
+        return;
+      }
+
+      // Get the pet IDs
+      const petIds = memberships.map(m => m.pet_id);
+
+      // Now get the pets details, filtering by parent_id (owner)
+      const { data, error } = await supabase
+        .from('pets')
+        .select('id, name, species, parent_id')
+        .in('id', petIds)
+        .eq('parent_id', user.id);
+
+      if (error) {
+        console.log('❌ Error fetching pets for group:', error);
+        setError('Error fetching pets for group');
+        return;
+      }
+
+      console.log('✅ Pets fetched for group (user filtered):', data);
+      const groupPets = data?.map(pet => ({
+        id: pet.id,
+        name: pet.name,
+        species: pet.species || undefined,
+        group_id: groupId
+      })) || [];
+
+      setPets(groupPets);
+    } catch (err) {
+      setError('Error in fetchPets');
+    }
+  };
+
+  const fetchAllGroupChildren = async (groupId: string) => {
+    try {
+      const { data, error } = await supabase
+        .from('child_group_members')
+        .select(`
+          child_id,
+          children!inner(id, full_name, parent_id)
+        `)
+        .eq('group_id', groupId)
+        .eq('active', true);
+
+      if (error) {
+        console.error('Error fetching all group children:', error);
+        return;
+      }
+
+      if (!data || data.length === 0) {
+        setGroupChildren([]);
+        return;
+      }
+
+      const allChildren = data.map(item => ({
+        id: item.children.id,
+        name: item.children.full_name,
+        group_id: groupId,
+        parent_id: item.children.parent_id
+      }));
+
+      console.log('✅ All children fetched for group:', allChildren);
+      setGroupChildren(allChildren);
+    } catch (err) {
+      console.error('Error in fetchAllGroupChildren:', err);
     }
   };
 
@@ -883,8 +1481,10 @@ export default function CalendarPage() {
       date: format(date, 'yyyy-MM-dd'),
       start_time: '',
       end_time: '',
-      notes: '',
-      event_title: ''
+      end_date: '',
+      hosting_child_ids: [],
+      invited_child_ids: [],
+      notes: ''
     });
     setShowNewRequestModal(true);
   };
@@ -894,7 +1494,29 @@ export default function CalendarPage() {
     if (!validateTimes(newRequestData.start_time, newRequestData.end_time)) {
       return; // Don't submit if validation fails
     }
-    
+
+    // Validate date and time are not in the past
+    const inputDateTime = new Date(`${newRequestData.date}T${newRequestData.start_time}:00`);
+    const now = new Date();
+
+    if (inputDateTime <= now) {
+      alert('Cannot schedule care in the past. Please select a future date and time.');
+      return;
+    }
+
+    // Validate end date for multi-day care
+    if (newRequestData.end_date) {
+      const endDateTime = new Date(`${newRequestData.end_date}T${newRequestData.end_time}:00`);
+      if (endDateTime <= now) {
+        alert('End date and time cannot be in the past. Please select a future date and time.');
+        return;
+      }
+      if (endDateTime <= inputDateTime) {
+        alert('End date and time must be after start date and time.');
+        return;
+      }
+    }
+
     try {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) return;
@@ -912,61 +1534,117 @@ export default function CalendarPage() {
         : newRequestData.notes;
 
       if (newRequestData.type === 'care') {
-        // Create reciprocal care request
-        const { data, error } = await supabase.rpc('create_reciprocal_care_request', {
-          requester_id: user.id,
-          group_id: newRequestData.group_id,
-          requested_date: newRequestData.date,
-          start_time: newRequestData.start_time,
-          end_time: dbEndTime, // Use capped end time for database
-          child_id: newRequestData.child_id,
-          notes: enhancedNotes || null
+        // Check if this is pet care or child care
+        if (careType === 'pet') {
+          // Create reciprocal pet care request (mirrors child care workflow)
+          if (!newRequestData.pet_id) {
+            alert('Please select a pet');
+            return;
+          }
+
+          const { data, error } = await supabase.rpc('create_pet_care_request', {
+            requester_id: user.id,
+            group_id: newRequestData.group_id,
+            requested_date: newRequestData.date,
+            start_time: newRequestData.start_time,
+            end_time: newRequestData.end_time,
+            pet_id: newRequestData.pet_id,
+            end_date: newRequestData.end_date || null,
+            notes: newRequestData.notes || null
+          });
+
+          if (error) {
+            alert('Error creating pet care request: ' + error.message);
+            return;
+          }
+
+          alert('Pet care request created successfully! Group members have been notified.');
+        } else {
+          // Create reciprocal child care request
+          const { data, error } = await supabase.rpc('create_reciprocal_care_request', {
+            requester_id: user.id,
+            group_id: newRequestData.group_id,
+            requested_date: newRequestData.date,
+            start_time: newRequestData.start_time,
+            end_time: dbEndTime, // Use capped end time for database
+            child_id: newRequestData.child_id,
+            notes: enhancedNotes || null
+          });
+
+          if (error) {
+            alert('Error creating care request: ' + error.message);
+            return;
+          }
+
+          // Send notifications to group members via messages
+          if (data) {
+            await supabase.rpc('send_care_request_notifications', {
+              p_care_request_id: data
+            });
+          }
+
+          alert('Care request created successfully! Messages sent to group members.');
+        }
+      } else if (newRequestData.type === 'hangout') {
+        // Create hangout invitation
+        if (newRequestData.hosting_child_ids.length === 0) {
+          alert('Please select at least one hosting child');
+          return;
+        }
+        if (newRequestData.invited_child_ids.length === 0) {
+          alert('Please select at least one child to invite');
+          return;
+        }
+
+        const { data, error } = await supabase.rpc('create_hangout_invitation', {
+          p_requesting_parent_id: user.id,
+          p_group_id: newRequestData.group_id,
+          p_care_date: newRequestData.date,
+          p_start_time: newRequestData.start_time,
+          p_end_time: newRequestData.end_time,
+          p_hosting_child_ids: newRequestData.hosting_child_ids,
+          p_invited_child_ids: newRequestData.invited_child_ids,
+          p_notes: newRequestData.notes || null
         });
 
         if (error) {
-          alert('Error creating care request: ' + error.message);
+          alert('Error creating hangout: ' + error.message);
           return;
         }
 
-        // Send notifications to group members via messages
-        if (data) {
-          await supabase.rpc('send_care_request_notifications', {
-            p_care_request_id: data
-          });
+        alert('Hangout created successfully! Invitations sent.');
+      } else if (newRequestData.type === 'sleepover') {
+        // Create sleepover invitation
+        if (newRequestData.hosting_child_ids.length === 0) {
+          alert('Please select at least one hosting child');
+          return;
         }
-
-        alert('Care request created successfully! Messages sent to group members.');
-      } else if (newRequestData.type === 'event') {
-        // Create event using create_event_blocks function
-        if (!newRequestData.event_title) {
-          alert('Event title is required for event requests');
+        if (newRequestData.invited_child_ids.length === 0) {
+          alert('Please select at least one child to invite');
           return;
         }
 
-        // For events, we need to create an event request first
-        // Since we don't have a separate events table, we'll create it directly in scheduled_care
-        // We'll use the create_event_blocks function which handles the group member distribution
-        
-        const { data: eventData, error: eventError } = await supabase.rpc('create_event_blocks', {
+        // Use end_date if set (auto-calculated or manual), otherwise use same day
+        const effectiveEndDate = newRequestData.end_date || newRequestData.date;
+
+        const { data, error } = await supabase.rpc('create_sleepover_invitation', {
+          p_requesting_parent_id: user.id,
           p_group_id: newRequestData.group_id,
-          p_event_request_id: null, // We'll create this as a direct event for now
-          p_child_id: newRequestData.child_id,
           p_care_date: newRequestData.date,
           p_start_time: newRequestData.start_time,
-          p_end_time: dbEndTime, // Use capped end time for database
-          p_event_title: newRequestData.event_title
+          p_end_date: effectiveEndDate,
+          p_end_time: newRequestData.end_time,
+          p_hosting_child_ids: newRequestData.hosting_child_ids,
+          p_invited_child_ids: newRequestData.invited_child_ids,
+          p_notes: newRequestData.notes || null
         });
 
-        if (eventError) {
-          setError('Error creating event');
-          alert('Error creating event: ' + eventError.message);
+        if (error) {
+          alert('Error creating sleepover: ' + error.message);
           return;
         }
 
-        // Send notifications to group members
-        // TODO: Implement event notifications using notify_group_event_members
-        
-        alert('Event created successfully! All group members have been invited.');
+        alert('Sleepover created successfully! Invitations sent.');
       }
 
       setShowNewRequestModal(false);
@@ -977,8 +1655,10 @@ export default function CalendarPage() {
         date: '',
         start_time: '',
         end_time: '',
-        notes: '',
-        event_title: ''
+        end_date: '',
+        hosting_child_ids: [],
+        invited_child_ids: [],
+        notes: ''
       });
       
       // Refresh the calendar data
@@ -1053,28 +1733,54 @@ export default function CalendarPage() {
   return (
     <div className="min-h-screen bg-gray-50">
       <Header currentPage="calendar" />
-      <div className="p-6">
+      <div className="p-3 sm:p-4 md:p-6">
         <div className="max-w-7xl mx-auto">
           {/* Header */}
-          <div className="flex items-center justify-between mb-8">
-            <h1 className="text-3xl font-bold text-gray-900">Calendar</h1>
-        <div className="flex items-center space-x-4">
+          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 mb-6 sm:mb-8">
+            <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3 sm:gap-6 w-full sm:w-auto">
+              <h1 className="text-2xl sm:text-3xl font-bold text-gray-900">Calendar</h1>
+
+              {/* Care Type Toggle */}
+              <div className="flex items-center bg-white rounded-lg border border-gray-300 p-1">
+                <button
+                  onClick={() => setCareType('child')}
+                  className={`px-3 py-1.5 sm:px-4 sm:py-2 rounded-md text-xs sm:text-sm font-medium transition-colors ${
+                    careType === 'child'
+                      ? 'bg-blue-600 text-white'
+                      : 'text-gray-600 hover:text-gray-900'
+                  }`}
+                >
+                  Child Care
+                </button>
+                <button
+                  onClick={() => setCareType('pet')}
+                  className={`px-3 py-1.5 sm:px-4 sm:py-2 rounded-md text-xs sm:text-sm font-medium transition-colors ${
+                    careType === 'pet'
+                      ? 'bg-blue-600 text-white'
+                      : 'text-gray-600 hover:text-gray-900'
+                  }`}
+                >
+                  Pet Care
+                </button>
+              </div>
+            </div>
+        <div className="flex items-center gap-2 sm:gap-4 w-full sm:w-auto justify-between sm:justify-start">
           <button
             onClick={() => navigateMonth('prev')}
-            className="p-2 rounded-lg bg-white border border-gray-300 hover:bg-gray-50"
+            className="p-1.5 sm:p-2 rounded-lg bg-white border border-gray-300 hover:bg-gray-50"
           >
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <svg className="w-4 h-4 sm:w-5 sm:h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
             </svg>
           </button>
-          <h2 className="text-xl font-semibold text-gray-700">
+          <h2 className="text-base sm:text-lg md:text-xl font-semibold text-gray-700 whitespace-nowrap">
             {format(currentDate, 'MMMM yyyy')}
           </h2>
           <button
             onClick={() => navigateMonth('next')}
-            className="p-2 rounded-lg bg-white border border-gray-300 hover:bg-gray-50"
+            className="p-1.5 sm:p-2 rounded-lg bg-white border border-gray-300 hover:bg-gray-50"
           >
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <svg className="w-4 h-4 sm:w-5 sm:h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
             </svg>
           </button>
@@ -1086,16 +1792,17 @@ export default function CalendarPage() {
             /* Monthly View */
             <div className="bg-white rounded-lg shadow overflow-hidden mb-6">
             <div className="grid grid-cols-7 bg-gray-100">
-          {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map(day => (
-                  <div key={day} className="p-2 text-center text-xs font-medium text-gray-700">
-              {day}
+          {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((day, idx) => (
+                  <div key={day} className="p-1 sm:p-2 text-center text-[10px] sm:text-xs font-medium text-gray-700">
+              <span className="hidden sm:inline">{day}</span>
+              <span className="sm:hidden">{day.charAt(0)}</span>
             </div>
           ))}
             </div>
             <div className="grid grid-cols-7">
                 {getMonthlyDays().map((day, index) => {
                 if (!day) {
-                  return <div key={index} className="min-h-[120px] bg-gray-50" />;
+                  return <div key={index} className="min-h-[60px] sm:min-h-[80px] md:min-h-[120px] bg-gray-50" />;
                 }
 
                 const dayCare = getScheduledCareForDay(day);
@@ -1105,61 +1812,45 @@ export default function CalendarPage() {
                 return (
                   <div
                     key={index}
-                      className={`min-h-[120px] p-3 border-r border-b border-gray-200 cursor-pointer hover:bg-gray-50 ${
+                      className={`min-h-[60px] sm:min-h-[80px] md:min-h-[120px] p-1 sm:p-2 md:p-3 border-r border-b border-gray-200 cursor-pointer hover:bg-gray-50 ${
                       isToday ? 'bg-blue-50' : ''
                       } ${isSelected ? 'bg-blue-100 border-blue-300' : ''}`}
                       onClick={() => handleDaySelect(day)}
                   >
-                      <div className={`text-base font-medium mb-3 ${
+                      <div className={`text-sm sm:text-base font-medium mb-1 sm:mb-2 md:mb-3 ${
                         isToday ? 'text-blue-600' : isSelected ? 'text-blue-800' : 'text-gray-900'
                     }`}>
                       {format(day, 'd')}
                     </div>
-                    
-                      {/* Detailed care blocks - like before */}
-                      <div className="space-y-1.5">
+
+                      {/* Simplified care blocks - show only care type and time */}
+                      <div className="space-y-0.5 sm:space-y-1 md:space-y-1.5">
                         {dayCare.slice(0, 2).map((care, careIndex) => (
                           <div
                             key={careIndex}
-                            className={`p-1.5 rounded text-xs ${getCareTypeColor(care.care_type, care.action_type, care.status)} cursor-pointer hover:opacity-80`}
+                            className={`p-0.5 sm:p-1 md:p-1.5 rounded text-[9px] sm:text-[10px] md:text-xs leading-tight ${getCareTypeColor(care.care_type, care.action_type, care.status, care.is_host)} cursor-pointer hover:opacity-80`}
                             title={`${care.group_name} - ${formatTime(care.start_time)} to ${formatTime(getActualEndTime(care.notes || '', care.end_time))}`}
                             onClick={(e) => {
                               e.stopPropagation();
                             setSelectedCare(care);
+                            setNotesModified(false);
                             setShowDetailModal(true);
                           }}
                         >
-                          {care.action_type === 'rescheduled' && care.status === 'rescheduled' && (
-                            <div className="text-xs font-semibold text-orange-600 mb-1">
-                              🔄 RESCHEDULING
-                            </div>
-                          )}
-                          <div className="font-medium truncate">
-                            {care.care_type === 'event' && care.event_title ? care.event_title : care.group_name}
+                          {/* Care type label */}
+                          <div className="font-semibold truncate text-[9px] sm:text-[10px] md:text-xs">
+                            {care.action_type === 'rescheduled' && care.status === 'rescheduled' ? 'Rescheduling' :
+                             care.care_type === 'event' ? 'Event' :
+                             care.care_type === 'provided' ? 'Providing' :
+                             care.care_type === 'hangout' ? 'Hangout' :
+                             care.care_type === 'sleepover' ? 'Sleepover' :
+                             care.care_type === 'open_block' ? 'Open' : 'Receiving'}
                           </div>
-                          <div className="text-xs opacity-75">
-                            {formatTime(care.start_time)} - {formatTime(getActualEndTime(care.notes || '', care.end_time))}
+
+                          {/* Time range - truncated to fit */}
+                          <div className="opacity-90 truncate text-[8px] sm:text-[9px] md:text-[10px]">
+                            {formatTime(care.start_time).replace(' ', '')}-{formatTime(getActualEndTime(care.notes || '', care.end_time)).replace(' ', '')}
                           </div>
-                          <div className="text-xs opacity-75 font-medium">
-                            {care.care_type === 'event' ? 'Event' : 
-                             care.care_type === 'provided' ? 'Providing Care' : 'Receiving Care'}
-                          </div>
-                            {care.providing_parent_name && (
-                              <div className="text-xs opacity-75 truncate">
-                                Provider: {care.providing_parent_name}
-                              </div>
-                            )}
-                          {care.children_count > 0 && (
-                            <div className="text-xs opacity-75">
-                                {care.children_count} children
-                            </div>
-                          )}
-                          {care.children_names && care.children_names.length > 0 && (
-                              <div className="text-xs opacity-75 truncate">
-                              {care.children_names.slice(0, 2).join(', ')}
-                              {care.children_names.length > 2 && '...'}
-                            </div>
-                          )}
                         </div>
                       ))}
                         {dayCare.length > 2 && (
@@ -1220,45 +1911,49 @@ export default function CalendarPage() {
                   return (
                     <div
                       key={index}
-                      className={`min-h-[120px] p-3 border-r border-b border-gray-200 cursor-pointer hover:bg-gray-50 ${
+                      className={`min-h-[60px] sm:min-h-[80px] md:min-h-[120px] p-1 sm:p-2 md:p-3 border-r border-b border-gray-200 cursor-pointer hover:bg-gray-50 ${
                         isToday ? 'bg-blue-50' : ''
                       } ${isSelected ? 'bg-blue-100 border-blue-300' : ''}`}
                       onClick={() => handleDaySelect(date)}
                     >
-                      <div className={`text-sm font-medium mb-2 ${
+                      <div className={`text-[10px] sm:text-xs md:text-sm font-medium mb-1 sm:mb-2 ${
                         isToday ? 'text-blue-600' : isSelected ? 'text-blue-800' : 'text-gray-900'
                       }`}>
                         {format(date, 'EEE')}
                       </div>
-                      <div className={`text-xl font-bold ${
+                      <div className={`text-base sm:text-lg md:text-xl font-bold ${
                         isToday ? 'text-blue-600' : isSelected ? 'text-blue-800' : 'text-gray-900'
                       }`}>
                         {format(date, 'd')}
                       </div>
-                      
+
                       {/* Simplified care indicators for weekly view */}
-                      <div className="space-y-1.5 mt-3">
+                      <div className="space-y-0.5 sm:space-y-1 md:space-y-1.5 mt-1 sm:mt-2 md:mt-3">
                         {dayCare.slice(0, 4).map((care, careIndex) => (
                           <div
                             key={careIndex}
-                            className={`p-2 rounded text-xs ${getCareTypeColor(care.care_type, care.action_type, care.status)} cursor-pointer hover:opacity-80`}
+                            className={`p-0.5 sm:p-1 md:p-2 rounded text-[9px] sm:text-[10px] md:text-xs leading-tight ${getCareTypeColor(care.care_type, care.action_type, care.status, care.is_host)} cursor-pointer hover:opacity-80`}
                             title={`${care.group_name} - ${formatTime(care.start_time)} to ${formatTime(getActualEndTime(care.notes || '', care.end_time))}`}
                             onClick={(e) => {
                               e.stopPropagation();
                               setSelectedCare(care);
+                              setNotesModified(false);
                               setShowDetailModal(true);
                             }}
                           >
-                            {care.action_type === 'rescheduled' && care.status === 'rescheduled' && (
-                              <div className="text-xs font-semibold text-orange-600 mb-1">
-                                🔄 RESCHEDULING
-                              </div>
-                            )}
-                            <div className="font-medium truncate">
-                              {care.providing_parent_name || 'Care Block'}
+                            {/* Care type label */}
+                            <div className="font-semibold truncate text-[9px] sm:text-[10px] md:text-xs">
+                              {care.action_type === 'rescheduled' && care.status === 'rescheduled' ? 'Rescheduling' :
+                               care.care_type === 'event' ? 'Event' :
+                               care.care_type === 'provided' ? 'Providing' :
+                               care.care_type === 'hangout' ? 'Hangout' :
+                               care.care_type === 'sleepover' ? 'Sleepover' :
+                               care.care_type === 'open_block' ? 'Open' : 'Receiving'}
                             </div>
-                            <div className="text-xs opacity-75">
-                              {formatTime(care.start_time)} - {formatTime(getActualEndTime(care.notes || '', care.end_time))}
+
+                            {/* Time range - truncated to fit */}
+                            <div className="opacity-90 truncate text-[8px] sm:text-[9px] md:text-[10px]">
+                              {formatTime(care.start_time).replace(' ', '')}-{formatTime(getActualEndTime(care.notes || '', care.end_time)).replace(' ', '')}
                             </div>
                           </div>
                         ))}
@@ -1276,15 +1971,15 @@ export default function CalendarPage() {
           {/* Hourly Schedule for Selected Day - Only show in weekly view */}
           {viewMode === 'weekly' && selectedDate && (
             <div className="bg-white rounded-lg shadow overflow-hidden">
-              <div className="px-4 py-3 border-b border-gray-200 bg-gray-50">
-                <h3 className="text-lg font-semibold text-gray-900">
+              <div className="px-3 sm:px-4 py-2 sm:py-3 border-b border-gray-200 bg-gray-50">
+                <h3 className="text-base sm:text-lg font-semibold text-gray-900">
                   {format(selectedDate, 'EEEE, MMMM d, yyyy')}
                 </h3>
-                <p className="text-sm text-gray-600">
+                <p className="text-xs sm:text-sm text-gray-600">
                   Double-click on any hour to schedule care or events
                 </p>
               </div>
-              
+
               <div className="max-h-96 overflow-y-auto">
                 {getHourlySchedule(selectedDate).map((hourData) => (
                   <div
@@ -1295,10 +1990,10 @@ export default function CalendarPage() {
                     }`}
                     onDoubleClick={() => handleHourlySlotDoubleClick(hourData.hour, selectedDate)}
                   >
-                    <div className="w-20 p-3 text-sm font-medium text-gray-600 border-r border-gray-100 bg-gray-50">
+                    <div className="w-14 sm:w-16 md:w-20 p-1.5 sm:p-2 md:p-3 text-[10px] sm:text-xs md:text-sm font-medium text-gray-600 border-r border-gray-100 bg-gray-50">
                       {hourData.time}
                     </div>
-                    <div className="flex-1 p-3 min-h-[60px]">
+                    <div className="flex-1 p-2 sm:p-3 min-h-[50px] sm:min-h-[60px]">
                       {hourData.startingCare.length > 0 ? (
                         <div className="space-y-2">
                           {hourData.startingCare.map((care, index) => {
@@ -1326,6 +2021,7 @@ export default function CalendarPage() {
                                 onDoubleClick={(e) => {
                                   e.stopPropagation();
                                   setSelectedCare(care);
+                                  setNotesModified(false);
                                   setShowDetailModal(true);
                                 }}
                               >
@@ -1352,9 +2048,12 @@ export default function CalendarPage() {
                                   {/* Type */}
                                   <div>
                                     <span className="font-medium text-gray-700">Type:</span>
-                                    <span className={`ml-2 px-2 py-1 rounded text-xs ${getCareTypeColor(care.care_type, care.action_type, care.status)}`}>
-                                      {care.care_type === 'event' ? 'Event' : 
-                                       care.care_type === 'provided' ? 'Providing Care' : 'Receiving Care'}
+                                    <span className={`ml-2 px-2 py-1 rounded text-xs ${getCareTypeColor(care.care_type, care.action_type, care.status, care.is_host)}`}>
+                                      {care.care_type === 'event' ? 'Event' :
+                                       care.care_type === 'provided' ? 'Providing Care' :
+                                       care.care_type === 'hangout' ? 'Hangout' :
+                                       care.care_type === 'sleepover' ? 'Sleepover' :
+                                       care.care_type === 'open_block' ? 'Open Block' : 'Receiving Care'}
                                     </span>
                                   </div>
                                   
@@ -1425,108 +2124,29 @@ export default function CalendarPage() {
               <div className="w-4 h-4 bg-green-100 border border-green-300 rounded"></div>
               <span>Providing Care</span>
             </div>
-            <div className="flex items-center space-x-2">
-              <div className="w-4 h-4 bg-purple-100 border border-purple-300 rounded"></div>
-              <span>Events</span>
-            </div>
           </div>
 
-          {/* Summary */}
-          {scheduledCare.length > 0 && (
-            <div className="mt-6 bg-white rounded-lg shadow p-4">
-              <h3 className="text-lg font-medium text-gray-900 mb-3">This Month's Summary</h3>
-              <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-                <div className="text-center">
-                  <div className="text-2xl font-bold text-blue-600">
-                    {scheduledCare.filter(care => care.care_type === 'needed').length}
-                  </div>
-                  <div className="text-sm text-gray-600">Receiving Care</div>
-                </div>
-                <div className="text-center">
-                  <div className="text-2xl font-bold text-green-600">
-                    {scheduledCare.filter(care => care.care_type === 'provided').length}
-                  </div>
-                  <div className="text-sm text-gray-600">Providing Care</div>
-                </div>
-                <div className="text-center">
-                  <div className="text-2xl font-bold text-purple-600">
-                    {scheduledCare.filter(care => care.care_type === 'event').length}
-                  </div>
-                  <div className="text-sm text-gray-600">Events</div>
-                </div>
-                <div className="text-center">
-                  <div className="text-2xl font-bold text-gray-600">
-                    {scheduledCare.length}
-                  </div>
-                  <div className="text-sm text-gray-600">Total Blocks</div>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* Action Buttons */}
-          <div className="mt-6 flex items-center space-x-4">
-            {viewMode === 'monthly' ? (
+          {/* Action Buttons - Only show in weekly view */}
+          {viewMode === 'weekly' && (
+            <div className="mt-6 flex items-center space-x-4">
               <button
                 onClick={() => {
-                  setNewRequestData({
-                    type: 'care',
-                    group_id: '',
-                    child_id: '',
-                    date: format(new Date(), 'yyyy-MM-dd'),
-                    start_time: '',
-                    end_time: '',
-                    notes: '',
-                    event_title: ''
-                  });
-                  setShowNewRequestModal(true);
+                  if (selectedDate) {
+                    handleDoubleClickEmptyCell(selectedDate);
+                  }
                 }}
                 className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
               >
-                Schedule Care/Event
+                Schedule for {selectedDate ? format(selectedDate, 'MMM d') : 'Selected Day'}
               </button>
-            ) : (
-              <>
-                <button
-                  onClick={() => {
-                    if (selectedDate) {
-                      handleDoubleClickEmptyCell(selectedDate);
-                    }
-                  }}
-                  className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
-                >
-                  Schedule for {selectedDate ? format(selectedDate, 'MMM d') : 'Selected Day'}
-                </button>
-                
-                <button
-                  onClick={() => {
-                    if (selectedDate) {
-                      setNewRequestData({
-                        type: 'event',
-                        group_id: '',
-                        child_id: '',
-                        date: format(selectedDate, 'yyyy-MM-dd'),
-                        start_time: '',
-                        end_time: '',
-                        notes: '',
-                        event_title: ''
-                      });
-                      setShowNewRequestModal(true);
-                    }
-                  }}
-                  className="px-6 py-3 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors"
-                >
-                  Create Event
-                </button>
-              </>
-            )}
-      </div>
+            </div>
+          )}
 
       {/* Care Detail Modal */}
       {showDetailModal && selectedCare && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-lg shadow-xl max-w-md w-full mx-4">
-            <div className="px-6 py-4 border-b border-gray-200">
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-lg shadow-xl max-w-2xl w-full max-h-[90vh] flex flex-col">
+            <div className="px-6 py-4 border-b border-gray-200 flex-shrink-0">
               <div className="flex items-center justify-between">
                 <h3 className="text-lg font-semibold text-gray-900">Care Details</h3>
                 <button
@@ -1539,7 +2159,7 @@ export default function CalendarPage() {
                 </button>
               </div>
             </div>
-            <div className="px-6 py-4">
+            <div className="px-6 py-4 overflow-y-auto flex-1">
               <div className="space-y-3">
                 <div>
                   <span className="font-medium text-gray-700">Group:</span>
@@ -1555,13 +2175,13 @@ export default function CalendarPage() {
                 </div>
                 <div>
                   <span className="font-medium text-gray-700">Type:</span>
-                      <span className={`ml-2 px-2 py-1 rounded text-xs ${getCareTypeColor(selectedCare.care_type, selectedCare.action_type, selectedCare.status)}`}>
-                    {selectedCare.care_type === 'provided' ? 'Providing Care' : 'Receiving Care'}
+                      <span className={`ml-2 px-2 py-1 rounded text-xs ${getCareTypeColor(selectedCare.care_type, selectedCare.action_type, selectedCare.status, selectedCare.is_host)}`}>
+                    {selectedCare.care_type === 'event' ? 'Event' :
+                     selectedCare.care_type === 'provided' ? 'Providing Care' :
+                     selectedCare.care_type === 'hangout' ? 'Hangout' :
+                     selectedCare.care_type === 'sleepover' ? 'Sleepover' :
+                     selectedCare.care_type === 'open_block' ? 'Open Block' : 'Receiving Care'}
                   </span>
-                </div>
-                <div>
-                  <span className="font-medium text-gray-700">Status:</span>
-                  <span className="ml-2 text-gray-900">{selectedCare.status}</span>
                 </div>
                 {selectedCare.providing_parent_name && (
                   <div>
@@ -1571,7 +2191,21 @@ export default function CalendarPage() {
                 )}
                 {selectedCare.children_names && selectedCare.children_names.length > 0 && (
                   <div>
-                    <span className="font-medium text-gray-700">Children:</span>
+                    <div className="flex items-center justify-between">
+                      <span className="font-medium text-gray-700">Children:</span>
+                      {selectedCare.care_type === 'provided' && (
+                        <button
+                          onClick={() => handleOpenBlock(selectedCare)}
+                          className="text-blue-600 hover:text-blue-700 font-medium text-sm flex items-center gap-1"
+                          title="Open this block to other children"
+                        >
+                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                          </svg>
+                          <span>Open Block</span>
+                        </button>
+                      )}
+                    </div>
                     <div className="ml-2 mt-1">
                       {selectedCare.children_names.map((childName, index) => (
                         <span key={index} className="inline-block bg-gray-100 rounded px-2 py-1 text-xs mr-1 mb-1">
@@ -1581,37 +2215,289 @@ export default function CalendarPage() {
                     </div>
                   </div>
                 )}
-                {selectedCare.notes && (
-                  <div>
-                    <span className="font-medium text-gray-700">Notes:</span>
-                    <span className="ml-2 text-gray-900">{selectedCare.notes}</span>
+                <div>
+                  <span className="font-medium text-gray-700">Notes:</span>
+                  {/* Editable notes for: provided care OR host of hangout/sleepover */}
+                  {(selectedCare.care_type === 'provided' ||
+                    ((selectedCare.care_type === 'hangout' || selectedCare.care_type === 'sleepover') && selectedCare.is_host)) ? (
+                    <div className="mt-1">
+                      <textarea
+                        value={selectedCare.notes || ''}
+                        onChange={(e) => {
+                          // Update the selectedCare object with new notes
+                          setSelectedCare(prev => prev ? { ...prev, notes: e.target.value } : null);
+                          setNotesModified(true);
+                        }}
+                        placeholder={
+                          selectedCare.care_type === 'provided'
+                            ? "Add your care plans and details here..."
+                            : "Add details about this event (shared with all participants)..."
+                        }
+                        className="w-full mt-1 px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm"
+                        rows={3}
+                      />
+                      <p className="text-xs text-gray-500 mt-1">
+                        {selectedCare.care_type === 'provided'
+                          ? "Share your care plans and any important details for the receiving parent."
+                          : "These notes will be visible to all participants (host and attending families)."}
+                      </p>
+                    </div>
+                  ) : (
+                    <div className="mt-1">
+                      <div className="bg-gray-50 border border-gray-200 rounded-md p-3 text-sm text-gray-700">
+                        {selectedCare.notes ||
+                          (selectedCare.care_type === 'hangout' || selectedCare.care_type === 'sleepover'
+                            ? 'No notes provided by the host.'
+                            : 'No notes provided by the care provider.')}
+                      </div>
+                      <p className="text-xs text-gray-500 mt-1">
+                        {selectedCare.care_type === 'hangout' || selectedCare.care_type === 'sleepover'
+                          ? "Event details from the host."
+                          : "Care plans and details from the provider."}
+                      </p>
+                    </div>
+                  )}
+                </div>
+
+                {/* Photo Upload Section - For providing care, hangouts, and sleepovers (host only) */}
+                {(selectedCare.care_type === 'provided' ||
+                  ((selectedCare.care_type === 'hangout' || selectedCare.care_type === 'sleepover') && selectedCare.is_host)) && (
+                  <div className="mt-6">
+                    <div className="flex items-center justify-between mb-2">
+                      <label className="block text-sm font-medium text-gray-700">
+                        Photos
+                      </label>
+
+                      {/* Single Add Photo Button */}
+                      <label className="cursor-pointer">
+                        <input
+                          type="file"
+                          accept="image/*"
+                          onChange={(e) => {
+                            const file = e.target.files?.[0];
+                            if (file) handlePhotoUpload(file);
+                            e.target.value = '';
+                          }}
+                          className="hidden"
+                          disabled={uploadingPhoto}
+                        />
+                        <div
+                          className={`p-2 rounded-lg transition ${
+                            uploadingPhoto
+                              ? 'bg-gray-200 cursor-not-allowed'
+                              : 'bg-blue-500 hover:bg-blue-600'
+                          }`}
+                          title="Add Photo"
+                        >
+                          <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" />
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 13a3 3 0 11-6 0 3 3 0 016 0z" />
+                          </svg>
+                        </div>
+                      </label>
+                    </div>
+
+                    {/* Upload Status Messages */}
+                    {uploadingPhoto && (
+                      <p className="text-sm text-blue-600 mb-2">Uploading photo...</p>
+                    )}
+                    {photoError && (
+                      <p className="text-sm text-red-600 mb-2">{photoError}</p>
+                    )}
+
+                    {/* Display Uploaded Photos */}
+                    {selectedCare.photo_urls && selectedCare.photo_urls.length > 0 && (
+                      <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                        {selectedCare.photo_urls.map((photoUrl, index) => (
+                          <div key={index} className="relative group">
+                            <img
+                              src={photoUrl}
+                              alt={`Care photo ${index + 1}`}
+                              className="w-full h-32 sm:h-40 object-cover rounded-lg border border-gray-200"
+                              onClick={() => window.open(photoUrl, '_blank')}
+                              style={{ cursor: 'pointer' }}
+                            />
+                            <button
+                              onClick={() => handleDeletePhoto(photoUrl)}
+                              className="absolute top-1 right-1 bg-red-500 text-white rounded-full p-1 opacity-0 group-hover:opacity-100 transition"
+                              title="Delete photo"
+                            >
+                              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                              </svg>
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    <p className="text-xs text-gray-500 mt-2">
+                      {selectedCare.care_type === 'provided'
+                        ? 'Upload photos to share with the receiving parent. Max 10MB per photo. Photos are automatically compressed.'
+                        : 'Upload photos to share with all participants. Max 10MB per photo. Photos are automatically compressed.'}
+                    </p>
                   </div>
                 )}
+
+                {/* Photo Display Section - For receiving care, and non-host hangout/sleepover attendees (read-only) */}
+                {((selectedCare.care_type === 'needed') ||
+                  ((selectedCare.care_type === 'hangout' || selectedCare.care_type === 'sleepover') && !selectedCare.is_host)) &&
+                  selectedCare.photo_urls && selectedCare.photo_urls.length > 0 && (
+                  <div className="mt-6">
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      {selectedCare.care_type === 'needed'
+                        ? 'Photos from Care Provider'
+                        : 'Photos from Host'}
+                    </label>
+                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                      {selectedCare.photo_urls.map((photoUrl, index) => (
+                        <div key={index} className="relative">
+                          <img
+                            src={photoUrl}
+                            alt={`Care photo ${index + 1}`}
+                            className="w-full h-32 sm:h-40 object-cover rounded-lg border border-gray-200 cursor-pointer hover:opacity-90 transition"
+                            onClick={() => window.open(photoUrl, '_blank')}
+                          />
+                        </div>
+                      ))}
+                    </div>
+                    <p className="text-xs text-gray-500 mt-2">
+                      Click on any photo to view full size.
+                    </p>
+                  </div>
+                )}
+
+                {/* Location Tracking Section - For reciprocal care only (provided/needed) */}
+                {(() => {
+                  // Only show for reciprocal care (provided or needed)
+                  if (selectedCare.care_type === 'provided' || selectedCare.care_type === 'needed') {
+                    return (
+                      <LocationTrackingComponent selectedCare={selectedCare} />
+                    );
+                  }
+                  return null;
+                })()}
               </div>
             </div>
-            <div className="px-6 py-4 border-t border-gray-200">
+            <div className="px-6 py-4 border-t border-gray-200 flex-shrink-0">
+              {/* Save Notes button for hangout/sleepover (host only) */}
+              {(selectedCare.care_type === 'hangout' || selectedCare.care_type === 'sleepover') && selectedCare.is_host && (
+                <button
+                  onClick={async () => {
+                    // Save notes for hangout/sleepover and propagate to all participants
+                    if (selectedCare.notes !== undefined) {
+                      try {
+                        const { data: { user } } = await supabase.auth.getUser();
+                        if (!user) {
+                          alert('Please log in to update notes');
+                          return;
+                        }
+
+                        const { data, error } = await supabase.rpc('update_hangout_sleepover_notes', {
+                          p_scheduled_care_id: selectedCare.id,
+                          p_parent_id: user.id,
+                          p_new_notes: selectedCare.notes || ''
+                        });
+
+                        if (error) {
+                          console.error('Error saving notes:', error);
+                          alert('Failed to save notes. Please try again.');
+                          return;
+                        }
+
+                        // Refresh the calendar data to show updated notes
+                        await fetchScheduledCare();
+                        setNotesModified(false);
+
+                        alert(data[0]?.message || 'Notes saved and shared with all participants!');
+                      } catch (error) {
+                        console.error('Error saving notes:', error);
+                        alert('Failed to save notes. Please try again.');
+                      }
+                    }
+                  }}
+                  disabled={!notesModified}
+                  className={`w-full px-4 py-2 rounded-lg mb-3 ${
+                    notesModified
+                      ? 'bg-green-600 text-white hover:bg-green-700'
+                      : 'bg-gray-300 text-gray-500 cursor-not-allowed'
+                  }`}
+                >
+                  {notesModified ? 'Save Notes (Share with All)' : 'No Changes'}
+                </button>
+              )}
+
+              {/* Save Notes button for reciprocal care (provider only) */}
               {selectedCare.care_type === 'provided' && (
                 <>
-                  <button
-                    onClick={() => handleOpenBlock(selectedCare)}
-                    className="w-full px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 mb-3"
-                  >
-                    Open Block
-                  </button>
                   <button
                     onClick={() => handleReschedule(selectedCare)}
                     className="w-full px-4 py-2 bg-orange-600 text-white rounded-lg hover:bg-orange-700 mb-3"
                   >
                     Reschedule
                   </button>
+                  <button
+                    onClick={async () => {
+                      // Save notes for reciprocal care and propagate to receiver
+                      if (selectedCare.notes !== undefined) {
+                        try {
+                          const { data: { user } } = await supabase.auth.getUser();
+                          if (!user) {
+                            alert('Please log in to update notes');
+                            return;
+                          }
+
+                          console.log('=== Saving Reciprocal Care Notes ===');
+                          console.log('Scheduled Care ID:', selectedCare.id);
+                          console.log('Parent ID:', user.id);
+                          console.log('New Notes:', selectedCare.notes);
+                          console.log('Care Type:', selectedCare.care_type);
+                          console.log('Related Request ID:', selectedCare.related_request_id);
+
+                          const { data, error } = await supabase.rpc('update_reciprocal_care_notes', {
+                            p_scheduled_care_id: selectedCare.id,
+                            p_parent_id: user.id,
+                            p_new_notes: selectedCare.notes || ''
+                          });
+
+                          console.log('Function Response:', { data, error });
+
+                          if (error) {
+                            console.error('Error saving notes:', error);
+                            alert(`Failed to save notes: ${error.message}`);
+                            return;
+                          }
+
+                          if (!data || data.length === 0) {
+                            console.error('No data returned from function');
+                            alert('Failed to save notes - no response from server');
+                            return;
+                          }
+
+                          console.log('Success:', data[0]);
+
+                          // Refresh the calendar data to show updated notes
+                          await fetchScheduledCare();
+                          setNotesModified(false);
+
+                          alert(data[0]?.message || 'Notes saved and shared with receiver!');
+                        } catch (error) {
+                          console.error('Error saving notes:', error);
+                          alert(`Failed to save notes: ${error}`);
+                        }
+                      }
+                    }}
+                    disabled={!notesModified}
+                    className={`w-full px-4 py-2 rounded-lg ${
+                      notesModified
+                        ? 'bg-green-600 text-white hover:bg-green-700'
+                        : 'bg-gray-300 text-gray-500 cursor-not-allowed'
+                    }`}
+                  >
+                    {notesModified ? 'Save Notes (Share with Receiver)' : 'No Changes'}
+                  </button>
                 </>
               )}
-              <button
-                onClick={() => setShowDetailModal(false)}
-                className="w-full px-4 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700"
-              >
-                Close
-              </button>
             </div>
           </div>
         </div>
@@ -1624,7 +2510,8 @@ export default function CalendarPage() {
                 <div className="px-6 py-4 border-b border-gray-200">
                   <div className="flex items-center justify-between">
                     <h3 className="text-lg font-semibold text-gray-900">
-                      {newRequestData.type === 'event' ? 'Create New Event' : 'Create New Care Request'}
+                      Create New {careType === 'pet' ? 'Pet Care Request' :
+                        (newRequestData.type === 'care' ? 'Care Request' : newRequestData.type.charAt(0).toUpperCase() + newRequestData.type.slice(1))}
                     </h3>
                     <button
                       onClick={() => setShowNewRequestModal(false)}
@@ -1638,32 +2525,47 @@ export default function CalendarPage() {
                 </div>
                 
                 <div className="px-6 py-4 space-y-4">
-                  {/* Request Type Selection */}
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">Type</label>
-                    <div className="flex space-x-4">
-                      <label className="flex items-center">
-                        <input
-                          type="radio"
-                          value="care"
-                          checked={newRequestData.type === 'care'}
-                          onChange={(e) => setNewRequestData(prev => ({ ...prev, type: e.target.value as 'care' | 'event' }))}
-                          className="mr-2"
-                        />
-                        <span>Care Request</span>
-                      </label>
-                      <label className="flex items-center">
-                        <input
-                          type="radio"
-                          value="event"
-                          checked={newRequestData.type === 'event'}
-                          onChange={(e) => setNewRequestData(prev => ({ ...prev, type: e.target.value as 'care' | 'event' }))}
-                          className="mr-2"
-                        />
-                        <span>Event</span>
-                      </label>
+                  {/* Request Type Selection - Only for child care */}
+                  {careType === 'child' && (
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-2">Type</label>
+                      <div className="grid grid-cols-3 gap-3">
+                        <button
+                          type="button"
+                          onClick={() => setNewRequestData(prev => ({ ...prev, type: 'care', hosting_child_ids: [], invited_child_ids: [], end_date: '' }))}
+                          className={`px-4 py-3 rounded-md border-2 transition-all ${
+                            newRequestData.type === 'care'
+                              ? 'border-blue-500 bg-blue-50 text-blue-700 font-semibold'
+                              : 'border-gray-300 hover:border-gray-400'
+                          }`}
+                        >
+                          Care Request
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setNewRequestData(prev => ({ ...prev, type: 'hangout', child_id: '', end_date: '' }))}
+                          className={`px-4 py-3 rounded-md border-2 transition-all ${
+                            newRequestData.type === 'hangout'
+                              ? 'border-green-500 bg-green-50 text-green-700 font-semibold'
+                              : 'border-gray-300 hover:border-gray-400'
+                          }`}
+                        >
+                          Hangout
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setNewRequestData(prev => ({ ...prev, type: 'sleepover', child_id: '' }))}
+                          className={`px-4 py-3 rounded-md border-2 transition-all ${
+                            newRequestData.type === 'sleepover'
+                              ? 'border-purple-500 bg-purple-50 text-purple-700 font-semibold'
+                              : 'border-gray-300 hover:border-gray-400'
+                          }`}
+                        >
+                          Sleepover
+                        </button>
+                      </div>
                     </div>
-                  </div>
+                  )}
 
                   {/* Date */}
                   <div>
@@ -1672,6 +2574,8 @@ export default function CalendarPage() {
                       type="date"
                       value={newRequestData.date}
                       onChange={(e) => setNewRequestData(prev => ({ ...prev, date: e.target.value }))}
+                      min={new Date().toISOString().split('T')[0]}
+                      max={`${new Date().getFullYear() + 5}-12-31`}
                       className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
                       required
                     />
@@ -1706,7 +2610,33 @@ export default function CalendarPage() {
                         value={newRequestData.end_time}
                         onChange={(e) => {
                           const newEndTime = e.target.value;
-                          setNewRequestData(prev => ({ ...prev, end_time: newEndTime }));
+
+                          // Auto-calculate end_date if times cross midnight
+                          if (newRequestData.date && newRequestData.start_time && newEndTime) {
+                            const timeResult = calculateTimeDuration(newRequestData.start_time, newEndTime);
+                            if (timeResult.isNextDay) {
+                              // Calculate next day
+                              const startDateObj = new Date(newRequestData.date + 'T00:00:00');
+                              const endDateObj = new Date(startDateObj.getTime() + 24 * 60 * 60 * 1000);
+                              const endDateStr = format(endDateObj, 'yyyy-MM-dd');
+
+                              setNewRequestData(prev => ({
+                                ...prev,
+                                end_time: newEndTime,
+                                end_date: endDateStr
+                              }));
+                            } else {
+                              // Same day, clear end_date
+                              setNewRequestData(prev => ({
+                                ...prev,
+                                end_time: newEndTime,
+                                end_date: ''
+                              }));
+                            }
+                          } else {
+                            setNewRequestData(prev => ({ ...prev, end_time: newEndTime }));
+                          }
+
                           validateTimes(newRequestData.start_time, newEndTime);
                         }}
                         className={`w-full px-3 py-2 border rounded-md focus:outline-none focus:ring-2 ${
@@ -1769,7 +2699,28 @@ export default function CalendarPage() {
                     <label className="block text-sm font-medium text-gray-700 mb-2">Group</label>
                     <select
                       value={newRequestData.group_id}
-                      onChange={(e) => setNewRequestData(prev => ({ ...prev, group_id: e.target.value }))}
+                      onChange={(e) => {
+                        const groupId = e.target.value;
+                        setNewRequestData(prev => ({
+                          ...prev,
+                          group_id: groupId,
+                          child_id: '',
+                          pet_id: '',
+                          hosting_child_ids: [],
+                          invited_child_ids: []
+                        }));
+                        if (groupId) {
+                          // Fetch children or pets based on careType
+                          if (careType === 'pet') {
+                            fetchPetsForGroup(groupId);
+                          } else {
+                            fetchChildrenForGroup(groupId);
+                            if (newRequestData.type !== 'care') {
+                              fetchAllGroupChildren(groupId);
+                            }
+                          }
+                        }
+                      }}
                       className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
                       required
                     >
@@ -1782,38 +2733,139 @@ export default function CalendarPage() {
                     </select>
                   </div>
 
-                  {/* Child Selection */}
-                  {newRequestData.group_id && (
+                  {/* Child/Pet Selection (Care Request only) */}
+                  {newRequestData.type === 'care' && newRequestData.group_id && (
                     <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-2">Child</label>
+                      <label className="block text-sm font-medium text-gray-700 mb-2">
+                        {careType === 'pet' ? 'Pet' : 'Child'}
+                      </label>
                       <select
-                        value={newRequestData.child_id}
-                        onChange={(e) => setNewRequestData(prev => ({ ...prev, child_id: e.target.value }))}
+                        value={careType === 'pet' ? newRequestData.pet_id : newRequestData.child_id}
+                        onChange={(e) => setNewRequestData(prev => ({
+                          ...prev,
+                          ...(careType === 'pet' ? { pet_id: e.target.value } : { child_id: e.target.value })
+                        }))}
                         className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
                         required
                       >
-                        <option value="">Select a child</option>
-                        {children.map(child => (
-                          <option key={child.id} value={child.id}>
-                            {child.name}
-                          </option>
-                        ))}
+                        <option value="">{careType === 'pet' ? 'Select a pet' : 'Select a child'}</option>
+                        {careType === 'pet' ? (
+                          pets.map(pet => (
+                            <option key={pet.id} value={pet.id}>
+                              {pet.name} {pet.species ? `(${pet.species})` : ''}
+                            </option>
+                          ))
+                        ) : (
+                          children.map(child => (
+                            <option key={child.id} value={child.id}>
+                              {child.name}
+                            </option>
+                          ))
+                        )}
                       </select>
                     </div>
                   )}
 
-                  {/* Event Title (for events only) */}
-                  {newRequestData.type === 'event' && (
+                  {/* End Date - Always shown for pet care, auto-calculated for child care */}
+                  {(careType === 'pet' || newRequestData.end_date) && newRequestData.type === 'care' && (
                     <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-2">Event Title</label>
+                      <label className="block text-sm font-medium text-gray-700 mb-2">
+                        End Date
+                        {careType === 'pet' ? (
+                          <span className="ml-2 text-xs text-purple-600">(Optional - for multi-day pet care)</span>
+                        ) : (
+                          <span className="ml-2 text-xs text-blue-600">(Auto-calculated)</span>
+                        )}
+                      </label>
                       <input
-                        type="text"
-                        value={newRequestData.event_title || ''}
-                        onChange={(e) => setNewRequestData(prev => ({ ...prev, event_title: e.target.value }))}
-                        className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-                        placeholder="Enter event title"
-                        required
+                        type="date"
+                        value={newRequestData.end_date}
+                        onChange={(e) => setNewRequestData(prev => ({ ...prev, end_date: e.target.value }))}
+                        min={newRequestData.date || undefined}
+                        className={`w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 ${
+                          careType === 'pet' ? 'focus:ring-purple-500' : 'focus:ring-blue-500 bg-blue-50'
+                        }`}
                       />
+                      <p className="text-xs text-gray-500 mt-1">
+                        {careType === 'pet'
+                          ? 'Leave empty for same-day care, or set an end date for vacations/trips'
+                          : 'Automatically set when end time is on the next day. You can override if needed.'
+                        }
+                      </p>
+                    </div>
+                  )}
+
+                  {/* Hosting Children (Hangout/Sleepover only) */}
+                  {(newRequestData.type === 'hangout' || newRequestData.type === 'sleepover') && newRequestData.group_id && (
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-2">
+                        Hosting Children * (Your children who will host)
+                      </label>
+                      <div className="border border-gray-300 rounded-md p-3 max-h-40 overflow-y-auto">
+                        {children.length === 0 ? (
+                          <p className="text-sm text-gray-500">No children available</p>
+                        ) : (
+                          <div className="space-y-2">
+                            {children.map(child => (
+                              <label key={child.id} className="flex items-center space-x-2 cursor-pointer">
+                                <input
+                                  type="checkbox"
+                                  checked={newRequestData.hosting_child_ids.includes(child.id)}
+                                  onChange={(e) => {
+                                    const checked = e.target.checked;
+                                    setNewRequestData(prev => ({
+                                      ...prev,
+                                      hosting_child_ids: checked
+                                        ? [...prev.hosting_child_ids, child.id]
+                                        : prev.hosting_child_ids.filter(id => id !== child.id)
+                                    }));
+                                  }}
+                                  className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
+                                />
+                                <span className="text-sm">{child.name}</span>
+                              </label>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Invited Children (Hangout/Sleepover only) */}
+                  {(newRequestData.type === 'hangout' || newRequestData.type === 'sleepover') && newRequestData.group_id && (
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-2">
+                        Invited Children * (Children from the group to invite)
+                      </label>
+                      <div className="border border-gray-300 rounded-md p-3 max-h-40 overflow-y-auto">
+                        {groupChildren.length === 0 ? (
+                          <p className="text-sm text-gray-500">No children available in this group</p>
+                        ) : (
+                          <div className="space-y-2">
+                            {groupChildren
+                              .filter(child => !children.some(myChild => myChild.id === child.id))
+                              .map(child => (
+                                <label key={child.id} className="flex items-center space-x-2 cursor-pointer">
+                                  <input
+                                    type="checkbox"
+                                    checked={newRequestData.invited_child_ids.includes(child.id)}
+                                    onChange={(e) => {
+                                      const checked = e.target.checked;
+                                      setNewRequestData(prev => ({
+                                        ...prev,
+                                        invited_child_ids: checked
+                                          ? [...prev.invited_child_ids, child.id]
+                                          : prev.invited_child_ids.filter(id => id !== child.id)
+                                      }));
+                                    }}
+                                    className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
+                                  />
+                                  <span className="text-sm">{child.name}</span>
+                                </label>
+                              ))}
+                          </div>
+                        )}
+                      </div>
                     </div>
                   )}
 
@@ -1836,7 +2888,7 @@ export default function CalendarPage() {
                       onClick={handleCreateNewRequest}
                       className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
                     >
-                      Create {newRequestData.type === 'event' ? 'Event' : 'Care Request'}
+                      Create {newRequestData.type === 'care' ? 'Request' : newRequestData.type.charAt(0).toUpperCase() + newRequestData.type.slice(1)}
                     </button>
                     <button
                       onClick={() => setShowNewRequestModal(false)}
@@ -1867,7 +2919,7 @@ export default function CalendarPage() {
                 </button>
               </div>
               <p className="text-sm text-gray-600 mt-1">
-                Invite other parents to join your care block on {formatDateOnly(selectedCare.care_date)} at {formatTime(selectedCare.start_time)} - {formatTime(getActualEndTime(selectedCare.notes || '', selectedCare.end_time))}
+                Care block on {formatDateOnly(selectedCare.care_date)} at {formatTime(selectedCare.start_time)} - {formatTime(getActualEndTime(selectedCare.notes || '', selectedCare.end_time))}
               </p>
             </div>
             
@@ -1920,11 +2972,6 @@ export default function CalendarPage() {
                     <p className="text-sm text-gray-400 mt-1">All group members may already be involved or there are no eligible parents.</p>
                   </div>
                 )}
-                
-                {/* Debug info - remove in production */}
-                <div className="text-xs text-gray-400 mt-2">
-                  Debug: {availableParents.length} parents available, {loadingParents ? 'loading' : 'loaded'}
-                </div>
               </div>
 
               {/* Reciprocal Times */}
@@ -1943,10 +2990,7 @@ export default function CalendarPage() {
                     <div key={index} className="border rounded-lg p-4 space-y-3">
                       <div className="flex items-center justify-between">
                         <h5 className="font-medium">
-                          {associatedParent 
-                            ? `Time Block for ${associatedParent.name}` 
-                            : `Time Block #${index + 1}`
-                          }
+                          Offer {index + 1}
                         </h5>
                         <button
                           onClick={() => removeReciprocalTime(index)}
@@ -1963,6 +3007,8 @@ export default function CalendarPage() {
                           type="date"
                           value={timeBlock.date}
                               onChange={(e) => updateReciprocalTime(index, 'date', e.target.value)}
+                          min={new Date().toISOString().split('T')[0]}
+                          max={`${new Date().getFullYear() + 5}-12-31`}
                           className="w-full px-3 py-2 border border-gray-300 rounded-md"
                           required
                         />
@@ -1990,17 +3036,6 @@ export default function CalendarPage() {
                         />
                       </div>
                     </div>
-                    
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1">Notes (Optional)</label>
-                      <textarea
-                        value={timeBlock.notes || ''}
-                            onChange={(e) => updateReciprocalTime(index, 'notes', e.target.value)}
-                        className="w-full px-3 py-2 border border-gray-300 rounded-md"
-                        rows={2}
-                        placeholder="Any specific notes about this time block..."
-                      />
-                    </div>
                   </div>
                   );
                 })}
@@ -2012,36 +3047,16 @@ export default function CalendarPage() {
                   + Add Time Block
                 </button>
               </div>
-
-              {/* General Notes */}
-              <div className="space-y-2">
-                <label className="block text-sm font-medium text-gray-700">General Notes (Optional)</label>
-                <textarea
-                  value={openBlockData.notes || ''}
-                      onChange={(e) => setOpenBlockData(prev => ({ ...prev, notes: e.target.value }))}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md"
-                  rows={3}
-                      placeholder="Any general notes about this open block invitation..."
-                />
-              </div>
             </div>
             
             <div className="px-6 py-4 border-t border-gray-200">
-                  <div className="flex space-x-3">
                 <button
                   onClick={handleCreateOpenBlock}
-                      className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+                  className="w-full px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
                   disabled={openBlockData.invitedParents.length === 0}
                 >
-                      Create Open Block Invitations
+                  Create Open Block Invitations
                 </button>
-                <button
-                      onClick={() => setShowOpenBlockModal(false)}
-                      className="px-4 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700"
-                >
-                      Cancel
-                </button>
-              </div>
             </div>
                 </div>
                   </div>
@@ -2070,5 +3085,22 @@ export default function CalendarPage() {
 
 
     </div>
+  );
+}
+
+export default function CalendarPage() {
+  return (
+    <Suspense fallback={
+      <div className="min-h-screen bg-gray-50">
+        <Header />
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+          <div className="flex justify-center items-center h-64">
+            <div className="text-gray-500">Loading calendar...</div>
+          </div>
+        </div>
+      </div>
+    }>
+      <CalendarPageContent />
+    </Suspense>
   );
 }
