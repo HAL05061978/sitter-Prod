@@ -30,6 +30,9 @@ interface ScheduledCare {
   children_data?: Array<{ id: string; full_name: string }>;
   is_host?: boolean;
   photo_urls?: string[];
+  care_category?: 'child' | 'pet'; // Distinguish child vs pet care
+  pet_name?: string; // For pet care blocks
+  pet_species?: string; // For pet care blocks
 }
 
 interface NewRequestData {
@@ -93,7 +96,7 @@ function LocationTrackingComponent({ selectedCare }: { selectedCare: ScheduledCa
 
 function CalendarPageContent() {
   const [currentDate, setCurrentDate] = useState(new Date());
-  const [careType, setCareType] = useState<'child' | 'pet'>('child'); // Toggle between child and pet care
+  const [careFilter, setCareFilter] = useState<'all' | 'children' | 'pets'>('all'); // Filter for displaying blocks
 
   // Utility function to extract actual end time from notes for next-day care
   const getActualEndTime = (notes: string, fallbackEndTime: string): string => {
@@ -334,27 +337,42 @@ function CalendarPageContent() {
       const startDate = startOfMonth(currentDate);
       const endDate = endOfMonth(currentDate);
 
-      // Use appropriate RPC function based on care type
-      const rpcFunction = careType === 'child'
-        ? 'get_scheduled_care_for_calendar'
-        : 'get_scheduled_pet_care_for_calendar';
+      // Fetch BOTH child and pet care blocks
+      const [childCareResult, petCareResult] = await Promise.all([
+        supabase.rpc('get_scheduled_care_for_calendar', {
+          p_parent_id: user.id,
+          p_start_date: startDate.toISOString().split('T')[0],
+          p_end_date: endDate.toISOString().split('T')[0]
+        }),
+        supabase.rpc('get_scheduled_pet_care_for_calendar', {
+          p_parent_id: user.id,
+          p_start_date: startDate.toISOString().split('T')[0],
+          p_end_date: endDate.toISOString().split('T')[0]
+        })
+      ]);
 
-      const { data, error } = await supabase.rpc(rpcFunction, {
-        p_parent_id: user.id,
-        p_start_date: startDate.toISOString().split('T')[0],
-        p_end_date: endDate.toISOString().split('T')[0]
-      });
-
-      if (error) {
-        setError(`Error fetching scheduled ${careType} care`);
-        console.error(`Error fetching ${careType} care:`, error);
-        return;
+      if (childCareResult.error) {
+        console.error('Error fetching child care:', childCareResult.error);
+      }
+      if (petCareResult.error) {
+        console.error('Error fetching pet care:', petCareResult.error);
       }
 
-      setScheduledCare(data || []);
+      // Combine both results with care_category property
+      const childBlocks = (childCareResult.data || []).map(block => ({
+        ...block,
+        care_category: 'child' as const
+      }));
+      const petBlocks = (petCareResult.data || []).map(block => ({
+        ...block,
+        care_category: 'pet' as const
+      }));
+
+      const combinedBlocks = [...childBlocks, ...petBlocks];
+      setScheduledCare(combinedBlocks);
     } catch (err) {
-      setError(`Error fetching scheduled ${careType} care`);
-      console.error(`Error fetching ${careType} care:`, err);
+      setError('Error fetching scheduled care');
+      console.error('Error fetching scheduled care:', err);
     } finally {
       setLoading(false);
     }
@@ -662,8 +680,17 @@ function CalendarPageContent() {
       // FIXED: Use normalized date comparison to prevent timezone issues
       const normalizedCareDate = normalizeDateForCalendar(care.care_date);
       const normalizedTargetDate = formatDateForInput(date);
-      
-      return normalizedCareDate === normalizedTargetDate;
+
+      // Apply date filter
+      const matchesDate = normalizedCareDate === normalizedTargetDate;
+
+      // Apply care category filter
+      const matchesFilter =
+        careFilter === 'all' ||
+        (careFilter === 'children' && care.care_category === 'child') ||
+        (careFilter === 'pets' && care.care_category === 'pet');
+
+      return matchesDate && matchesFilter;
     });
 
     // Consolidate blocks that share the same time slot, care type, and group
@@ -1159,10 +1186,15 @@ function CalendarPageContent() {
   };
 
   // Get care type color styling
-  const getCareTypeColor = (careType: string, actionType?: string, status?: string, isHost?: boolean) => {
+  const getCareTypeColor = (careType: string, actionType?: string, status?: string, isHost?: boolean, careCategory?: 'child' | 'pet') => {
     // Check for rescheduled blocks first (highest priority)
     if (actionType === 'rescheduled') {
       return 'bg-orange-100 border border-orange-300 text-orange-800';
+    }
+
+    // Pet care blocks always use purple (unless rescheduled)
+    if (careCategory === 'pet') {
+      return 'bg-purple-100 border border-purple-300 text-purple-800';
     }
 
     // Handle hangout/sleepover blocks with proper colors
@@ -1735,27 +1767,37 @@ function CalendarPageContent() {
             <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3 sm:gap-6 w-full sm:w-auto">
               <h1 className="text-2xl sm:text-3xl font-bold text-gray-900">Calendar</h1>
 
-              {/* Care Type Toggle */}
+              {/* Filter Controls */}
               <div className="flex items-center bg-white rounded-lg border border-gray-300 p-1">
                 <button
-                  onClick={() => setCareType('child')}
+                  onClick={() => setCareFilter('all')}
                   className={`px-3 py-1.5 sm:px-4 sm:py-2 rounded-md text-xs sm:text-sm font-medium transition-colors ${
-                    careType === 'child'
-                      ? 'bg-blue-600 text-white'
+                    careFilter === 'all'
+                      ? 'bg-gray-600 text-white'
                       : 'text-gray-600 hover:text-gray-900'
                   }`}
                 >
-                  Child Care
+                  All
                 </button>
                 <button
-                  onClick={() => setCareType('pet')}
+                  onClick={() => setCareFilter('children')}
                   className={`px-3 py-1.5 sm:px-4 sm:py-2 rounded-md text-xs sm:text-sm font-medium transition-colors ${
-                    careType === 'pet'
+                    careFilter === 'children'
                       ? 'bg-blue-600 text-white'
                       : 'text-gray-600 hover:text-gray-900'
                   }`}
                 >
-                  Pet Care
+                  Children
+                </button>
+                <button
+                  onClick={() => setCareFilter('pets')}
+                  className={`px-3 py-1.5 sm:px-4 sm:py-2 rounded-md text-xs sm:text-sm font-medium transition-colors ${
+                    careFilter === 'pets'
+                      ? 'bg-purple-600 text-white'
+                      : 'text-gray-600 hover:text-gray-900'
+                  }`}
+                >
+                  Pets
                 </button>
               </div>
             </div>
@@ -1823,7 +1865,7 @@ function CalendarPageContent() {
                         {dayCare.slice(0, 2).map((care, careIndex) => (
                           <div
                             key={careIndex}
-                            className={`p-0.5 sm:p-1 md:p-1.5 rounded text-[9px] sm:text-[10px] md:text-xs leading-tight ${getCareTypeColor(care.care_type, care.action_type, care.status, care.is_host)} cursor-pointer hover:opacity-80`}
+                            className={`p-0.5 sm:p-1 md:p-1.5 rounded text-[9px] sm:text-[10px] md:text-xs leading-tight ${getCareTypeColor(care.care_type, care.action_type, care.status, care.is_host, care.care_category)} cursor-pointer hover:opacity-80`}
                             title={`${care.group_name} - ${formatTime(care.start_time)} to ${formatTime(getActualEndTime(care.notes || '', care.end_time))}`}
                             onClick={(e) => {
                               e.stopPropagation();
@@ -1927,7 +1969,7 @@ function CalendarPageContent() {
                         {dayCare.slice(0, 4).map((care, careIndex) => (
                           <div
                             key={careIndex}
-                            className={`p-0.5 sm:p-1 md:p-2 rounded text-[9px] sm:text-[10px] md:text-xs leading-tight ${getCareTypeColor(care.care_type, care.action_type, care.status, care.is_host)} cursor-pointer hover:opacity-80`}
+                            className={`p-0.5 sm:p-1 md:p-2 rounded text-[9px] sm:text-[10px] md:text-xs leading-tight ${getCareTypeColor(care.care_type, care.action_type, care.status, care.is_host, care.care_category)} cursor-pointer hover:opacity-80`}
                             title={`${care.group_name} - ${formatTime(care.start_time)} to ${formatTime(getActualEndTime(care.notes || '', care.end_time))}`}
                             onClick={(e) => {
                               e.stopPropagation();
@@ -2043,7 +2085,7 @@ function CalendarPageContent() {
                                   {/* Type */}
                                   <div>
                                     <span className="font-medium text-gray-700">Type:</span>
-                                    <span className={`ml-2 px-2 py-1 rounded text-xs ${getCareTypeColor(care.care_type, care.action_type, care.status, care.is_host)}`}>
+                                    <span className={`ml-2 px-2 py-1 rounded text-xs ${getCareTypeColor(care.care_type, care.action_type, care.status, care.is_host, care.care_category)}`}>
                                       {care.care_type === 'event' ? 'Event' :
                                        care.care_type === 'provided' ? 'Providing Care' :
                                        care.care_type === 'hangout' ? 'Hangout' :
@@ -2110,7 +2152,7 @@ function CalendarPageContent() {
           )}
 
           {/* Legend */}
-          <div className="mt-6 flex items-center space-x-6 text-sm">
+          <div className="mt-6 flex flex-wrap items-center gap-4 sm:gap-6 text-sm">
             <div className="flex items-center space-x-2">
               <div className="w-4 h-4 bg-blue-100 border border-blue-300 rounded"></div>
               <span>Receiving Care</span>
@@ -2118,6 +2160,10 @@ function CalendarPageContent() {
             <div className="flex items-center space-x-2">
               <div className="w-4 h-4 bg-green-100 border border-green-300 rounded"></div>
               <span>Providing Care</span>
+            </div>
+            <div className="flex items-center space-x-2">
+              <div className="w-4 h-4 bg-purple-100 border border-purple-300 rounded"></div>
+              <span>Pet Care</span>
             </div>
           </div>
 
@@ -2170,7 +2216,7 @@ function CalendarPageContent() {
                 </div>
                 <div>
                   <span className="font-medium text-gray-700">Type:</span>
-                      <span className={`ml-2 px-2 py-1 rounded text-xs ${getCareTypeColor(selectedCare.care_type, selectedCare.action_type, selectedCare.status, selectedCare.is_host)}`}>
+                      <span className={`ml-2 px-2 py-1 rounded text-xs ${getCareTypeColor(selectedCare.care_type, selectedCare.action_type, selectedCare.status, selectedCare.is_host, selectedCare.care_category)}`}>
                     {selectedCare.care_type === 'event' ? 'Event' :
                      selectedCare.care_type === 'provided' ? 'Providing Care' :
                      selectedCare.care_type === 'hangout' ? 'Hangout' :
