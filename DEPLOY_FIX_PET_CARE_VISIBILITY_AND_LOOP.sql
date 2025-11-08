@@ -87,14 +87,15 @@ BEGIN
         SELECT
             request_id,
             COUNT(*)::INTEGER as response_count,
-            COUNT(*) FILTER (WHERE status = 'accepted')::INTEGER as accepted_response_count
+            COUNT(*) FILTER (WHERE pet_care_responses.status = 'accepted')::INTEGER as accepted_response_count
         FROM pet_care_responses
         GROUP BY request_id
     ) response_counts ON pcrq.id = response_counts.request_id
     WHERE pcr.responder_id = p_parent_id        -- ✅ Only show requests where I'm the responder
     AND pcr.status = 'pending'                   -- ✅ Only show pending requests (not submitted/accepted/declined)
     AND pcrq.request_type = 'reciprocal'         -- ✅ Only reciprocal requests
-    AND pcrq.requester_id != p_parent_id          -- ✅ CRITICAL: Don't show my own requests
+    AND pcrq.requester_id != p_parent_id         -- ✅ CRITICAL: Don't show my own requests
+    AND pcrq.status = 'pending'                  -- ✅ Only show pending requests (not accepted/declined)
     ORDER BY pcr.created_at DESC;
 
     RAISE NOTICE 'Returned % pending pet care requests for parent %', (SELECT COUNT(*) FROM pet_care_responses WHERE responder_id = p_parent_id AND status = 'pending'), p_parent_id;
