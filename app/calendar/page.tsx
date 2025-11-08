@@ -218,7 +218,7 @@ function CalendarPageContent() {
   useEffect(() => {
     fetchScheduledCare();
     fetchUserGroups();
-  }, [currentDate, careType]); // Re-fetch when careType changes
+  }, [currentDate]); // Re-fetch when month changes
 
   // Mark all calendar acceptances as "seen" after user has viewed calendar for 2 seconds
   useEffect(() => {
@@ -2551,7 +2551,7 @@ function CalendarPageContent() {
                 <div className="px-6 py-4 border-b border-gray-200">
                   <div className="flex items-center justify-between">
                     <h3 className="text-lg font-semibold text-gray-900">
-                      Create New {careType === 'pet' ? 'Pet Care Request' :
+                      Create New {newRequestData.type === 'pet_care' ? 'Pet Care Request' :
                         (newRequestData.type === 'care' ? 'Care Request' : newRequestData.type.charAt(0).toUpperCase() + newRequestData.type.slice(1))}
                     </h3>
                     <button
@@ -2566,9 +2566,8 @@ function CalendarPageContent() {
                 </div>
                 
                 <div className="px-6 py-4 space-y-4">
-                  {/* Request Type Selection - Only for child care */}
-                  {careType === 'child' && (
-                    <div>
+                  {/* Request Type Selection */}
+                  <div>
                       <label className="block text-sm font-medium text-gray-700 mb-2">Type</label>
                       <div className="grid grid-cols-3 gap-3">
                         <button
@@ -2606,7 +2605,6 @@ function CalendarPageContent() {
                         </button>
                       </div>
                     </div>
-                  )}
 
                   {/* Date */}
                   <div>
@@ -2751,8 +2749,8 @@ function CalendarPageContent() {
                           invited_child_ids: []
                         }));
                         if (groupId) {
-                          // Fetch children or pets based on careType
-                          if (careType === 'pet') {
+                          // Fetch children or pets based on request type
+                          if (newRequestData.type === 'pet_care') {
                             fetchPetsForGroup(groupId);
                           } else {
                             fetchChildrenForGroup(groupId);
@@ -2818,31 +2816,22 @@ function CalendarPageContent() {
                     </div>
                   )}
 
-                  {/* End Date - Always shown for pet care, auto-calculated for child care */}
-                  {(careType === 'pet' || newRequestData.end_date) && newRequestData.type === 'care' && (
+                  {/* End Date - Only shown for pet care */}
+                  {newRequestData.type === 'pet_care' && (
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-2">
                         End Date
-                        {careType === 'pet' ? (
-                          <span className="ml-2 text-xs text-purple-600">(Optional - for multi-day pet care)</span>
-                        ) : (
-                          <span className="ml-2 text-xs text-blue-600">(Auto-calculated)</span>
-                        )}
+                        <span className="ml-2 text-xs text-purple-600">(Optional - for multi-day pet care)</span>
                       </label>
                       <input
                         type="date"
                         value={newRequestData.end_date}
                         onChange={(e) => setNewRequestData(prev => ({ ...prev, end_date: e.target.value }))}
                         min={newRequestData.date || undefined}
-                        className={`w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 ${
-                          careType === 'pet' ? 'focus:ring-purple-500' : 'focus:ring-blue-500 bg-blue-50'
-                        }`}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500"
                       />
                       <p className="text-xs text-gray-500 mt-1">
-                        {careType === 'pet'
-                          ? 'Leave empty for same-day care, or set an end date for vacations/trips'
-                          : 'Automatically set when end time is on the next day. You can override if needed.'
-                        }
+                        Leave empty for same-day care, or set an end date for vacations/trips
                       </p>
                     </div>
                   )}
