@@ -1267,17 +1267,15 @@ function CalendarPageContent() {
 
   // Function to get filtered groups based on request type
   const getFilteredGroups = () => {
-    // Filter groups based on careType
-    if (careType === 'pet') {
-      // Pet care mode: only show pet groups
+    // Filter groups based on request type
+    if (newRequestData.type === 'pet_care') {
+      // Pet care: only show pet groups
       return groups.filter(group => group.group_type === 'pet');
-    } else {
-      // Child care mode: Hangout and sleepover use care groups
-      if (newRequestData.type === 'care' || newRequestData.type === 'hangout' || newRequestData.type === 'sleepover') {
-        return groups.filter(group => group.group_type === 'care');
-      }
-      return groups;
+    } else if (newRequestData.type === 'care' || newRequestData.type === 'hangout') {
+      // Child care (Care Request & Hangout): only show care groups
+      return groups.filter(group => group.group_type === 'care');
     }
+    return groups;
   };
 
   const fetchChildrenForGroup = async (groupId: string) => {
@@ -1534,57 +1532,54 @@ function CalendarPageContent() {
         : newRequestData.notes;
 
       if (newRequestData.type === 'care') {
-        // Check if this is pet care or child care
-        if (careType === 'pet') {
-          // Create reciprocal pet care request (mirrors child care workflow)
-          if (!newRequestData.pet_id) {
-            alert('Please select a pet');
-            return;
-          }
+        // Create reciprocal child care request
+        const { data, error } = await supabase.rpc('create_reciprocal_care_request', {
+          requester_id: user.id,
+          group_id: newRequestData.group_id,
+          requested_date: newRequestData.date,
+          start_time: newRequestData.start_time,
+          end_time: dbEndTime, // Use capped end time for database
+          child_id: newRequestData.child_id,
+          notes: enhancedNotes || null
+        });
 
-          const { data, error } = await supabase.rpc('create_pet_care_request', {
-            requester_id: user.id,
-            group_id: newRequestData.group_id,
-            requested_date: newRequestData.date,
-            start_time: newRequestData.start_time,
-            end_time: newRequestData.end_time,
-            pet_id: newRequestData.pet_id,
-            end_date: newRequestData.end_date || null,
-            notes: newRequestData.notes || null
-          });
-
-          if (error) {
-            alert('Error creating pet care request: ' + error.message);
-            return;
-          }
-
-          alert('Pet care request created successfully! Group members have been notified.');
-        } else {
-          // Create reciprocal child care request
-          const { data, error } = await supabase.rpc('create_reciprocal_care_request', {
-            requester_id: user.id,
-            group_id: newRequestData.group_id,
-            requested_date: newRequestData.date,
-            start_time: newRequestData.start_time,
-            end_time: dbEndTime, // Use capped end time for database
-            child_id: newRequestData.child_id,
-            notes: enhancedNotes || null
-          });
-
-          if (error) {
-            alert('Error creating care request: ' + error.message);
-            return;
-          }
-
-          // Send notifications to group members via messages
-          if (data) {
-            await supabase.rpc('send_care_request_notifications', {
-              p_care_request_id: data
-            });
-          }
-
-          alert('Care request created successfully! Messages sent to group members.');
+        if (error) {
+          alert('Error creating care request: ' + error.message);
+          return;
         }
+
+        // Send notifications to group members via messages
+        if (data) {
+          await supabase.rpc('send_care_request_notifications', {
+            p_care_request_id: data
+          });
+        }
+
+        alert('Care request created successfully! Messages sent to group members.');
+      } else if (newRequestData.type === 'pet_care') {
+        // Create reciprocal pet care request
+        if (!newRequestData.pet_id) {
+          alert('Please select a pet');
+          return;
+        }
+
+        const { data, error } = await supabase.rpc('create_pet_care_request', {
+          requester_id: user.id,
+          group_id: newRequestData.group_id,
+          requested_date: newRequestData.date,
+          start_time: newRequestData.start_time,
+          end_time: newRequestData.end_time,
+          pet_id: newRequestData.pet_id,
+          end_date: newRequestData.end_date || null,
+          notes: newRequestData.notes || null
+        });
+
+        if (error) {
+          alert('Error creating pet care request: ' + error.message);
+          return;
+        }
+
+        alert('Pet care request created successfully! Group members have been notified.');
       } else if (newRequestData.type === 'hangout') {
         // Create hangout invitation
         if (newRequestData.hosting_child_ids.length === 0) {
@@ -2554,14 +2549,14 @@ function CalendarPageContent() {
                         </button>
                         <button
                           type="button"
-                          onClick={() => setNewRequestData(prev => ({ ...prev, type: 'sleepover', child_id: '' }))}
+                          onClick={() => setNewRequestData(prev => ({ ...prev, type: 'pet_care', child_id: '', pet_id: '', hosting_child_ids: [], invited_child_ids: [] }))}
                           className={`px-4 py-3 rounded-md border-2 transition-all ${
-                            newRequestData.type === 'sleepover'
+                            newRequestData.type === 'pet_care'
                               ? 'border-purple-500 bg-purple-50 text-purple-700 font-semibold'
                               : 'border-gray-300 hover:border-gray-400'
                           }`}
                         >
-                          Sleepover
+                          🐾 Pet Care
                         </button>
                       </div>
                     </div>
@@ -2733,35 +2728,46 @@ function CalendarPageContent() {
                     </select>
                   </div>
 
-                  {/* Child/Pet Selection (Care Request only) */}
-                  {newRequestData.type === 'care' && newRequestData.group_id && (
+                  {/* Child Selection (Care Request & Hangout) */}
+                  {(newRequestData.type === 'care' || newRequestData.type === 'hangout') && newRequestData.group_id && (
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-2">
-                        {careType === 'pet' ? 'Pet' : 'Child'}
+                        Child
                       </label>
                       <select
-                        value={careType === 'pet' ? newRequestData.pet_id : newRequestData.child_id}
-                        onChange={(e) => setNewRequestData(prev => ({
-                          ...prev,
-                          ...(careType === 'pet' ? { pet_id: e.target.value } : { child_id: e.target.value })
-                        }))}
+                        value={newRequestData.child_id}
+                        onChange={(e) => setNewRequestData(prev => ({ ...prev, child_id: e.target.value }))}
                         className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
                         required
                       >
-                        <option value="">{careType === 'pet' ? 'Select a pet' : 'Select a child'}</option>
-                        {careType === 'pet' ? (
-                          pets.map(pet => (
-                            <option key={pet.id} value={pet.id}>
-                              {pet.name} {pet.species ? `(${pet.species})` : ''}
-                            </option>
-                          ))
-                        ) : (
-                          children.map(child => (
-                            <option key={child.id} value={child.id}>
-                              {child.name}
-                            </option>
-                          ))
-                        )}
+                        <option value="">Select a child</option>
+                        {children.map(child => (
+                          <option key={child.id} value={child.id}>
+                            {child.name}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+
+                  {/* Pet Selection (Pet Care only) */}
+                  {newRequestData.type === 'pet_care' && newRequestData.group_id && (
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-2">
+                        Pet
+                      </label>
+                      <select
+                        value={newRequestData.pet_id}
+                        onChange={(e) => setNewRequestData(prev => ({ ...prev, pet_id: e.target.value }))}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500"
+                        required
+                      >
+                        <option value="">Select a pet</option>
+                        {pets.map(pet => (
+                          <option key={pet.id} value={pet.id}>
+                            {pet.name} {pet.species ? `(${pet.species})` : ''}
+                          </option>
+                        ))}
                       </select>
                     </div>
                   )}
