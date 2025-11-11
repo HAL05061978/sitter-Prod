@@ -15,6 +15,7 @@ interface CareRequest {
   requester_id: string;           // Changed from requesting_parent_id
   requester_name: string;         // Changed from requesting_parent_name
   requested_date: string;         // Changed from care_date
+  requested_end_date?: string;    // For multi-day care (from SQL function)
   start_time: string;
   end_time: string;
   notes: string;
@@ -23,7 +24,7 @@ interface CareRequest {
   response_count: number;
   accepted_response_count: number;
   pet_name?: string;              // For pet care requests
-  end_date?: string;              // For multi-day care
+  end_date?: string;              // For multi-day care (alternate field name)
   care_type?: 'child' | 'pet';    // To distinguish between types
 }
 
@@ -401,11 +402,58 @@ export default function SchedulerPage() {
     reciprocal_pet_id: '',
     notes: ''
   });
+  const [dateOverlapWarning, setDateOverlapWarning] = useState('');
+
+  // Check for date overlap (live validation)
+  useEffect(() => {
+    console.log('🔍 Validation check running...', {
+      selectedRequest: selectedRequest?.care_type,
+      reciprocal_date: reciprocalResponse.reciprocal_date,
+      reciprocal_end_date: reciprocalResponse.reciprocal_end_date,
+      requested_date: selectedRequest?.requested_date,
+      requested_end_date: selectedRequest?.requested_end_date,  // SQL returns as requested_end_date
+      end_date: selectedRequest?.end_date  // Also check this
+    });
+
+    if (!selectedRequest || selectedRequest.care_type !== 'pet') {
+      setDateOverlapWarning('');
+      return;
+    }
+
+    if (!reciprocalResponse.reciprocal_date) {
+      setDateOverlapWarning('');
+      return;
+    }
+
+    const reqStart = new Date(selectedRequest.requested_date);
+    // Try both field names since SQL function uses requested_end_date but interface has end_date
+    const reqEnd = new Date(selectedRequest.requested_end_date || selectedRequest.end_date || selectedRequest.requested_date);
+    const recStart = new Date(reciprocalResponse.reciprocal_date);
+    const recEnd = new Date(reciprocalResponse.reciprocal_end_date || reciprocalResponse.reciprocal_date);
+
+    console.log('📅 Date comparison:', {
+      reqStart: reqStart.toISOString().split('T')[0],
+      reqEnd: reqEnd.toISOString().split('T')[0],
+      recStart: recStart.toISOString().split('T')[0],
+      recEnd: recEnd.toISOString().split('T')[0],
+      overlaps: recStart <= reqEnd && recEnd >= reqStart
+    });
+
+    // Check if date ranges overlap
+    if (recStart <= reqEnd && recEnd >= reqStart) {
+      const warning = '⚠️ Warning: Reciprocal dates overlap with the original request. You cannot watch their pet while they are watching yours. Please choose different dates.';
+      console.log('⚠️ OVERLAP DETECTED - Setting warning:', warning);
+      setDateOverlapWarning(warning);
+    } else {
+      console.log('✅ No overlap - Clearing warning');
+      setDateOverlapWarning('');
+    }
+  }, [reciprocalResponse.reciprocal_date, reciprocalResponse.reciprocal_end_date, selectedRequest]);
 
   // Utility function to extract actual end time from notes for next-day care
   const getActualEndTime = (notes: string, fallbackEndTime: string): string => {
     if (!notes) return fallbackEndTime;
-    
+
     const match = notes.match(/\[Next-day care: Actual end time is ([0-9]{2}:[0-9]{2})\]/);
     return match ? match[1] : fallbackEndTime;
   };
@@ -731,7 +779,7 @@ export default function SchedulerPage() {
 
       // Add care requests I need to respond to
       careResponses
-        .filter(response => response.status === 'pending')
+        .filter(response => response.status === 'pending' && response.responder_id === user.id)
         .forEach((response, index) => {
           // Get actual end time - use cached value if available, otherwise use notes or fallback
           const cachedActualEndTime = actualEndTimes.get(response.care_request_id);
@@ -753,7 +801,7 @@ export default function SchedulerPage() {
           messages.push({
           id: `pending-${response.care_response_id || index}`,
           type: 'care_request',
-          title: `A ${response.care_type === 'pet' ? '🐾 pet' : 'child'} care request for ${formatDateOnly(response.requested_date)} from ${formatTime(response.start_time)} to ${formatTime(actualEndTime)} has been sent from ${response.requester_name}${response.care_type === 'pet' && response.pet_name ? ` for ${response.pet_name}` : ''}${response.end_date ? ` until ${formatDateOnly(response.end_date)}` : ''}`,
+          title: `A ${response.care_type === 'pet' ? '🐾 pet' : 'child'} care request for ${formatDateOnly(response.requested_date)} from ${formatTime(response.start_time)} to ${formatTime(actualEndTime)} has been sent from ${response.requester_name}${response.care_type === 'pet' && response.pet_name ? ` for ${response.pet_name}` : ''}${(response.end_date || response.requested_end_date) && (response.end_date || response.requested_end_date) !== response.requested_date ? ` until ${formatDateOnly(response.end_date || response.requested_end_date)}` : ''}`,
           subtitle: '', // Remove redundant subtitle since date/time is now in title
           timestamp: response.created_at,
           data: response,
@@ -809,10 +857,16 @@ export default function SchedulerPage() {
       console.log('🔍 careResponses:', careResponses);
 
       careRequests.forEach(request => {
-        // Show ALL responses (pending, submitted, accepted, declined) not just submitted ones
+        // IMPORTANT: Only show this section if the current user is the REQUESTER
+        // Skip if current user is not the requester (they're just a responder)
+        if (!user || request.requester_id !== user.id) {
+          return; // Skip this request - current user is not the requester
+        }
+
+        // Show only SUBMITTED responses (not pending invitations that haven't been filled out yet)
         const requestResponses = careResponses.filter(
           response => response.care_request_id === request.care_request_id &&
-                     (response.status === 'pending' || response.status === 'submitted' || response.status === 'accepted' || response.status === 'declined')
+                     (response.status === 'submitted' || response.status === 'accepted' || response.status === 'declined')
         );
 
         if (requestResponses.length > 0) {
@@ -854,7 +908,7 @@ export default function SchedulerPage() {
           messages.push({
             id: `responses-${request.care_request_id}`,
             type: 'care_response',
-            title: `Your request for ${formatDateOnly(request.requested_date)} from ${formatTime(request.start_time)} to ${formatTime(getActualEndTime(request.notes || '', request.end_time))} care has received ${responseCount} response${responseCount !== 1 ? 's' : ''}`,
+            title: `Your ${request.care_type === 'pet' ? 'pet' : 'child'} care request for ${formatDateOnly(request.requested_date)} from ${formatTime(request.start_time)} to ${formatTime(getActualEndTime(request.notes || '', request.end_time))} has received ${responseCount} response${responseCount !== 1 ? 's' : ''}`,
             subtitle: '', // Empty string instead of undefined
             timestamp: latestResponse.created_at,
             data: { request, responses, responseCount },
@@ -1260,7 +1314,7 @@ export default function SchedulerPage() {
                   <div className="space-y-3 mb-4">
                     <h5 className="font-medium text-gray-900 text-sm">All Responses:</h5>
                     {message.data.responses.map((response: any, index: number) => (
-                      <div key={response.care_response_id || index} className="bg-gray-50 rounded-lg p-3 border-l-4 border-blue-500">
+                      <div key={response.care_response_id || index} className={`bg-gray-50 rounded-lg p-3 border-l-4 ${response.care_type === 'pet' ? 'border-purple-500' : 'border-blue-500'}`}>
                         <div className="flex items-start justify-between">
                           <div className="flex-1">
                             <p className="font-medium text-gray-900 text-sm">
@@ -1283,7 +1337,7 @@ export default function SchedulerPage() {
                           ) : (
                             <button
                               onClick={() => handleAcceptResponse(response.care_response_id)}
-                              className="px-3 py-1 bg-green-600 text-white text-sm rounded hover:bg-green-700 ml-4"
+                              className={`px-3 py-1 text-white text-sm rounded ml-4 ${response.care_type === 'pet' ? 'bg-purple-600 hover:bg-purple-700' : 'bg-green-600 hover:bg-green-700'}`}
                             >
                               Accept Response
                             </button>
@@ -2284,6 +2338,16 @@ export default function SchedulerPage() {
 
           if (error) throw error;
 
+          // Mark the reschedule_counter_sent notification as read
+          if (careRequestId) {
+            await supabase
+              .from('notifications')
+              .update({ is_read: true })
+              .eq('user_id', user.id)
+              .eq('type', 'reschedule_counter_sent')
+              .eq('data->>counter_request_id', careRequestId);
+          }
+
           showAlertOnce('You have declined the counter-proposal. The parent has been notified.');
           await fetchData();
           setProcessingReschedule(false);
@@ -2309,6 +2373,20 @@ export default function SchedulerPage() {
         return;
       }
 
+      // Look up care_request_id if not provided
+      let requestId = careRequestId;
+      if (!requestId) {
+        const { data: responseData, error: responseError } = await supabase
+          .from('care_responses')
+          .select('request_id')
+          .eq('id', careResponseId)
+          .single();
+
+        if (responseData) {
+          requestId = responseData.request_id;
+        }
+      }
+
       const { data, error } = await supabase.rpc('handle_improved_reschedule_response', {
         p_care_response_id: careResponseId,
         p_responder_id: user.id,
@@ -2323,15 +2401,14 @@ export default function SchedulerPage() {
       }
 
       if (data.success) {
-        // If accepting, update calendar counter
-        if (response === 'accepted') {
-          // Reschedule acceptance modifies 2 existing blocks (doesn't create new ones)
-          // So we add +2 to indicate calendar was updated
-          const currentCalendarCount = parseInt(localStorage.getItem('newCalendarBlocksCount') || '0', 10);
-          localStorage.setItem('newCalendarBlocksCount', (currentCalendarCount + 2).toString());
-
-          // Dispatch calendar counter update event
-          window.dispatchEvent(new Event('calendarCountUpdated'));
+        // Mark the reschedule_request notification as read
+        if (requestId) {
+          await supabase
+            .from('notifications')
+            .update({ is_read: true })
+            .eq('user_id', user.id)
+            .eq('type', 'reschedule_request')
+            .eq('data->>request_id', requestId);
         }
 
         // Dispatch scheduler counter update event (to decrement Messages button)
@@ -2507,6 +2584,12 @@ export default function SchedulerPage() {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) return;
 
+      // VALIDATION: For pet care, check that reciprocal dates don't overlap with original request
+      if (dateOverlapWarning) {
+        setError('Please fix the date overlap before submitting. Choose reciprocal dates that do not conflict with the original request.');
+        return;
+      }
+
       let data, error;
 
       // Call the appropriate RPC function based on care type
@@ -2539,7 +2622,12 @@ export default function SchedulerPage() {
       }
 
       if (error) {
-        setError('Failed to submit response');
+        // Check if it's a date overlap error from backend
+        if (error.message && error.message.includes('overlap')) {
+          setError('Date overlap detected: Please choose reciprocal dates that do not conflict with the original request dates.');
+        } else {
+          setError('Failed to submit response. Please check your inputs and try again.');
+        }
         console.error('Error submitting response:', error);
         return;
       }
@@ -3982,7 +4070,11 @@ export default function SchedulerPage() {
                           onChange={(e) => setReciprocalResponse(prev => ({ ...prev, reciprocal_date: e.target.value }))}
                           min={new Date().toISOString().split('T')[0]}
                           max={`${new Date().getFullYear() + 5}-12-31`}
-                          className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                          className={`w-full px-3 py-2 border rounded-md focus:outline-none focus:ring-2 ${
+                            dateOverlapWarning
+                              ? 'border-yellow-500 focus:ring-yellow-500 bg-yellow-50'
+                              : 'border-gray-300 focus:ring-blue-500'
+                          }`}
                         />
                       </div>
                       <div>
@@ -4012,14 +4104,34 @@ export default function SchedulerPage() {
                       {selectedRequest.care_type === 'pet' && (
                         <div>
                           <label className="block text-sm font-medium text-gray-700 mb-1">
-                            Reciprocal End Date (for multi-day care)
+                            Reciprocal End Date
+                            <span className="ml-2 text-xs text-purple-600">(Optional - for multi-day care)</span>
                           </label>
                           <input
                             type="date"
                             value={reciprocalResponse.reciprocal_end_date}
                             onChange={(e) => setReciprocalResponse(prev => ({ ...prev, reciprocal_end_date: e.target.value }))}
-                            className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500"
+                            min={reciprocalResponse.reciprocal_date || undefined}
+                            className={`w-full px-3 py-2 border rounded-md focus:outline-none focus:ring-2 ${
+                              dateOverlapWarning
+                                ? 'border-yellow-500 focus:ring-yellow-500 bg-yellow-50'
+                                : 'border-gray-300 focus:ring-purple-500'
+                            }`}
                           />
+                          <p className="text-xs text-gray-500 mt-1">
+                            Leave empty for same-day reciprocal care
+                          </p>
+                        </div>
+                      )}
+
+                      {/* Date Overlap Warning */}
+                      {selectedRequest.care_type === 'pet' && dateOverlapWarning && (
+                        <div className="md:col-span-2">
+                          <div className="p-3 bg-yellow-50 border border-yellow-300 rounded-md">
+                            <p className="text-sm text-yellow-800">
+                              {dateOverlapWarning}
+                            </p>
+                          </div>
                         </div>
                       )}
                       <div>

@@ -682,7 +682,18 @@ function CalendarPageContent() {
       const normalizedTargetDate = formatDateForInput(date);
 
       // Apply date filter
-      const matchesDate = normalizedCareDate === normalizedTargetDate;
+      let matchesDate = normalizedCareDate === normalizedTargetDate;
+
+      // FOR MULTI-DAY PET CARE: Check if date falls within the care range
+      if (care.care_category === 'pet' && care.end_date) {
+        const normalizedEndDate = normalizeDateForCalendar(care.end_date);
+        const targetDate = new Date(normalizedTargetDate);
+        const startDate = new Date(normalizedCareDate);
+        const endDate = new Date(normalizedEndDate);
+
+        // Date is within range if it's >= start AND <= end
+        matchesDate = targetDate >= startDate && targetDate <= endDate;
+      }
 
       // Apply care category filter
       const matchesFilter =
@@ -1185,6 +1196,36 @@ function CalendarPageContent() {
     return endDateObj;
   };
 
+  // Helper to determine multi-day pet block position
+  const getMultiDayInfo = (care: any, currentDate: Date) => {
+    if (care.care_category !== 'pet' || !care.end_date) {
+      return { isMultiDay: false, isFirstDay: false, isLastDay: false, dayNumber: 1, totalDays: 1 };
+    }
+
+    const normalizedCareDate = normalizeDateForCalendar(care.care_date);
+    const normalizedEndDate = normalizeDateForCalendar(care.end_date);
+    const normalizedCurrentDate = formatDateForInput(currentDate);
+
+    const startDate = new Date(normalizedCareDate);
+    const endDate = new Date(normalizedEndDate);
+    const current = new Date(normalizedCurrentDate);
+
+    const isFirstDay = current.getTime() === startDate.getTime();
+    const isLastDay = current.getTime() === endDate.getTime();
+
+    // Calculate day number and total days
+    const daysDiff = Math.floor((current.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24));
+    const totalDays = Math.floor((endDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24)) + 1;
+
+    return {
+      isMultiDay: true,
+      isFirstDay,
+      isLastDay,
+      dayNumber: daysDiff + 1,
+      totalDays
+    };
+  };
+
   // Get care type color styling
   const getCareTypeColor = (careType: string, actionType?: string, status?: string, isHost?: boolean, careCategory?: 'child' | 'pet') => {
     // Check for rescheduled blocks first (highest priority)
@@ -1192,9 +1233,13 @@ function CalendarPageContent() {
       return 'bg-orange-100 border border-orange-300 text-orange-800';
     }
 
-    // Pet care blocks always use purple (unless rescheduled)
+    // Pet care blocks: purple for receiving, orange for providing
     if (careCategory === 'pet') {
-      return 'bg-purple-100 border border-purple-300 text-purple-800';
+      if (careType === 'provided') {
+        return 'bg-orange-100 border border-orange-300 text-orange-800';
+      } else {
+        return 'bg-purple-100 border border-purple-300 text-purple-800';
+      }
     }
 
     // Handle hangout/sleepover blocks with proper colors
@@ -1595,6 +1640,31 @@ function CalendarPageContent() {
           return;
         }
 
+        // VALIDATION: Check for existing scheduled care that would conflict
+        const requestStart = new Date(newRequestData.date);
+        const requestEnd = new Date(newRequestData.end_date || newRequestData.date);
+
+        const conflictingBlocks = scheduledCare.filter(block => {
+          if (block.care_category !== 'pet') return false; // Only check pet care blocks
+
+          const blockStart = new Date(block.care_date);
+          const blockEnd = new Date(block.end_date || block.care_date);
+
+          // Check if date ranges overlap
+          return blockStart <= requestEnd && blockEnd >= requestStart;
+        });
+
+        if (conflictingBlocks.length > 0) {
+          const conflictDates = conflictingBlocks.map(b =>
+            b.end_date
+              ? `${formatDateOnly(b.care_date)} - ${formatDateOnly(b.end_date)}`
+              : formatDateOnly(b.care_date)
+          ).join(', ');
+
+          alert(`Cannot create pet care request: You already have scheduled pet care during these dates (${conflictDates}). Please choose different dates.`);
+          return;
+        }
+
         const { data, error } = await supabase.rpc('create_pet_care_request', {
           requester_id: user.id,
           group_id: newRequestData.group_id,
@@ -1810,7 +1880,17 @@ function CalendarPageContent() {
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
             </svg>
           </button>
-          <h2 className="text-base sm:text-lg md:text-xl font-semibold text-gray-700 whitespace-nowrap">
+          <h2
+            className={`text-base sm:text-lg md:text-xl font-semibold text-gray-700 whitespace-nowrap ${
+              viewMode === 'weekly' ? 'cursor-pointer hover:text-blue-600 transition-colors' : ''
+            }`}
+            onClick={() => {
+              if (viewMode === 'weekly') {
+                goBackToMonthly();
+              }
+            }}
+            title={viewMode === 'weekly' ? 'Click to return to monthly view' : ''}
+          >
             {format(currentDate, 'MMMM yyyy')}
           </h2>
           <button
@@ -1862,11 +1942,22 @@ function CalendarPageContent() {
 
                       {/* Simplified care blocks - show only care type and time */}
                       <div className="space-y-0.5 sm:space-y-1 md:space-y-1.5">
-                        {dayCare.slice(0, 2).map((care, careIndex) => (
+                        {dayCare.slice(0, 2).map((care, careIndex) => {
+                          const multiDayInfo = getMultiDayInfo(care, day);
+
+                          return (
                           <div
                             key={careIndex}
-                            className={`p-0.5 sm:p-1 md:p-1.5 rounded text-[9px] sm:text-[10px] md:text-xs leading-tight ${getCareTypeColor(care.care_type, care.action_type, care.status, care.is_host, care.care_category)} cursor-pointer hover:opacity-80`}
-                            title={`${care.group_name} - ${formatTime(care.start_time)} to ${formatTime(getActualEndTime(care.notes || '', care.end_time))}`}
+                            className={`p-0.5 sm:p-1 md:p-1.5 text-[9px] sm:text-[10px] md:text-xs leading-tight ${getCareTypeColor(care.care_type, care.action_type, care.status, care.is_host, care.care_category)} cursor-pointer hover:opacity-80 ${
+                              multiDayInfo.isMultiDay
+                                ? multiDayInfo.isFirstDay
+                                  ? 'rounded-l border-r-0'
+                                  : multiDayInfo.isLastDay
+                                    ? 'rounded-r border-l-0'
+                                    : 'rounded-none border-x-0'
+                                : 'rounded'
+                            }`}
+                            title={`${care.group_name} - ${formatTime(care.start_time)} to ${formatTime(getActualEndTime(care.notes || '', care.end_time))}${multiDayInfo.isMultiDay ? ` (Day ${multiDayInfo.dayNumber} of ${multiDayInfo.totalDays})` : ''}`}
                             onClick={(e) => {
                               e.stopPropagation();
                             setSelectedCare(care);
@@ -1876,20 +1967,38 @@ function CalendarPageContent() {
                         >
                           {/* Care type label */}
                           <div className="font-semibold truncate text-[9px] sm:text-[10px] md:text-xs">
-                            {care.action_type === 'rescheduled' && care.status === 'rescheduled' ? 'Rescheduling' :
-                             care.care_type === 'event' ? 'Event' :
-                             care.care_type === 'provided' ? 'Providing' :
-                             care.care_type === 'hangout' ? 'Hangout' :
-                             care.care_type === 'sleepover' ? 'Sleepover' :
-                             care.care_type === 'open_block' ? 'Open' : 'Receiving'}
+                            {multiDayInfo.isMultiDay ? (
+                              multiDayInfo.isFirstDay ? (
+                                `🐾 ${care.action_type === 'rescheduled' && care.status === 'rescheduled' ? 'Rescheduling' :
+                                 care.care_type === 'provided' ? 'Providing' : 'Receiving'} →`
+                              ) : multiDayInfo.isLastDay ? (
+                                `→ ${care.action_type === 'rescheduled' && care.status === 'rescheduled' ? 'Rescheduling' :
+                                 care.care_type === 'provided' ? 'Providing' : 'Receiving'} ●`
+                              ) : (
+                                `→ ${care.action_type === 'rescheduled' && care.status === 'rescheduled' ? 'Rescheduling' :
+                                 care.care_type === 'provided' ? 'Providing' : 'Receiving'} →`
+                              )
+                            ) : (
+                              care.action_type === 'rescheduled' && care.status === 'rescheduled' ? 'Rescheduling' :
+                              care.care_type === 'event' ? 'Event' :
+                              care.care_type === 'provided' ? 'Providing' :
+                              care.care_type === 'hangout' ? 'Hangout' :
+                              care.care_type === 'sleepover' ? 'Sleepover' :
+                              care.care_type === 'open_block' ? 'Open' : 'Receiving'
+                            )}
                           </div>
 
-                          {/* Time range - truncated to fit */}
+                          {/* Time range - truncated to fit (or day indicator for multi-day) */}
                           <div className="opacity-90 truncate text-[8px] sm:text-[9px] md:text-[10px]">
-                            {formatTime(care.start_time).replace(' ', '')}-{formatTime(getActualEndTime(care.notes || '', care.end_time)).replace(' ', '')}
+                            {multiDayInfo.isMultiDay ? (
+                              `Day ${multiDayInfo.dayNumber}/${multiDayInfo.totalDays}`
+                            ) : (
+                              `${formatTime(care.start_time).replace(' ', '')}-${formatTime(getActualEndTime(care.notes || '', care.end_time)).replace(' ', '')}`
+                            )}
                           </div>
                         </div>
-                      ))}
+                        );
+                      })}
                         {dayCare.length > 2 && (
                           <div className="h-2 bg-gray-300 rounded-full opacity-80" title={`${dayCare.length - 2} more items`} />
                         )}
@@ -1902,43 +2011,6 @@ function CalendarPageContent() {
           ) : (
             /* Weekly View */
             <div className="bg-white rounded-lg shadow overflow-hidden mb-6">
-              <div className="px-4 py-3 border-b border-gray-200 bg-gray-50">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center space-x-4">
-                    <button
-                      onClick={goBackToMonthly}
-                      className="p-2 rounded-lg bg-gray-200 hover:bg-gray-300 transition-colors"
-                      title="Back to monthly view"
-                    >
-                      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
-                      </svg>
-                    </button>
-                    <h3 className="text-lg font-semibold text-gray-900">
-                      Week of {format(startOfWeek(selectedDate!, { weekStartsOn: 0 }), 'MMM d')} - {format(endOfWeek(selectedDate!, { weekStartsOn: 0 }), 'MMM d, yyyy')}
-                    </h3>
-                  </div>
-                  <div className="flex items-center space-x-2">
-                    <button
-                      onClick={() => navigateWeek('prev')}
-                      className="p-1 rounded hover:bg-gray-200"
-                    >
-                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
-                      </svg>
-                    </button>
-                    <button
-                      onClick={() => navigateWeek('next')}
-                      className="p-1 rounded hover:bg-gray-200"
-                    >
-                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                      </svg>
-                    </button>
-                  </div>
-                </div>
-            </div>
-              
               <div className="grid grid-cols-7">
                 {getWeeklyDates(selectedDate!).map((date, index) => {
                   const dayCare = getScheduledCareForDay(date);
@@ -1948,7 +2020,7 @@ function CalendarPageContent() {
                   return (
                     <div
                       key={index}
-                      className={`min-h-[60px] sm:min-h-[80px] md:min-h-[120px] p-1 sm:p-2 md:p-3 border-r border-b border-gray-200 cursor-pointer hover:bg-gray-50 ${
+                      className={`relative min-h-[60px] sm:min-h-[80px] md:min-h-[120px] p-1 sm:p-2 md:p-3 border-r border-b border-gray-200 cursor-pointer hover:bg-gray-50 ${
                         isToday ? 'bg-blue-50' : ''
                       } ${isSelected ? 'bg-blue-100 border-blue-300' : ''}`}
                       onClick={() => handleDaySelect(date)}
@@ -1966,11 +2038,22 @@ function CalendarPageContent() {
 
                       {/* Simplified care indicators for weekly view */}
                       <div className="space-y-0.5 sm:space-y-1 md:space-y-1.5 mt-1 sm:mt-2 md:mt-3">
-                        {dayCare.slice(0, 4).map((care, careIndex) => (
+                        {dayCare.slice(0, 4).map((care, careIndex) => {
+                          const multiDayInfo = getMultiDayInfo(care, date);
+
+                          return (
                           <div
                             key={careIndex}
-                            className={`p-0.5 sm:p-1 md:p-2 rounded text-[9px] sm:text-[10px] md:text-xs leading-tight ${getCareTypeColor(care.care_type, care.action_type, care.status, care.is_host, care.care_category)} cursor-pointer hover:opacity-80`}
-                            title={`${care.group_name} - ${formatTime(care.start_time)} to ${formatTime(getActualEndTime(care.notes || '', care.end_time))}`}
+                            className={`p-0.5 sm:p-1 md:p-2 text-[9px] sm:text-[10px] md:text-xs leading-tight ${getCareTypeColor(care.care_type, care.action_type, care.status, care.is_host, care.care_category)} cursor-pointer hover:opacity-80 ${
+                              multiDayInfo.isMultiDay
+                                ? multiDayInfo.isFirstDay
+                                  ? 'rounded-l border-r-0'
+                                  : multiDayInfo.isLastDay
+                                    ? 'rounded-r border-l-0'
+                                    : 'rounded-none border-x-0'
+                                : 'rounded'
+                            }`}
+                            title={`${care.group_name} - ${formatTime(care.start_time)} to ${formatTime(getActualEndTime(care.notes || '', care.end_time))}${multiDayInfo.isMultiDay ? ` (Day ${multiDayInfo.dayNumber} of ${multiDayInfo.totalDays})` : ''}`}
                             onClick={(e) => {
                               e.stopPropagation();
                               setSelectedCare(care);
@@ -1980,24 +2063,68 @@ function CalendarPageContent() {
                           >
                             {/* Care type label */}
                             <div className="font-semibold truncate text-[9px] sm:text-[10px] md:text-xs">
-                              {care.action_type === 'rescheduled' && care.status === 'rescheduled' ? 'Rescheduling' :
-                               care.care_type === 'event' ? 'Event' :
-                               care.care_type === 'provided' ? 'Providing' :
-                               care.care_type === 'hangout' ? 'Hangout' :
-                               care.care_type === 'sleepover' ? 'Sleepover' :
-                               care.care_type === 'open_block' ? 'Open' : 'Receiving'}
+                              {multiDayInfo.isMultiDay ? (
+                                multiDayInfo.isFirstDay ? (
+                                  `🐾 ${care.action_type === 'rescheduled' && care.status === 'rescheduled' ? 'Rescheduling' :
+                                   care.care_type === 'provided' ? 'Providing' : 'Receiving'} →`
+                                ) : multiDayInfo.isLastDay ? (
+                                  `→ ${care.action_type === 'rescheduled' && care.status === 'rescheduled' ? 'Rescheduling' :
+                                   care.care_type === 'provided' ? 'Providing' : 'Receiving'} ●`
+                                ) : (
+                                  `→ ${care.action_type === 'rescheduled' && care.status === 'rescheduled' ? 'Rescheduling' :
+                                   care.care_type === 'provided' ? 'Providing' : 'Receiving'} →`
+                                )
+                              ) : (
+                                care.action_type === 'rescheduled' && care.status === 'rescheduled' ? 'Rescheduling' :
+                                care.care_type === 'event' ? 'Event' :
+                                care.care_type === 'provided' ? 'Providing' :
+                                care.care_type === 'hangout' ? 'Hangout' :
+                                care.care_type === 'sleepover' ? 'Sleepover' :
+                                care.care_type === 'open_block' ? 'Open' : 'Receiving'
+                              )}
                             </div>
 
-                            {/* Time range - truncated to fit */}
+                            {/* Time range - truncated to fit (or day indicator for multi-day) */}
                             <div className="opacity-90 truncate text-[8px] sm:text-[9px] md:text-[10px]">
-                              {formatTime(care.start_time).replace(' ', '')}-{formatTime(getActualEndTime(care.notes || '', care.end_time)).replace(' ', '')}
+                              {multiDayInfo.isMultiDay ? (
+                                `Day ${multiDayInfo.dayNumber}/${multiDayInfo.totalDays}`
+                              ) : (
+                                `${formatTime(care.start_time).replace(' ', '')}-${formatTime(getActualEndTime(care.notes || '', care.end_time)).replace(' ', '')}`
+                              )}
                             </div>
                           </div>
-                        ))}
+                          );
+                        })}
                         {dayCare.length > 4 && (
                           <div className="h-2.5 bg-gray-300 rounded-full opacity-80" title={`${dayCare.length - 4} more items`} />
                         )}
                       </div>
+
+                      {/* Week navigation arrows at bottom corners */}
+                      {index === 0 && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            navigateWeek('prev');
+                          }}
+                          className="absolute bottom-1 left-1 text-gray-600 hover:text-blue-600 text-xl sm:text-2xl font-bold transition-colors"
+                          title="Previous week"
+                        >
+                          &lt;
+                        </button>
+                      )}
+                      {index === 6 && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            navigateWeek('next');
+                          }}
+                          className="absolute bottom-1 right-1 text-gray-600 hover:text-blue-600 text-xl sm:text-2xl font-bold transition-colors"
+                          title="Next week"
+                        >
+                          &gt;
+                        </button>
+                      )}
                     </div>
                   );
                 })}
@@ -2108,10 +2235,10 @@ function CalendarPageContent() {
                                     </div>
                                   )}
                                   
-                                  {/* Children */}
+                                  {/* Children or Pet */}
                                   {care.children_names && care.children_names.length > 0 && (
                                     <div>
-                                      <span className="font-medium text-gray-700">Children:</span>
+                                      <span className="font-medium text-gray-700">{care.pet_id ? 'Pet:' : 'Children:'}</span>
                                       <div className="ml-2 mt-1">
                                         {care.children_names.map((childName, childIndex) => (
                                           <span key={childIndex} className="inline-block bg-gray-100 rounded px-2 py-1 text-xs mr-1 mb-1">
@@ -2206,14 +2333,34 @@ function CalendarPageContent() {
                   <span className="font-medium text-gray-700">Group:</span>
                   <span className="ml-2 text-gray-900">{selectedCare.group_name}</span>
                 </div>
-                <div>
-                  <span className="font-medium text-gray-700">Date:</span>
-                  <span className="ml-2 text-gray-900">{formatDateOnly(selectedCare.care_date)}</span>
-                </div>
-                <div>
-                  <span className="font-medium text-gray-700">Time:</span>
-                  <span className="ml-2 text-gray-900">{formatTime(selectedCare.start_time)} - {formatTime(getActualEndTime(selectedCare.notes || '', selectedCare.end_time))}</span>
-                </div>
+                {/* Pet care uses Drop off / Pick up format, others use Date / Time */}
+                {selectedCare.care_category === 'pet' ? (
+                  <>
+                    <div>
+                      <span className="font-medium text-gray-700">Drop off:</span>
+                      <span className="ml-2 text-gray-900">
+                        {formatDateOnly(selectedCare.care_date)} at {formatTime(selectedCare.start_time)}
+                      </span>
+                    </div>
+                    <div>
+                      <span className="font-medium text-gray-700">Pick up:</span>
+                      <span className="ml-2 text-gray-900">
+                        {formatDateOnly(selectedCare.end_date || selectedCare.care_date)} at {formatTime(getActualEndTime(selectedCare.notes || '', selectedCare.end_time))}
+                      </span>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div>
+                      <span className="font-medium text-gray-700">Date:</span>
+                      <span className="ml-2 text-gray-900">{formatDateOnly(selectedCare.care_date)}</span>
+                    </div>
+                    <div>
+                      <span className="font-medium text-gray-700">Time:</span>
+                      <span className="ml-2 text-gray-900">{formatTime(selectedCare.start_time)} - {formatTime(getActualEndTime(selectedCare.notes || '', selectedCare.end_time))}</span>
+                    </div>
+                  </>
+                )}
                 <div>
                   <span className="font-medium text-gray-700">Type:</span>
                       <span className={`ml-2 px-2 py-1 rounded text-xs ${getCareTypeColor(selectedCare.care_type, selectedCare.action_type, selectedCare.status, selectedCare.is_host, selectedCare.care_category)}`}>
@@ -2233,8 +2380,8 @@ function CalendarPageContent() {
                 {selectedCare.children_names && selectedCare.children_names.length > 0 && (
                   <div>
                     <div className="flex items-center justify-between">
-                      <span className="font-medium text-gray-700">Children:</span>
-                      {selectedCare.care_type === 'provided' && (
+                      <span className="font-medium text-gray-700">{selectedCare.pet_id ? 'Pet:' : 'Children:'}</span>
+                      {selectedCare.care_type === 'provided' && !selectedCare.pet_id && (
                         <button
                           onClick={() => handleOpenBlock(selectedCare)}
                           className="text-blue-600 hover:text-blue-700 font-medium text-sm flex items-center gap-1"
@@ -2471,12 +2618,15 @@ function CalendarPageContent() {
               {/* Save Notes button for reciprocal care (provider only) */}
               {selectedCare.care_type === 'provided' && (
                 <>
-                  <button
-                    onClick={() => handleReschedule(selectedCare)}
-                    className="w-full px-4 py-2 bg-orange-600 text-white rounded-lg hover:bg-orange-700 mb-3"
-                  >
-                    Reschedule
-                  </button>
+                  {/* Hide Reschedule button for pet care */}
+                  {selectedCare.care_category !== 'pet' && (
+                    <button
+                      onClick={() => handleReschedule(selectedCare)}
+                      className="w-full px-4 py-2 bg-orange-600 text-white rounded-lg hover:bg-orange-700 mb-3"
+                    >
+                      Reschedule
+                    </button>
+                  )}
                   <button
                     onClick={async () => {
                       // Save notes for reciprocal care and propagate to receiver
@@ -2493,9 +2643,17 @@ function CalendarPageContent() {
                           console.log('Parent ID:', user.id);
                           console.log('New Notes:', selectedCare.notes);
                           console.log('Care Type:', selectedCare.care_type);
+                          console.log('Care Category:', selectedCare.care_category);
                           console.log('Related Request ID:', selectedCare.related_request_id);
 
-                          const { data, error } = await supabase.rpc('update_reciprocal_care_notes', {
+                          // Use the correct RPC function based on care category
+                          const functionName = selectedCare.care_category === 'pet'
+                            ? 'update_pet_care_notes'
+                            : 'update_reciprocal_care_notes';
+
+                          console.log('Using function:', functionName);
+
+                          const { data, error } = await supabase.rpc(functionName, {
                             p_scheduled_care_id: selectedCare.id,
                             p_parent_id: user.id,
                             p_new_notes: selectedCare.notes || ''
