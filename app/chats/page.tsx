@@ -1,11 +1,12 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "../lib/supabase";
 import Header from "../components/Header";
 import LogoutButton from "../components/LogoutButton";
 import type { User } from "@supabase/supabase-js";
+import { useTranslation } from 'react-i18next';
 
 interface Group {
   id: string;
@@ -31,6 +32,7 @@ interface ChatProfile {
 
 export default function ChatsPage() {
   const router = useRouter();
+  const { t } = useTranslation();
   const [loading, setLoading] = useState(true);
   const [user, setUser] = useState<User | null>(null);
   const [groups, setGroups] = useState<Group[]>([]);
@@ -41,6 +43,14 @@ export default function ChatsPage() {
   const [sendingMessage, setSendingMessage] = useState(false);
   const [groupsWithUnread, setGroupsWithUnread] = useState<Set<string>>(new Set());
   const [unreadCounts, setUnreadCounts] = useState<Record<string, number>>({});
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  // Auto-scroll to bottom when messages change
+  useEffect(() => {
+    if (messagesEndRef.current) {
+      messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [chatMessages]);
 
   useEffect(() => {
     supabase.auth.getUser().then(async ({ data }) => {
@@ -53,6 +63,23 @@ export default function ChatsPage() {
       }
     });
   }, [router]);
+
+  // Refresh unread counts when the page becomes visible again
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (!document.hidden && user) {
+        // Page is now visible, refresh the unread counts
+        checkGroupsWithUnread(user.id, groups);
+        // Also trigger header refresh
+        window.dispatchEvent(new CustomEvent('messagesViewed'));
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [user, groups]);
 
   // Set up real-time subscription for new messages to update unread groups
   useEffect(() => {
@@ -341,12 +368,26 @@ export default function ChatsPage() {
 
       if (error) {
         // Error marking messages as viewed
+        console.error('Error marking messages as viewed:', error);
+        
+        // Show user-friendly error message
+        if (error.code === '23503') {
+          console.error('Foreign key constraint violation - message_views table may need to be fixed');
+          // Still trigger the refresh to update the UI even if database operation failed
+          setTimeout(() => {
+            window.dispatchEvent(new CustomEvent('messagesViewed'));
+          }, 100);
+        }
       } else {
-        // Trigger a refresh of the header notification count
-        window.dispatchEvent(new CustomEvent('messagesViewed'));
+        // Wait a moment for the database to be updated, then trigger refresh
+        setTimeout(() => {
+          // Trigger a refresh of the header notification count
+          window.dispatchEvent(new CustomEvent('messagesViewed'));
+        }, 100);
       }
     } catch (error) {
       // Error marking messages as viewed
+      console.error('Error marking messages as viewed:', error);
     }
   };
 
@@ -355,11 +396,11 @@ export default function ChatsPage() {
   }
 
   return (
-    <div>
-      <Header currentPage="chats" />
-      <div className="p-6 bg-white min-h-screen">
-        {/* Groups Section */}
-        <div className="bg-white rounded-lg shadow-md p-6 mb-6">
+    <Header currentPage="chats">
+      <div className="bg-white">
+        <div className="max-w-7xl mx-auto px-3 sm:px-4 md:px-6 py-6">
+          {/* Groups Section */}
+          <div className="bg-white rounded-lg shadow-md p-6 mb-6">
           <h2 className="text-xl font-semibold mb-4">Your Groups</h2>
           {groups.length === 0 ? (
             <div className="text-center py-8 text-gray-500">
@@ -409,72 +450,10 @@ export default function ChatsPage() {
                       </div>
                     </button>
                     
-                    {/* Chat Area - appears underneath the selected group */}
+                    {/* Minimized indicator when chat is selected */}
                     {isSelected && (
-                      <div className="mt-4 ml-4 bg-white rounded-lg border border-gray-200 p-4">
-                        <div className="flex items-center justify-between mb-4">
-                          <h3 className="text-lg font-semibold">Chat: {group.name}</h3>
-                        </div>
-
-                        {/* Messages */}
-                        <div className="h-80 overflow-y-auto border rounded-lg p-4 mb-4 bg-gray-50">
-                          {chatMessages.length === 0 ? (
-                            <div className="text-center text-gray-500 py-8">
-                              <p>No messages yet.</p>
-                              <p className="text-sm">Start the conversation!</p>
-                            </div>
-                          ) : (
-                            <div className="space-y-3">
-                              {chatMessages.map((message) => {
-                                const isMyMessage = message.sender_id === user?.id;
-                                const senderProfile = chatProfiles[message.sender_id];
-                                const senderName = senderProfile?.full_name || senderProfile?.email || "Unknown";
-                                
-                                return (
-                                  <div
-                                    key={message.id}
-                                    className={`flex ${isMyMessage ? 'justify-end' : 'justify-start'}`}
-                                  >
-                                    <div
-                                      className={`max-w-xs lg:max-w-md px-4 py-2 rounded-lg ${
-                                        isMyMessage
-                                          ? 'bg-blue-500 text-white'
-                                          : 'bg-white border border-gray-200'
-                                      }`}
-                                    >
-                                      <div className="text-xs opacity-75 mb-1">
-                                        {isMyMessage ? 'You' : senderName}
-                                      </div>
-                                      <div className="text-sm">{message.content}</div>
-                                      <div className="text-xs opacity-75 mt-1">
-                                        {new Date(message.created_at).toLocaleTimeString()}
-                                      </div>
-                                    </div>
-                                  </div>
-                                );
-                              })}
-                            </div>
-                          )}
-                        </div>
-
-                        {/* Message Input */}
-                        <form onSubmit={sendMessage} className="flex gap-2">
-                          <input
-                            type="text"
-                            value={newMessage}
-                            onChange={(e: React.ChangeEvent<HTMLInputElement>) => setNewMessage(e.target.value)}
-                            placeholder="Type your message..."
-                            className="flex-1 px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-                            disabled={sendingMessage}
-                          />
-                          <button
-                            type="submit"
-                            disabled={sendingMessage || !newMessage.trim()}
-                            className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition disabled:opacity-50 disabled:cursor-not-allowed"
-                          >
-                            {sendingMessage ? 'Sending...' : 'Send'}
-                          </button>
-                        </form>
+                      <div className="mt-2 ml-4 p-2 bg-blue-50 rounded text-sm text-blue-600 font-medium">
+                        Chat active - scroll down to see other groups
                       </div>
                     )}
                   </div>
@@ -482,8 +461,91 @@ export default function ChatsPage() {
               })}
             </div>
           )}
+          </div>
         </div>
+
+        {/* Fixed Chat Area - Only show when a group is selected */}
+        {selectedGroup && (
+          <div className="fixed left-0 right-0 bg-white shadow-2xl" style={{ top: '145px', bottom: '90px', zIndex: 9999 }}>
+            <div className="h-full flex flex-col">
+              {/* Chat Header */}
+              <div className="px-3 sm:px-4 md:px-6 py-3 border-b border-gray-200 bg-gray-50 flex justify-between items-center">
+                <h3 className="text-base sm:text-lg font-semibold text-gray-900">Chat: {selectedGroup.name}</h3>
+                <button
+                  onClick={() => setSelectedGroup(null)}
+                  className="text-gray-500 hover:text-gray-700 text-sm font-medium"
+                >
+                  Minimize
+                </button>
+              </div>
+
+              {/* Messages Area */}
+              <div className="flex-1 overflow-y-auto px-3 sm:px-4 md:px-6 py-4 bg-gray-50">
+                {chatMessages.length === 0 ? (
+                  <div className="text-center text-gray-500 py-8">
+                    <p>No messages yet.</p>
+                    <p className="text-sm">Start the conversation!</p>
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {chatMessages.map((message) => {
+                      const isMyMessage = message.sender_id === user?.id;
+                      const senderProfile = chatProfiles[message.sender_id];
+                      const senderName = senderProfile?.full_name || senderProfile?.email || "Unknown";
+
+                      return (
+                        <div
+                          key={message.id}
+                          className={`flex ${isMyMessage ? 'justify-end' : 'justify-start'}`}
+                        >
+                          <div
+                            className={`max-w-xs lg:max-w-md px-4 py-2 rounded-lg ${
+                              isMyMessage
+                                ? 'bg-blue-500 text-white'
+                                : 'bg-white border border-gray-200'
+                            }`}
+                          >
+                            <div className="text-xs opacity-75 mb-1">
+                              {isMyMessage ? 'You' : senderName}
+                            </div>
+                            <div className="text-sm">{message.content}</div>
+                            <div className="text-xs opacity-75 mt-1">
+                              {new Date(message.created_at).toLocaleTimeString()}
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                    <div ref={messagesEndRef} />
+                  </div>
+                )}
+              </div>
+
+              {/* Message Input - Attached at bottom of chat */}
+              <div className="px-3 sm:px-4 md:px-6 py-3 border-t border-gray-200 bg-white">
+                <form onSubmit={sendMessage} className="flex gap-2">
+                  <input
+                    type="text"
+                    value={newMessage}
+                    onChange={(e: React.ChangeEvent<HTMLInputElement>) => setNewMessage(e.target.value)}
+                    placeholder="Type your message..."
+                    className="flex-1 px-3 sm:px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-base"
+                    style={{ fontSize: '16px' }}
+                    disabled={sendingMessage}
+                  />
+                  <button
+                    type="submit"
+                    disabled={sendingMessage || !newMessage.trim()}
+                    className="px-4 sm:px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition disabled:opacity-50 disabled:cursor-not-allowed text-base font-medium whitespace-nowrap"
+                  >
+                    {sendingMessage ? 'Sending...' : 'Send'}
+                  </button>
+                </form>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
-    </div>
+    </Header>
   );
 } 

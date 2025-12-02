@@ -1,0 +1,31 @@
+📅 Calendar Counter Debug: {careAcceptedNotifications: 0, notificationBlocks: 0, notifications: Array(0)}
+354-4644757394460b82.js:1 📅 Calendar Counter Debug: {careAcceptedNotifications: 0, notificationBlocks: 0, notifications: Array(0)}
+254-71947b2a967a6738.js:8  POST https://hilkelodfneancwwzvoh.supabase.co/rest/v1/rpc/get_pet_care_responses_for_requester 400 (Bad Request)
+(anonymous) @ 254-71947b2a967a6738.js:8
+h @ 254-71947b2a967a6738.js:8
+r @ 254-71947b2a967a6738.js:8
+Promise.then
+i @ 254-71947b2a967a6738.js:8
+(anonymous) @ 254-71947b2a967a6738.js:8
+(anonymous) @ 254-71947b2a967a6738.js:8
+then @ 254-71947b2a967a6738.js:1Understand this error
+254-71947b2a967a6738.js:8  POST https://hilkelodfneancwwzvoh.supabase.co/rest/v1/rpc/get_pet_care_responses_for_requester 400 (Bad Request)
+(anonymous) @ 254-71947b2a967a6738.js:8
+h @ 254-71947b2a967a6738.js:8
+r @ 254-71947b2a967a6738.js:8
+Promise.then
+i @ 254-71947b2a967a6738.js:8
+(anonymous) @ 254-71947b2a967a6738.js:8
+(anonymous) @ 254-71947b2a967a6738.js:8
+then @ 254-71947b2a967a6738.js:1Understand this error
+354-4644757394460b82.js:1 🔍 Header Counter Debug - Data Fetched: {invitationsCount: 0, childRequestsCount: 0, petRequestsCount: 0, totalRequestsCount: 0, childResponsesCount: 0, …}
+354-4644757394460b82.js:1 📊 Header - Pending care responses: {total: 0, unread: 0, sample: undefined, allStatuses: Array(0)}
+354-4644757394460b82.js:1 📊 Header - Responses to my requests: {totalResponses: 3, childResponses: 3, petResponses: 0, submittedResponses: 0, uniqueRequestsWithSubmitted: 0, …}
+354-4644757394460b82.js:1 📊 Header - FINAL Counter: 0
+354-4644757394460b82.js:1 🔍 Header Counter Debug - Data Fetched: {invitationsCount: 0, childRequestsCount: 0, petRequestsCount: 0, totalRequestsCount: 0, childResponsesCount: 0, …}
+354-4644757394460b82.js:1 📊 Header - Pending care responses: {total: 0, unread: 0, sample: undefined, allStatuses: Array(0)}
+354-4644757394460b82.js:1 📊 Header - Responses to my requests: {totalResponses: 3, childResponses: 3, petResponses: 0, submittedResponses: 0, uniqueRequestsWithSubmitted: 0, …}
+354-4644757394460b82.js:1 📊 Header - FINAL Counter: 0
+page-3b6a9f84aeb72f83.js:1 ✅ Marked care_accepted notifications as read
+page-3b6a9f84aeb72f83.js:1 📅 Marked calendar blocks as seen
+354-4644757394460b82.js:1 📅 Calendar Counter Debug: {careAcceptedNotifications: 0, notificationBlocks: 0, notifications: Array(0)}

@@ -8,12 +8,26 @@ import LogoutButton from "../components/LogoutButton";
 import type { User } from "@supabase/supabase-js";
 import { v4 as uuidv4 } from 'uuid';
 import { emailService } from '../../lib/email-service';
+import { lookupZipCode } from '../lib/zipcode-utils';
 import RescheduleModal from '../../components/care/RescheduleModal';
+import ImageCropModal from '../../components/ImageCropModal';
+import { useSwipeable } from 'react-swipeable';
+import { useTranslation } from 'react-i18next';
 
 interface Profile {
   full_name: string | null;
   email: string | null;
   phone: string | null;
+  address?: string | null;
+  city?: string | null;
+  state?: string | null;
+  zip_code?: string | null;
+  bio?: string | null;
+  profile_photo_url?: string | null;
+  emergency_contact?: string | null;
+  emergency_contact_phone?: string | null;
+  profession?: string | null;
+  employer?: string | null;
 }
 
 interface Child {
@@ -22,6 +36,27 @@ interface Child {
   birthdate: string | null;
   parent_id: string;
   created_at: string;
+  school_name?: string | null;
+  grade?: string | null;
+  town?: string | null;
+  zip_code?: string | null;
+  photo_url?: string | null;
+  parent_full_name?: string | null;
+}
+
+interface Pet {
+  id: string;
+  name: string;
+  species: string | null;
+  breed: string | null;
+  age: number | null;
+  birthdate: string | null;
+  special_needs: string | null;
+  notes: string | null;
+  parent_id: string;
+  created_at: string;
+  photo_url?: string | null;
+  parent_full_name?: string | null;
 }
 
 interface Group {
@@ -30,12 +65,21 @@ interface Group {
   description: string | null;
   created_by: string;
   created_at: string;
-  group_type: 'care' | 'event';
+  group_type: 'care' | 'pet';
 }
 
 interface ChildGroupMember {
   id: string;
   child_id: string;
+  group_id: string;
+  added_by: string;
+  added_at: string;
+  active: boolean;
+}
+
+interface PetGroupMember {
+  id: string;
+  pet_id: string;
   group_id: string;
   added_by: string;
   added_at: string;
@@ -61,17 +105,21 @@ interface CareBlock {
 }
 
 
-type TabType = 'profile' | 'children' | 'groups';
+type TabType = 'profile' | 'children' | 'pets' | 'groups';
 
 export default function ClientDashboard() {
   const router = useRouter();
+  const { t } = useTranslation();
   const [loading, setLoading] = useState(true);
   const [user, setUser] = useState<User | null>(null);
   const [profile, setProfile] = useState<Profile | null>(null);
   const [children, setChildren] = useState<Child[]>([]);
+  const [pets, setPets] = useState<Pet[]>([]);
   const [groups, setGroups] = useState<Group[]>([]);
   const [memberships, setMemberships] = useState<ChildGroupMember[]>([]);
+  const [petMemberships, setPetMemberships] = useState<PetGroupMember[]>([]);
   const [allChildrenInGroups, setAllChildrenInGroups] = useState<Record<string, Child[]>>({});
+  const [allPetsInGroups, setAllPetsInGroups] = useState<Record<string, Pet[]>>({});
   const [activeTab, setActiveTab] = useState<TabType>('profile');
   
   // Profile state
@@ -79,18 +127,73 @@ export default function ClientDashboard() {
   const [editFullName, setEditFullName] = useState("");
   const [editEmail, setEditEmail] = useState("");
   const [editPhone, setEditPhone] = useState("");
+  const [editAddress, setEditAddress] = useState("");
+  const [editCity, setEditCity] = useState("");
+  const [editState, setEditState] = useState("");
+  const [editZipCode, setEditZipCode] = useState("");
+  const [editBio, setEditBio] = useState("");
+  const [editProfilePhotoUrl, setEditProfilePhotoUrl] = useState("");
+  const [editEmergencyContact, setEditEmergencyContact] = useState("");
+  const [editEmergencyContactPhone, setEditEmergencyContactPhone] = useState("");
+  const [editProfession, setEditProfession] = useState("");
+  const [editEmployer, setEditEmployer] = useState("");
   const [profileEditError, setProfileEditError] = useState("");
+  const [uploadingProfilePhoto, setUploadingProfilePhoto] = useState(false);
+  const [profilePhotoError, setProfilePhotoError] = useState<string | null>(null);
 
   // Children state
+  const [uploadingChildPhoto, setUploadingChildPhoto] = useState(false);
+  const [childPhotoError, setChildPhotoError] = useState<string | null>(null);
+  const [editChildPhotoUrl, setEditChildPhotoUrl] = useState("");
   const [editingChildId, setEditingChildId] = useState<string | null>(null);
   const [editChildName, setEditChildName] = useState("");
   const [editChildBirthdate, setEditChildBirthdate] = useState("");
+  const [editChildSchoolName, setEditChildSchoolName] = useState("");
+  const [editChildGrade, setEditChildGrade] = useState("");
+  const [editChildTown, setEditChildTown] = useState("");
+  const [editChildZipCode, setEditChildZipCode] = useState("");
   const [childEditError, setChildEditError] = useState("");
   const [showAddChild, setShowAddChild] = useState(false);
   const [childName, setChildName] = useState("");
   const [childBirthdate, setChildBirthdate] = useState("");
+  const [childSchoolName, setChildSchoolName] = useState("");
+  const [childGrade, setChildGrade] = useState("");
+  const [childTown, setChildTown] = useState("");
+  const [childZipCode, setChildZipCode] = useState("");
+  const [availableSchools, setAvailableSchools] = useState<any[]>([]);
+  const [loadingSchools, setLoadingSchools] = useState(false);
+  const [missingSchoolName, setMissingSchoolName] = useState("");
+  const [showMissingSchoolInput, setShowMissingSchoolInput] = useState(false);
+  const [editAvailableSchools, setEditAvailableSchools] = useState<any[]>([]);
+  const [editLoadingSchools, setEditLoadingSchools] = useState(false);
+  const [editMissingSchoolName, setEditMissingSchoolName] = useState("");
+  const [editShowMissingSchoolInput, setEditShowMissingSchoolInput] = useState(false);
   const [addingChild, setAddingChild] = useState(false);
   const [childError, setChildError] = useState("");
+
+  // Pets state
+  const [showAddPet, setShowAddPet] = useState(false);
+  const [petName, setPetName] = useState("");
+  const [petSpecies, setPetSpecies] = useState("");
+  const [petBreed, setPetBreed] = useState("");
+  const [petAge, setPetAge] = useState("");
+  const [petBirthdate, setPetBirthdate] = useState("");
+  const [petSpecialNeeds, setPetSpecialNeeds] = useState("");
+  const [petNotes, setPetNotes] = useState("");
+  const [addingPet, setAddingPet] = useState(false);
+  const [petError, setPetError] = useState("");
+  const [editingPetId, setEditingPetId] = useState<string | null>(null);
+  const [editPetName, setEditPetName] = useState("");
+  const [editPetSpecies, setEditPetSpecies] = useState("");
+  const [editPetBreed, setEditPetBreed] = useState("");
+  const [editPetAge, setEditPetAge] = useState("");
+  const [editPetBirthdate, setEditPetBirthdate] = useState("");
+  const [editPetSpecialNeeds, setEditPetSpecialNeeds] = useState("");
+  const [editPetNotes, setEditPetNotes] = useState("");
+  const [petEditError, setPetEditError] = useState("");
+  const [uploadingPetPhoto, setUploadingPetPhoto] = useState(false);
+  const [petPhotoError, setPetPhotoError] = useState<string | null>(null);
+  const [editPetPhotoUrl, setEditPetPhotoUrl] = useState("");
 
   // Groups state
   const [editingGroupId, setEditingGroupId] = useState<string | null>(null);
@@ -98,14 +201,15 @@ export default function ClientDashboard() {
   const [inviteEmail, setInviteEmail] = useState("");
   const [inviteNote, setInviteNote] = useState("");
   const [inviteError, setInviteError] = useState("");
+  const [sendingInvite, setSendingInvite] = useState(false);
   const [editGroupName, setEditGroupName] = useState("");
   const [editGroupDescription, setEditGroupDescription] = useState("");
-  const [editGroupType, setEditGroupType] = useState<'care' | 'event'>('care');
+  const [editGroupType, setEditGroupType] = useState<'care' | 'pet'>('care');
   const [groupEditError, setGroupEditError] = useState("");
   const [showAddGroup, setShowAddGroup] = useState(false);
   const [groupName, setGroupName] = useState("");
   const [groupDescription, setGroupDescription] = useState("");
-  const [groupType, setGroupType] = useState<'care' | 'event'>('care');
+  const [groupType, setGroupType] = useState<'care' | 'pet'>('care');
   const [addingGroup, setAddingGroup] = useState(false);
   const [groupError, setGroupError] = useState("");
   const [groupManagementError, setGroupManagementError] = useState("");
@@ -113,13 +217,39 @@ export default function ClientDashboard() {
   // State for popup
   const [showPopup, setShowPopup] = useState(false);
   const [popupData, setPopupData] = useState<CareBlock[]>([]);
-  const [popupType, setPopupType] = useState<'receiving' | 'providing' | 'event' | 'total'>('receiving');
+  const [popupType, setPopupType] = useState<'receiving' | 'providing' | 'event'>('receiving');
   const [popupTitle, setPopupTitle] = useState('');
   
   // State for reschedule modal
   const [showRescheduleModal, setShowRescheduleModal] = useState(false);
   const [selectedCareBlock, setSelectedCareBlock] = useState<any>(null);
   const [rescheduleSuccessMessage, setRescheduleSuccessMessage] = useState('');
+
+  // State for image cropping
+  const [imageToCrop, setImageToCrop] = useState<string | null>(null);
+  const [cropType, setCropType] = useState<'profile' | 'child' | 'pet' | null>(null);
+
+  // Tab order for swipe navigation
+  const tabOrder: TabType[] = ['profile', 'groups', 'children', 'pets'];
+
+  // Swipe handlers for tab navigation
+  const swipeHandlers = useSwipeable({
+    onSwipedLeft: () => {
+      const currentIndex = tabOrder.indexOf(activeTab);
+      if (currentIndex < tabOrder.length - 1) {
+        setActiveTab(tabOrder[currentIndex + 1]);
+      }
+    },
+    onSwipedRight: () => {
+      const currentIndex = tabOrder.indexOf(activeTab);
+      if (currentIndex > 0) {
+        setActiveTab(tabOrder[currentIndex - 1]);
+      }
+    },
+    trackMouse: false, // Only track touch, not mouse
+    preventScrollOnSwipe: false, // Allow vertical scrolling
+    delta: 50, // Minimum swipe distance
+  });
 
   useEffect(() => {
     supabase.auth.getUser().then(async ({ data }) => {
@@ -131,7 +261,7 @@ export default function ClientDashboard() {
         // Fetch profile from 'profiles' table
         const { data: profileData } = await supabase
           .from("profiles")
-          .select("full_name, email, phone, role") // Select role
+          .select("full_name, email, phone, role, address, city, state, zip_code, bio, profile_photo_url, emergency_contact, emergency_contact_phone, profession, employer") // Select all profile fields
           .eq("id", data.user.id)
           .single();
         
@@ -142,7 +272,41 @@ export default function ClientDashboard() {
         }
         
         setProfile(profileData as Profile | null);
-        
+
+        // Check if user has pending children in metadata (from signup)
+        const pendingChildren = data.user.user_metadata?.pending_children;
+        if (pendingChildren && Array.isArray(pendingChildren) && pendingChildren.length > 0) {
+          console.log('Found pending children in metadata:', pendingChildren);
+
+          // First, clear the metadata to prevent duplicates
+          await supabase.auth.updateUser({
+            data: {
+              pending_children: null
+            }
+          });
+
+          // Create children records
+          for (const child of pendingChildren) {
+            const { error } = await supabase
+              .from('children')
+              .insert({
+                full_name: child.name,
+                birthdate: child.birthdate,
+                school_name: child.schoolName,
+                grade: child.grade,
+                town: child.town,
+                zip_code: child.zipCode,
+                parent_id: data.user.id
+              });
+
+            if (error) {
+              console.error('Error creating child:', error);
+            }
+          }
+
+          console.log('Pending children created successfully');
+        }
+
         // Fetch children for this parent
         const { data: childrenData } = await supabase
           .from("children")
@@ -151,23 +315,28 @@ export default function ClientDashboard() {
           .order("created_at", { ascending: false });
         setChildren(childrenData || []);
 
+        // Fetch pets for this parent
+        const { data: petsData } = await supabase
+          .from("pets")
+          .select("*")
+          .eq("parent_id", data.user.id)
+          .order("created_at", { ascending: false });
+        setPets(petsData || []);
+
         // Fetch all groups (created and joined)
         await loadGroups(data.user.id, childrenData || []);
-        
-        // Calculate real care stats
-        await calculateStats();
-        
+
         setLoading(false);
       }
     });
   }, [router]);
 
-  // Reload groups when children change
+  // Reload groups when children or pets change
   useEffect(() => {
-    if (user && children.length > 0) {
+    if (user) {
       loadGroups(user.id, children);
     }
-  }, [children, user]);
+  }, [children, pets, user]);
 
   const loadGroups = async (userId: string, childrenData: Child[]) => {
     // 1. Fetch groups created by this parent
@@ -197,7 +366,7 @@ export default function ClientDashboard() {
 
     // 3. Combine and deduplicate groups
     const allGroups = [...(createdGroups || []), ...(joinedGroups || [])];
-    const uniqueGroups = allGroups.filter((group, index, self) => 
+    const uniqueGroups = allGroups.filter((group, index, self) =>
       index === self.findIndex(g => g.id === group.id)
     );
     setGroups(uniqueGroups);
@@ -205,18 +374,32 @@ export default function ClientDashboard() {
     // 4. Fetch all child-group memberships for parent's children
     if (childrenData.length > 0) {
       const childIds = childrenData.map(child => child.id);
-      console.log('Loading memberships for child IDs:', childIds);
       const { data: membershipsData, error: membershipsError } = await supabase
         .from("child_group_members")
         .select("*")
         .in("child_id", childIds)
         .eq("active", true); // Only fetch active memberships
-      
+
       if (membershipsError) {
         console.error('Error loading memberships:', membershipsError);
       } else {
-        console.log('Loaded memberships:', membershipsData);
         setMemberships(membershipsData || []);
+      }
+    }
+
+    // 4b. Fetch all pet-group memberships for parent's pets
+    if (pets.length > 0) {
+      const petIds = pets.map(pet => pet.id);
+      const { data: petMembershipsData, error: petMembershipsError } = await supabase
+        .from("pet_group_members")
+        .select("*")
+        .in("pet_id", petIds)
+        .eq("active", true);
+
+      if (petMembershipsError) {
+        console.error('Error loading pet memberships:', petMembershipsError);
+      } else {
+        setPetMemberships(petMembershipsData || []);
       }
     }
 
@@ -228,251 +411,82 @@ export default function ClientDashboard() {
         .select("*")
         .in("group_id", groupIds)
         .eq("active", true); // Only fetch active memberships
-      
+
       if (allMemberships && allMemberships.length > 0) {
         const allChildIds = Array.from(new Set(allMemberships.map(m => m.child_id)));
         const { data: allChildrenData } = await supabase
           .from("children")
-          .select("*")
+          .select("*, profiles!parent_id(full_name)")
           .in("id", allChildIds);
-        
+
         if (allChildrenData) {
+          // Map children data and add parent_full_name from the joined profiles table
+          const childrenWithParentNames = allChildrenData.map((child: any) => ({
+            ...child,
+            parent_full_name: child.profiles?.full_name || null
+          }));
+
           const childrenMap: Record<string, Child[]> = {};
           uniqueGroups.forEach(group => {
             const groupMemberships = allMemberships.filter(m => m.group_id === group.id);
             childrenMap[group.id] = groupMemberships
-              .map(membership => allChildrenData.find(child => child.id === membership.child_id))
+              .map(membership => childrenWithParentNames.find(child => child.id === membership.child_id))
               .filter(Boolean) as Child[];
           });
           setAllChildrenInGroups(childrenMap);
         }
       }
-    }
-  };
 
-  // Function to calculate real stats from scheduled_care data
-  const calculateStats = async () => {
-    if (!user) return;
-    
-    try {
-      console.log('Calculating stats for user:', user.id);
-      const { data, error } = await supabase
-        .from('scheduled_care')
-        .select('*')
-        .eq('parent_id', user.id);
-      
-      if (error) {
-        console.error('Error fetching care data for stats:', error);
-        return;
-      }
-      
-      const careData = data || [];
-      console.log('Raw care data for stats:', careData);
-      
-      const receivingCare = careData.filter(block => block.care_type === 'needed').length;
-      const providingCare = careData.filter(block => block.care_type === 'provided').length;
-      const events = careData.filter(block => block.is_group_event === true).length;
-      const totalBlocks = careData.length;
-      
-      console.log('Calculated stats:', { receivingCare, providingCare, events, totalBlocks });
-      
-      // Update the stats display
-      setStats({
-        receivingCare,
-        providingCare,
-        events,
-        totalBlocks
-      });
-      
-    } catch (error) {
-      console.error('Error calculating stats:', error);
-    }
-  };
+      // 5b. Fetch all pets for each group (including other parents' pets)
+      const { data: allPetMemberships } = await supabase
+        .from("pet_group_members")
+        .select("*")
+        .in("group_id", groupIds)
+        .eq("active", true);
 
-  // Add state for stats
-  const [stats, setStats] = useState({
-    receivingCare: 0,
-    providingCare: 0,
-    events: 0,
-    totalBlocks: 0
-  });
+      if (allPetMemberships && allPetMemberships.length > 0) {
+        const allPetIds = Array.from(new Set(allPetMemberships.map(m => m.pet_id)));
 
-  // Call calculateStats when user changes
-  useEffect(() => {
-    if (user) {
-      calculateStats();
-    }
-  }, [user]);
+        // Fetch pets data
+        const { data: allPetsData } = await supabase
+          .from("pets")
+          .select("*")
+          .in("id", allPetIds);
 
-  // Function to fetch care data for specific type
-  const fetchCareData = async (type: 'receiving' | 'providing') => {
-    if (!user) return [];
-    
-    try {
-      const { data, error } = await supabase
-        .from('scheduled_care')
-        .select(`
-          *,
-          groups!inner(name, description)
-        `)
-        .eq('parent_id', user.id)
-        .eq('care_type', type === 'receiving' ? 'needed' : 'provided');
-      
-      if (error) {
-        console.error('Error fetching care data:', error);
-        return [];
-      }
-      
-      // For each care block, get additional information
-      const careBlocks: CareBlock[] = await Promise.all((data || []).map(async (block) => {
-        // Get all children in the group
-        const { data: groupChildren } = await supabase
-          .from('child_group_members')
-          .select(`
-            children(id, full_name)
-          `)
-          .eq('group_id', block.group_id);
-        
-        const childrenNames = (groupChildren || []).map(gc => {
-          const child = Array.isArray(gc.children) ? gc.children[0] : gc.children;
-          return child?.full_name;
-        }).filter(Boolean);
-        const childrenData = (groupChildren || []).map(gc => {
-          const child = Array.isArray(gc.children) ? gc.children[0] : gc.children;
-          return child ? {
-            id: String(child.id),
-            full_name: String(child.full_name)
-          } : null;
-        }).filter((c): c is { id: string; full_name: string } => c !== null);
-        
-        // For receiving care, find who is providing care
-        let parentProviding = 'Unknown';
-        
-        if (type === 'receiving') {
-          console.log('Processing receiving care block:', {
-            id: block.id,
-            date: block.care_date,
-            related_request_id: block.related_request_id,
-            notes: block.notes
+        if (allPetsData) {
+          // Get unique parent IDs from the pets
+          const parentIds = Array.from(new Set(allPetsData.map(pet => pet.parent_id).filter(Boolean)));
+
+          // Fetch parent profiles
+          const { data: profilesData } = await supabase
+            .from("profiles")
+            .select("id, full_name")
+            .in("id", parentIds);
+
+          // Create a map of parent_id to full_name
+          const parentNamesMap = new Map(
+            (profilesData || []).map((profile: any) => [profile.id, profile.full_name])
+          );
+
+          // Map pets data and add parent_full_name from the profiles map
+          const petsWithParentNames = allPetsData.map((pet: any) => ({
+            ...pet,
+            parent_full_name: parentNamesMap.get(pet.parent_id) || null
+          }));
+
+          const petsMap: Record<string, Pet[]> = {};
+          uniqueGroups.forEach(group => {
+            const groupPetMemberships = allPetMemberships.filter(m => m.group_id === group.id);
+            petsMap[group.id] = groupPetMemberships
+              .map(membership => petsWithParentNames.find(pet => pet.id === membership.pet_id))
+              .filter(Boolean) as Pet[];
           });
-          
-          // Look for corresponding 'provided' care blocks with the same related_request_id
-          const { data: providingBlocks, error: providingError } = await supabase
-            .from('scheduled_care')
-            .select('parent_id, care_date, start_time, end_time')
-            .eq('related_request_id', block.related_request_id)
-            .eq('care_type', 'provided');
-          
-          if (providingError) {
-            console.log('Error finding providing blocks:', providingError);
-          }
-          
-          console.log('Finding parent providing care for request:', block.related_request_id, 'Result:', providingBlocks);
-          
-          if (providingBlocks && providingBlocks.length > 0) {
-            // If multiple blocks, find the one that matches the same date and time
-            let matchingBlock = providingBlocks.find(pb => 
-              pb.care_date === block.care_date && 
-              pb.start_time === block.start_time && 
-              pb.end_time === block.end_time
-            );
-            
-            // If no exact match, use the first one
-            if (!matchingBlock) {
-              matchingBlock = providingBlocks[0];
-              console.log('No exact time match, using first providing block:', matchingBlock);
-            } else {
-              console.log('Found exact time match:', matchingBlock);
-            }
-            
-            // Now get the parent's name using the parent_id
-            const { data: parentProfile } = await supabase
-              .from('profiles')
-              .select('full_name')
-              .eq('id', matchingBlock.parent_id)
-              .single();
-            
-            parentProviding = parentProfile?.full_name || 'Unknown';
-            console.log('Selected parent providing care:', parentProviding, 'from block:', matchingBlock);
-          } else {
-            console.log('No providing blocks found for related_request_id:', block.related_request_id);
-            
-            // Fallback: try to find by group_id and date if no related_request_id
-            if (!block.related_request_id) {
-              console.log('No related_request_id, trying fallback method...');
-              const { data: fallbackBlock } = await supabase
-                .from('scheduled_care')
-                .select('parent_id')
-                .eq('group_id', block.group_id)
-                .eq('care_date', block.care_date)
-                .eq('care_type', 'provided')
-                .single();
-              
-              if (fallbackBlock?.parent_id) {
-                const { data: fallbackParent } = await supabase
-                  .from('profiles')
-                  .select('full_name')
-                  .eq('id', fallbackBlock.parent_id)
-                  .single();
-                
-                parentProviding = fallbackParent?.full_name || 'Unknown';
-                console.log('Fallback found parent:', parentProviding);
-              }
-            }
-          }
-        } else {
-          parentProviding = 'You'; // For providing care, it's the current user
+          setAllPetsInGroups(petsMap);
         }
-        
-        return {
-          id: block.id,
-          title: '', // Removed as requested
-          description: '', // Removed as requested
-          start_time: block.start_time,
-          end_time: block.end_time,
-          date: block.care_date,
-          status: block.status,
-          type: type,
-          group_id: block.group_id, // Add group_id for RescheduleModal
-          related_request_id: block.related_request_id, // Add related_request_id for RescheduleModal
-          group_name: block.groups?.name || 'No Group',
-          parent_providing: parentProviding,
-                      child_participating: childrenNames.join(', ') || 'No Children',
-            parent_notes: '', // No longer needed
-            children: await getChildrenForCareBlock(block.id) // Add actual children data
-        };
-      }));
-      
-      return careBlocks;
-    } catch (error) {
-      console.error('Error fetching care data:', error);
-      return [];
+      }
     }
   };
 
-  // Function to handle stats box clicks
-  const handleStatsClick = async (type: 'receiving' | 'providing' | 'event' | 'total') => {
-    setPopupType(type);
-    setShowPopup(true);
-    
-    if (type === 'receiving') {
-      setPopupTitle('Receiving Care Blocks');
-      const data = await fetchCareData('receiving');
-      setPopupData(data);
-    } else if (type === 'providing') {
-      setPopupTitle('Providing Care Blocks');
-      const data = await fetchCareData('providing');
-      setPopupData(data);
-    } else if (type === 'event') {
-      setPopupTitle('Event Blocks');
-      const data = await fetchAllCareData();
-      setPopupData(data);
-    } else if (type === 'total') {
-      setPopupTitle('All Care Blocks');
-      const data = await fetchAllCareData();
-      setPopupData(data);
-    }
-  };
 
   const handleRescheduleClick = (careBlock: any) => {
     setSelectedCareBlock(careBlock);
@@ -482,153 +496,12 @@ export default function ClientDashboard() {
   const handleRescheduleSuccess = () => {
     // Show success message
     setRescheduleSuccessMessage('Reschedule request created successfully! Parents will be notified to accept or decline.');
-    
+
     // Clear message after 5 seconds
     setTimeout(() => setRescheduleSuccessMessage(''), 5000);
-    
-    // Refresh the stats after successful reschedule
-    calculateStats();
+
     setShowRescheduleModal(false);
     setSelectedCareBlock(null);
-  };
-
-  // Function to fetch all care data for total blocks
-  const fetchAllCareData = async () => {
-    if (!user) return [];
-    
-    try {
-      const { data, error } = await supabase
-        .from('scheduled_care')
-        .select(`
-          *,
-          groups!inner(name, description)
-        `)
-        .eq('parent_id', user.id);
-      
-      if (error) {
-        console.error('Error fetching all care data:', error);
-        return [];
-      }
-      
-      // For each care block, get additional information
-      const careBlocks: CareBlock[] = await Promise.all((data || []).map(async (block) => {
-        // Get all children in the group
-        const { data: groupChildren } = await supabase
-          .from('child_group_members')
-          .select(`
-            children(full_name)
-          `)
-          .eq('group_id', block.group_id);
-        
-        const childrenNames = (groupChildren || []).map(gc => {
-          const child = Array.isArray(gc.children) ? gc.children[0] : gc.children;
-          return child?.full_name;
-        }).filter(Boolean);
-        
-        // Determine parent providing care based on care type
-        let parentProviding = 'Unknown';
-        
-        if (block.care_type === 'needed') {
-          console.log('Processing care block in fetchAllCareData:', {
-            id: block.id,
-            date: block.care_date,
-            related_request_id: block.related_request_id,
-            notes: block.notes
-          });
-          
-          // Look for corresponding 'provided' care blocks with the same related_request_id
-          const { data: providingBlocks, error: providingError } = await supabase
-            .from('scheduled_care')
-            .select('parent_id, care_date, start_time, end_time')
-            .eq('related_request_id', block.related_request_id)
-            .eq('care_type', 'provided');
-          
-          if (providingError) {
-            console.log('Error finding providing blocks:', providingError);
-          }
-          
-          console.log('Finding parent providing care for request:', block.related_request_id, 'Result:', providingBlocks);
-          
-          if (providingBlocks && providingBlocks.length > 0) {
-            // If multiple blocks, find the one that matches the same date and time
-            let matchingBlock = providingBlocks.find(pb => 
-              pb.care_date === block.care_date && 
-              pb.start_time === block.start_time && 
-              pb.end_time === block.end_time
-            );
-            
-            // If no exact match, use the first one
-            if (!matchingBlock) {
-              matchingBlock = providingBlocks[0];
-              console.log('No exact time match, using first providing block:', matchingBlock);
-            } else {
-              console.log('Found exact time match:', matchingBlock);
-            }
-            
-            // Now get the parent's name using the parent_id
-            const { data: parentProfile } = await supabase
-              .from('profiles')
-              .select('full_name')
-              .eq('id', matchingBlock.parent_id)
-              .single();
-            
-            parentProviding = parentProfile?.full_name || 'Unknown';
-            console.log('Selected parent providing care:', parentProviding, 'from block:', matchingBlock);
-          } else {
-            console.log('No providing blocks found for related_request_id:', block.related_request_id);
-            
-            // Fallback: try to find by group_id and date if no related_request_id
-            if (!block.related_request_id) {
-              console.log('No related_request_id, trying fallback method...');
-              const { data: fallbackBlock } = await supabase
-                .from('scheduled_care')
-                .select('parent_id')
-                .eq('group_id', block.group_id)
-                .eq('care_date', block.care_date)
-                .eq('care_type', 'provided')
-                .single();
-              
-              if (fallbackBlock?.parent_id) {
-                const { data: fallbackParent } = await supabase
-                  .from('profiles')
-                  .select('full_name')
-                  .eq('id', fallbackBlock.parent_id)
-                  .single();
-                
-                parentProviding = fallbackParent?.full_name || 'Unknown';
-                console.log('Fallback found parent:', parentProviding);
-              }
-            }
-          }
-        } else {
-          parentProviding = 'You'; // For providing care, it's the current user
-        }
-        
-        return {
-          id: block.id,
-          title: '', // Removed as requested
-          description: '', // Removed as requested
-          start_time: block.start_time,
-          end_time: block.end_time,
-          date: block.care_date,
-          status: block.status,
-          type: block.care_type === 'needed' ? 'receiving' : 
-                block.care_type === 'provided' ? 'providing' : 'event',
-          group_id: block.group_id,
-          related_request_id: block.related_request_id,
-          group_name: block.groups?.name || 'No Group',
-          parent_providing: parentProviding,
-          child_participating: childrenNames.join(', ') || 'No Children',
-          parent_notes: '', // No longer needed
-          children: await getChildrenForCareBlock(block.id) // Add actual children data
-        };
-      }));
-      
-      return careBlocks;
-    } catch (error) {
-      console.error('Error fetching all care data:', error);
-      return [];
-    }
   };
 
   // Function to close popup
@@ -652,13 +525,7 @@ export default function ClientDashboard() {
         return [];
       }
       
-      return (careChildren || []).map(cc => {
-        const child = Array.isArray(cc.children) ? cc.children[0] : cc.children;
-        return child ? {
-          id: String(child.id),
-          full_name: String(child.full_name)
-        } : null;
-      }).filter((child): child is { id: string; full_name: string } => child !== null);
+      return (careChildren || []).map(cc => cc.children).filter(Boolean);
     } catch (error) {
       console.error('Error in getChildrenForCareBlock:', error);
       return [];
@@ -705,9 +572,473 @@ export default function ClientDashboard() {
     return membership;
   }
 
+  // Helper to check if a pet is a member of a group
+  function isPetInGroup(petId: string, groupId: string) {
+    const membership = petMemberships.find(
+      (m) => m.pet_id === petId && m.group_id === groupId && m.active !== false
+    );
+    console.log(`Checking membership for pet ${petId} in group ${groupId}:`, membership);
+    return membership;
+  }
+
   // Check if user is the creator of a group
   function isGroupCreator(group: Group) {
     return group.created_by === user?.id;
+  }
+
+  // Image compression function for profile photos
+  const compressProfileImage = async (file: File): Promise<Blob> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const img = new Image();
+        img.onload = () => {
+          const canvas = document.createElement('canvas');
+          const MAX_WIDTH = 800;  // Smaller size for profile photos
+          const MAX_HEIGHT = 800;
+          let width = img.width;
+          let height = img.height;
+
+          // Calculate new dimensions while maintaining aspect ratio
+          if (width > height) {
+            if (width > MAX_WIDTH) {
+              height *= MAX_WIDTH / width;
+              width = MAX_WIDTH;
+            }
+          } else {
+            if (height > MAX_HEIGHT) {
+              width *= MAX_HEIGHT / height;
+              height = MAX_HEIGHT;
+            }
+          }
+
+          canvas.width = width;
+          canvas.height = height;
+          const ctx = canvas.getContext('2d');
+          if (ctx) {
+            ctx.drawImage(img, 0, 0, width, height);
+          }
+
+          canvas.toBlob(
+            (blob) => {
+              if (blob) resolve(blob);
+              else reject(new Error('Failed to compress image'));
+            },
+            'image/jpeg',
+            0.85
+          );
+        };
+        img.onerror = () => reject(new Error('Failed to load image'));
+        img.src = e.target?.result as string;
+      };
+      reader.onerror = () => reject(new Error('Failed to read file'));
+      reader.readAsDataURL(file);
+    });
+  };
+
+  // Handle file selection - show crop modal
+  const handleFileSelect = (file: File, type: 'profile' | 'child' | 'pet') => {
+    // Validate file type
+    if (!file.type.startsWith('image/')) {
+      if (type === 'profile') setProfilePhotoError('Please select an image file');
+      else if (type === 'child') setChildPhotoError('Please select an image file');
+      else setPetPhotoError('Please select an image file');
+      return;
+    }
+
+    // Validate file size (max 10MB)
+    if (file.size > 10 * 1024 * 1024) {
+      const errorMsg = 'Image file is too large. Please select an image under 10MB.';
+      if (type === 'profile') setProfilePhotoError(errorMsg);
+      else if (type === 'child') setChildPhotoError(errorMsg);
+      else setPetPhotoError(errorMsg);
+      return;
+    }
+
+    // Convert to data URL for cropper
+    const reader = new FileReader();
+    reader.onload = () => {
+      setImageToCrop(reader.result as string);
+      setCropType(type);
+    };
+    reader.readAsDataURL(file);
+  };
+
+  // Handle cropped image - compress and upload
+  const handleCroppedImage = async (croppedBlob: Blob) => {
+    if (!user || !cropType) return;
+
+    // Set uploading state based on type
+    if (cropType === 'profile') {
+      setUploadingProfilePhoto(true);
+      setProfilePhotoError(null);
+    } else if (cropType === 'child') {
+      setUploadingChildPhoto(true);
+      setChildPhotoError(null);
+    } else {
+      setUploadingPetPhoto(true);
+      setPetPhotoError(null);
+    }
+
+    // Close crop modal
+    setImageToCrop(null);
+    setCropType(null);
+
+    try {
+      // Compress the cropped image
+      const compressedBlob = await compressProfileImage(
+        new File([croppedBlob], 'cropped.jpg', { type: 'image/jpeg' })
+      );
+      const compressedFile = new File(
+        [compressedBlob],
+        'cropped.jpg',
+        { type: 'image/jpeg' }
+      );
+
+      // Determine bucket based on type
+      const bucket = cropType === 'profile' ? 'profile-photos' :
+                     cropType === 'child' ? 'children-photos' : 'pet-photos';
+
+      // Upload to Supabase Storage
+      const fileName = `${user.id}/${Date.now()}_cropped.jpg`;
+      const { data: uploadData, error: uploadError } = await supabase.storage
+        .from(bucket)
+        .upload(fileName, compressedFile, {
+          cacheControl: '3600',
+          upsert: false
+        });
+
+      if (uploadError) {
+        console.error('Upload error:', uploadError);
+        throw new Error('Failed to upload photo');
+      }
+
+      // Get public URL
+      const { data: { publicUrl } } = supabase.storage
+        .from(bucket)
+        .getPublicUrl(fileName);
+
+      // Update the appropriate state with new photo URL
+      if (cropType === 'profile') {
+        setEditProfilePhotoUrl(publicUrl);
+        setProfilePhotoError(null);
+      } else if (cropType === 'child') {
+        setEditChildPhotoUrl(publicUrl);
+        setChildPhotoError(null);
+      } else {
+        setEditPetPhotoUrl(publicUrl);
+        setPetPhotoError(null);
+      }
+
+      console.log(`${cropType} photo uploaded successfully:`, publicUrl);
+    } catch (error) {
+      console.error('Photo upload error:', error);
+      const errorMsg = 'Failed to upload photo. Please try again.';
+      if (cropType === 'profile') setProfilePhotoError(errorMsg);
+      else if (cropType === 'child') setChildPhotoError(errorMsg);
+      else setPetPhotoError(errorMsg);
+    } finally {
+      // Reset uploading state
+      if (cropType === 'profile') setUploadingProfilePhoto(false);
+      else if (cropType === 'child') setUploadingChildPhoto(false);
+      else setUploadingPetPhoto(false);
+    }
+  };
+
+  // Cancel crop modal
+  const handleCancelCrop = () => {
+    setImageToCrop(null);
+    setCropType(null);
+  };
+
+  // Upload profile photo to Supabase Storage
+  const handleProfilePhotoUpload = async (file: File) => {
+    if (!user) return;
+
+    setUploadingProfilePhoto(true);
+    setProfilePhotoError(null);
+
+    try {
+      // Validate file type
+      if (!file.type.startsWith('image/')) {
+        setProfilePhotoError('Please select an image file');
+        setUploadingProfilePhoto(false);
+        return;
+      }
+
+      // Validate file size (max 10MB before compression)
+      if (file.size > 10 * 1024 * 1024) {
+        setProfilePhotoError('Image file is too large. Please select an image under 10MB.');
+        setUploadingProfilePhoto(false);
+        return;
+      }
+
+      // Compress the image
+      const compressedBlob = await compressProfileImage(file);
+      const compressedFile = new File(
+        [compressedBlob],
+        file.name,
+        { type: 'image/jpeg' }
+      );
+
+      // Upload to Supabase Storage (profile-photos bucket)
+      const fileName = `${user.id}/${Date.now()}_${file.name.replace(/[^a-zA-Z0-9.-]/g, '_')}`;
+      const { data: uploadData, error: uploadError } = await supabase.storage
+        .from('profile-photos')
+        .upload(fileName, compressedFile, {
+          cacheControl: '3600',
+          upsert: false
+        });
+
+      if (uploadError) {
+        console.error('Upload error:', uploadError);
+        setProfilePhotoError('Failed to upload photo. Please try again.');
+        setUploadingProfilePhoto(false);
+        return;
+      }
+
+      // Get public URL
+      const { data: { publicUrl } } = supabase.storage
+        .from('profile-photos')
+        .getPublicUrl(fileName);
+
+      // Update the edit state with new photo URL
+      setEditProfilePhotoUrl(publicUrl);
+      setProfilePhotoError(null);
+
+      console.log('Profile photo uploaded successfully:', publicUrl);
+    } catch (error) {
+      console.error('Photo upload error:', error);
+      setProfilePhotoError('Failed to upload photo. Please try again.');
+    } finally {
+      setUploadingProfilePhoto(false);
+    }
+  };
+
+  // Upload child photo to Supabase Storage
+  const handleChildPhotoUpload = async (file: File) => {
+    if (!user) return;
+
+    setUploadingChildPhoto(true);
+    setChildPhotoError(null);
+
+    try {
+      // Validate file type
+      if (!file.type.startsWith('image/')) {
+        setChildPhotoError('Please select an image file');
+        setUploadingChildPhoto(false);
+        return;
+      }
+
+      // Validate file size (max 10MB before compression)
+      if (file.size > 10 * 1024 * 1024) {
+        setChildPhotoError('Image file is too large. Please select an image under 10MB.');
+        setUploadingChildPhoto(false);
+        return;
+      }
+
+      // Compress the image
+      const compressedBlob = await compressProfileImage(file);
+      const compressedFile = new File(
+        [compressedBlob],
+        file.name,
+        { type: 'image/jpeg' }
+      );
+
+      // Upload to Supabase Storage (children-photos bucket)
+      const fileName = `${user.id}/${Date.now()}_${file.name.replace(/[^a-zA-Z0-9.-]/g, '_')}`;
+      const { data: uploadData, error: uploadError } = await supabase.storage
+        .from('children-photos')
+        .upload(fileName, compressedFile, {
+          cacheControl: '3600',
+          upsert: false
+        });
+
+      if (uploadError) {
+        console.error('Upload error:', uploadError);
+        setChildPhotoError('Failed to upload photo. Please try again.');
+        setUploadingChildPhoto(false);
+        return;
+      }
+
+      // Get public URL
+      const { data: { publicUrl } } = supabase.storage
+        .from('children-photos')
+        .getPublicUrl(fileName);
+
+      // Update the edit state with new photo URL
+      setEditChildPhotoUrl(publicUrl);
+      setChildPhotoError(null);
+
+      console.log('Child photo uploaded successfully:', publicUrl);
+    } catch (error) {
+      console.error('Photo upload error:', error);
+      setChildPhotoError('Failed to upload photo. Please try again.');
+    } finally {
+      setUploadingChildPhoto(false);
+    }
+  };
+
+  // Upload pet photo to Supabase Storage
+  const handlePetPhotoUpload = async (file: File) => {
+    if (!user) return;
+
+    setUploadingPetPhoto(true);
+    setPetPhotoError(null);
+
+    try {
+      // Validate file type
+      if (!file.type.startsWith('image/')) {
+        setPetPhotoError('Please select an image file');
+        setUploadingPetPhoto(false);
+        return;
+      }
+
+      // Validate file size (max 10MB before compression)
+      if (file.size > 10 * 1024 * 1024) {
+        setPetPhotoError('Image file is too large. Please select an image under 10MB.');
+        setUploadingPetPhoto(false);
+        return;
+      }
+
+      // Compress the image
+      const compressedBlob = await compressProfileImage(file);
+      const compressedFile = new File(
+        [compressedBlob],
+        file.name,
+        { type: 'image/jpeg' }
+      );
+
+      // Upload to Supabase Storage (pet-photos bucket)
+      const fileName = `${user.id}/${Date.now()}_${file.name.replace(/[^a-zA-Z0-9.-]/g, '_')}`;
+      const { data: uploadData, error: uploadError } = await supabase.storage
+        .from('pet-photos')
+        .upload(fileName, compressedFile, {
+          cacheControl: '3600',
+          upsert: false
+        });
+
+      if (uploadError) {
+        console.error('Upload error:', uploadError);
+        setPetPhotoError('Failed to upload photo. Please try again.');
+        setUploadingPetPhoto(false);
+        return;
+      }
+
+      // Get public URL
+      const { data: { publicUrl } } = supabase.storage
+        .from('pet-photos')
+        .getPublicUrl(fileName);
+
+      // Update the edit state with new photo URL
+      setEditPetPhotoUrl(publicUrl);
+      setPetPhotoError(null);
+
+      console.log('Pet photo uploaded successfully:', publicUrl);
+    } catch (error) {
+      console.error('Photo upload error:', error);
+      setPetPhotoError('Failed to upload photo. Please try again.');
+    } finally {
+      setUploadingPetPhoto(false);
+    }
+  };
+
+  // Profile handlers
+  function handleEditProfile() {
+    setEditingProfile(true);
+    setEditFullName(profile?.full_name || "");
+    setEditEmail(profile?.email || "");
+    setEditPhone(profile?.phone || "");
+    setEditAddress(profile?.address || "");
+    setEditCity(profile?.city || "");
+    setEditState(profile?.state || "");
+    setEditZipCode(profile?.zip_code || "");
+    setEditBio(profile?.bio || "");
+    setEditProfilePhotoUrl(profile?.profile_photo_url || "");
+    setEditEmergencyContact(profile?.emergency_contact || "");
+    setEditEmergencyContactPhone(profile?.emergency_contact_phone || "");
+    setEditProfession(profile?.profession || "");
+    setEditEmployer(profile?.employer || "");
+    setProfileEditError("");
+  }
+
+  async function handleSaveProfile() {
+    setProfileEditError("");
+
+    if (!editFullName.trim()) {
+      setProfileEditError("Full name is required");
+      return;
+    }
+
+    if (!editPhone.trim()) {
+      setProfileEditError("Phone is required");
+      return;
+    }
+
+    // Format phone number for validation (remove all non-digits)
+    const phoneDigits = editPhone.replace(/\D/g, "");
+    if (phoneDigits.length !== 10) {
+      setProfileEditError("Phone number must be 10 digits");
+      return;
+    }
+
+    // Validate ZIP code if provided
+    if (editZipCode && editZipCode.length !== 5 && editZipCode.length !== 0) {
+      setProfileEditError("ZIP code must be 5 digits");
+      return;
+    }
+
+    const updateData: any = {
+      full_name: editFullName.trim(),
+      phone: editPhone.trim(),
+      address: editAddress.trim() || null,
+      city: editCity.trim() || null,
+      state: editState.trim() || null,
+      zip_code: editZipCode.trim() || null,
+      bio: editBio.trim() || null,
+      profile_photo_url: editProfilePhotoUrl.trim() || null,
+      emergency_contact: editEmergencyContact.trim() || null,
+      emergency_contact_phone: editEmergencyContactPhone.trim() || null,
+      profession: editProfession.trim() || null,
+      employer: editEmployer.trim() || null,
+    };
+
+    console.log('Updating profile with data:', updateData);
+
+    const { data, error } = await supabase
+      .from("profiles")
+      .update(updateData)
+      .eq("id", user?.id)
+      .select();
+
+    console.log('Update result:', { data, error });
+
+    if (error) {
+      setProfileEditError(error.message);
+      return;
+    }
+
+    // Update local state
+    setProfile(data[0] as Profile);
+    setEditingProfile(false);
+  }
+
+  function handleCancelProfileEdit() {
+    setEditingProfile(false);
+    setProfileEditError("");
+  }
+
+  async function handleProfileZipCodeChange(zip: string) {
+    setEditZipCode(zip);
+    setEditCity(""); // Clear city while loading
+
+    if (zip.length === 5) {
+      // Look up ZIP code
+      const zipInfo = await lookupZipCode(zip);
+      if (zipInfo) {
+        setEditCity(zipInfo.city);
+      }
+    }
   }
 
   // Children handlers
@@ -738,6 +1069,10 @@ export default function ClientDashboard() {
         full_name: childName.trim(),
         birthdate: childBirthdate,
         parent_id: user.id,
+        school_name: childSchoolName.trim() || null,
+        grade: childGrade.trim() || null,
+        town: childTown.trim() || null,
+        zip_code: childZipCode.trim() || null,
       },
     ]);
 
@@ -745,24 +1080,56 @@ export default function ClientDashboard() {
     if (error) {
       setChildError(error.message);
     } else {
+      // Send notification if user entered a missing school
+      if (showMissingSchoolInput && missingSchoolName && childZipCode) {
+        await notifyMissingSchool(missingSchoolName, childZipCode, childTown);
+      }
+
       const { data: childrenData } = await supabase
         .from("children")
         .select("*")
         .eq("parent_id", user.id)
         .order("created_at", { ascending: false });
       setChildren(childrenData || []);
-      
+
       setChildName("");
       setChildBirthdate("");
+      setChildSchoolName("");
+      setChildGrade("");
+      setChildTown("");
+      setChildZipCode("");
+      setShowMissingSchoolInput(false);
+      setMissingSchoolName("");
       setShowAddChild(false);
     }
   };
 
-  function handleEditChild(child: Child) {
+  async function handleEditChild(child: Child) {
     setEditingChildId(child.id);
     setEditChildName(child.full_name);
     setEditChildBirthdate(child.birthdate || "");
+    setEditChildSchoolName(child.school_name || "");
+    setEditChildGrade(child.grade || "");
+    setEditChildTown(child.town || "");
+    setEditChildZipCode(child.zip_code || "");
+    setEditChildPhotoUrl(child.photo_url || "");
     setChildEditError("");
+    setChildPhotoError(null);
+
+    // Load schools if ZIP code exists
+    if (child.zip_code && child.zip_code.length === 5) {
+      setEditLoadingSchools(true);
+      const { data: schools, error } = await supabase
+        .from('schools')
+        .select('*')
+        .eq('zip_code', child.zip_code)
+        .order('name');
+
+      if (!error && schools) {
+        setEditAvailableSchools(schools);
+      }
+      setEditLoadingSchools(false);
+    }
   }
 
   async function handleSaveChildEdit(child: Child) {
@@ -780,21 +1147,41 @@ export default function ClientDashboard() {
       setChildEditError("Birthdate cannot be in the future");
       return;
     }
+
+    const updateData = {
+      full_name: editChildName.trim(),
+      birthdate: editChildBirthdate,
+      school_name: editChildSchoolName?.trim() || null,
+      grade: editChildGrade?.trim() || null,
+      town: editChildTown?.trim() || null,
+      zip_code: editChildZipCode?.trim() || null,
+      photo_url: editChildPhotoUrl?.trim() || null,
+    };
+
+    console.log('Updating child with data:', updateData);
+
     const { data, error } = await supabase
       .from("children")
-      .update({ full_name: editChildName.trim(), birthdate: editChildBirthdate })
+      .update(updateData)
       .eq("id", child.id)
       .eq("parent_id", user?.id)
       .select();
+
+    console.log('Update result:', { data, error });
+
     if (error) {
       setChildEditError(error.message);
       return;
     }
+
     const { data: childrenData, error: fetchError } = await supabase
       .from("children")
       .select("*")
       .eq("parent_id", user?.id)
-      .order("full_name", { ascending: true });
+      .order("created_at", { ascending: false });
+
+    console.log('Fetched children after update:', childrenData);
+
     if (fetchError) {
       setChildEditError(fetchError.message);
       return;
@@ -806,6 +1193,191 @@ export default function ClientDashboard() {
   function handleCancelChildEdit() {
     setEditingChildId(null);
     setChildEditError("");
+  }
+
+  // Handle ZIP code change and auto-populate town (for add child)
+  async function handleChildZipCodeChange(zip: string) {
+    setChildZipCode(zip);
+    setChildTown(""); // Clear town while loading
+    setAvailableSchools([]); // Clear schools
+
+    if (zip.length === 5) {
+      // Look up ZIP code
+      const zipInfo = await lookupZipCode(zip);
+      if (zipInfo) {
+        setChildTown(zipInfo.city);
+      }
+
+      // Fetch schools for this ZIP code
+      setLoadingSchools(true);
+      const { data: schools, error } = await supabase
+        .from('schools')
+        .select('*')
+        .eq('zip_code', zip)
+        .order('name');
+
+      if (!error && schools) {
+        setAvailableSchools(schools);
+      }
+      setLoadingSchools(false);
+    }
+  }
+
+  // Handle ZIP code change and auto-populate town (for edit child)
+  async function handleEditChildZipCodeChange(zip: string) {
+    setEditChildZipCode(zip);
+    setEditChildTown(""); // Clear town while loading
+    setEditAvailableSchools([]); // Clear schools
+
+    if (zip.length === 5) {
+      // Look up ZIP code
+      const zipInfo = await lookupZipCode(zip);
+      if (zipInfo) {
+        setEditChildTown(zipInfo.city);
+      }
+
+      // Fetch schools for this ZIP code
+      setEditLoadingSchools(true);
+      const { data: schools, error } = await supabase
+        .from('schools')
+        .select('*')
+        .eq('zip_code', zip)
+        .order('name');
+
+      if (!error && schools) {
+        setEditAvailableSchools(schools);
+      }
+      setEditLoadingSchools(false);
+    }
+  }
+
+  // Send email notification about missing school
+  async function notifyMissingSchool(schoolName: string, zipCode: string, town: string) {
+    try {
+      console.log('Sending missing school notification:', { schoolName, zipCode, town });
+
+      // Use the email service to send notification
+      await emailService.sendEmail({
+        to: process.env.NEXT_PUBLIC_ADMIN_EMAIL || 'admin@example.com', // Set this in your env
+        subject: `Missing School: ${schoolName} in ${town} (${zipCode})`,
+        html: `
+          <h2>Missing School Notification</h2>
+          <p>A user has reported a school that is not in the database:</p>
+          <ul>
+            <li><strong>School Name:</strong> ${schoolName}</li>
+            <li><strong>ZIP Code:</strong> ${zipCode}</li>
+            <li><strong>Town:</strong> ${town}</li>
+          </ul>
+          <p>Please add this school to the database if appropriate.</p>
+          <p><em>Reported by user: ${user?.email || 'Unknown'}</em></p>
+        `,
+        text: `Missing School: ${schoolName}\nZIP Code: ${zipCode}\nTown: ${town}\n\nReported by: ${user?.email || 'Unknown'}`
+      });
+
+      console.log('Missing school notification sent successfully');
+    } catch (error) {
+      console.error('Error sending missing school notification:', error);
+      // Don't throw - we don't want to block the user's flow
+    }
+  }
+
+  // Pets handlers
+  const handleAddPet = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!user || !petName.trim()) {
+      setPetError("Please enter a pet name");
+      return;
+    }
+
+    setAddingPet(true);
+    setPetError("");
+
+    const { data, error } = await supabase.from("pets").insert([
+      {
+        parent_id: user.id,
+        name: petName.trim(),
+        species: petSpecies.trim() || null,
+        breed: petBreed.trim() || null,
+        age: petAge ? parseInt(petAge) : null,
+        birthdate: petBirthdate || null,
+        special_needs: petSpecialNeeds.trim() || null,
+        notes: petNotes.trim() || null,
+      },
+    ]).select();
+
+    setAddingPet(false);
+    if (error) {
+      setPetError(error.message);
+    } else {
+      if (data) {
+        setPets([...pets, data[0]]);
+      }
+      setPetName("");
+      setPetSpecies("");
+      setPetBreed("");
+      setPetAge("");
+      setPetBirthdate("");
+      setPetSpecialNeeds("");
+      setPetNotes("");
+      setShowAddPet(false);
+    }
+  };
+
+  function handleEditPet(pet: Pet) {
+    setEditingPetId(pet.id);
+    setEditPetName(pet.name);
+    setEditPetSpecies(pet.species || "");
+    setEditPetBreed(pet.breed || "");
+    setEditPetAge(pet.age?.toString() || "");
+    setEditPetBirthdate(pet.birthdate || "");
+    setEditPetSpecialNeeds(pet.special_needs || "");
+    setEditPetNotes(pet.notes || "");
+    setEditPetPhotoUrl(pet.photo_url || "");
+    setPetEditError("");
+    setPetPhotoError(null);
+  }
+
+  async function handleSavePetEdit(pet: Pet) {
+    setPetEditError("");
+    if (!editPetName.trim()) {
+      setPetEditError("Pet name is required");
+      return;
+    }
+    const { data, error } = await supabase
+      .from("pets")
+      .update({
+        name: editPetName.trim(),
+        species: editPetSpecies.trim() || null,
+        breed: editPetBreed.trim() || null,
+        age: editPetAge ? parseInt(editPetAge) : null,
+        birthdate: editPetBirthdate || null,
+        special_needs: editPetSpecialNeeds.trim() || null,
+        notes: editPetNotes.trim() || null,
+        photo_url: editPetPhotoUrl?.trim() || null,
+      })
+      .eq("id", pet.id)
+      .eq("parent_id", user?.id)
+      .select();
+    if (error) {
+      setPetEditError(error.message);
+      return;
+    }
+    const { data: petsData, error: fetchError } = await supabase
+      .from("pets")
+      .select("*")
+      .eq("parent_id", user?.id)
+      .order("created_at", { ascending: false });
+    if (fetchError) {
+      setPetEditError(fetchError.message);
+      return;
+    }
+    setPets(petsData || []);
+    setEditingPetId(null);
+  }
+
+  function handleCancelPetEdit() {
+    setEditingPetId(null);
+    setPetEditError("");
   }
 
   // Groups handlers
@@ -916,31 +1488,31 @@ export default function ClientDashboard() {
   function handleCancelInvite() {
     setInvitingGroupId(null);
     setInviteError("");
+    setInviteEmail("");
+    setInviteNote("");
+    setSendingInvite(false);
   }
 
   async function handleSubmitInvite(e: React.FormEvent, group: Group) {
     e.preventDefault();
+    setSendingInvite(true);
     setInviteError("");
     if (!inviteEmail.trim()) {
       setInviteError("Email is required");
+      setSendingInvite(false);
       return;
     }
 
     // Check if the user is trying to invite themselves
     if (profile?.email && inviteEmail.trim().toLowerCase() === profile.email.toLowerCase()) {
       setInviteError("You cannot invite yourself to your own group");
+      setSendingInvite(false);
       return;
     }
 
-    const { data: existingProfile, error: profileError } = await supabase
-      .from("profiles")
-      .select("id, full_name, email")
-      .eq("email", inviteEmail.trim().toLowerCase())
-      .single();
-    if (profileError && profileError.code !== "PGRST116") {
-      setInviteError(profileError.message);
-      return;
-    }
+    // For new users, we don't need to check if they exist
+    // Just send them the signup link directly
+    let existingProfile = null;
     const senderName = profile?.full_name || user?.email || "A parent";
     const groupName = group.name;
     const note = inviteNote.trim() ? `\n\nNote from ${senderName}: ${inviteNote.trim()}` : "";
@@ -960,6 +1532,7 @@ export default function ClientDashboard() {
       ]);
     if (inviteError) {
       setInviteError(inviteError.message);
+      setSendingInvite(false);
       return;
     }
     const { data: groupMembers, error: membersError } = await supabase
@@ -968,6 +1541,7 @@ export default function ClientDashboard() {
       .eq("group_id", group.id);
     if (membersError) {
       setInviteError(membersError.message);
+      setSendingInvite(false);
       return;
     }
     const memberIds = (groupMembers || []).map((m: any) => m.profile_id).filter(Boolean);
@@ -989,6 +1563,7 @@ export default function ClientDashboard() {
         .insert([messageInsert]);
       if (msgError) {
         setInviteError(msgError.message);
+        setSendingInvite(false);
         return;
       }
       const { data: insertData, error: memberInsertError } = await supabase
@@ -1011,15 +1586,20 @@ export default function ClientDashboard() {
             .eq("profile_id", existingProfile.id);
           if (updateError) {
             setInviteError(updateError.message);
+            setSendingInvite(false);
             return;
           }
         } else {
           setInviteError(memberInsertError.message);
+          setSendingInvite(false);
           return;
         }
       }
       setInviteError("");
       setInvitingGroupId(null);
+      setInviteEmail("");
+      setInviteNote("");
+      setSendingInvite(false);
       alert("Invite sent as internal message!");
     } else {
       // User doesn't exist - send external email invitation
@@ -1032,22 +1612,121 @@ export default function ClientDashboard() {
         senderName,
         customNote: inviteNote.trim() || undefined,
         inviteId,
-        appUrl: signupLink
+        appUrl: appUrl
       });
 
       if (!emailResult.success) {
         setInviteError(emailResult.error || 'Failed to send invitation email');
+        setSendingInvite(false);
         return;
       }
 
       setInviteError("");
       setInvitingGroupId(null);
+      setInviteEmail("");
+      setInviteNote("");
+      setSendingInvite(false);
       alert("Invitation email sent! The recipient will receive a link to create an account and join your group.");
     }
   }
 
   // Toggle child membership in group
-  async function handleToggle(child: Child, group: Group) {
+  // Toggle pet membership in group
+  async function handleTogglePet(pet: Pet, group: Group) {
+    setGroupManagementError("");
+    const membership = petMemberships.find(
+      (m) => m.pet_id === pet.id && m.group_id === group.id
+    );
+
+    if (!membership) {
+      // Activate pet in group
+      try {
+        console.log('🔄 Activating pet in group:', pet.id, group.id);
+
+        // Use upsert to either insert new row or update existing inactive row
+        const { error: upsertError } = await supabase
+          .from("pet_group_members")
+          .upsert({
+            pet_id: pet.id,
+            group_id: group.id,
+            added_by: user!.id,
+            active: true
+          }, {
+            onConflict: 'pet_id,group_id'
+          });
+
+        if (upsertError) {
+          console.error('❌ Error activating pet in group:', upsertError);
+          setGroupManagementError('Failed to add pet to group');
+          return;
+        }
+
+        console.log('✅ Pet activated successfully');
+
+        // Optimistically update UI - add pet to group immediately
+        const newMembership: PetGroupMember = {
+          id: uuidv4(),
+          pet_id: pet.id,
+          group_id: group.id,
+          added_by: user!.id,
+          added_at: new Date().toISOString(),
+          active: true
+        };
+        setPetMemberships([...petMemberships, newMembership]);
+
+        // Add pet to the group's pets list
+        const petWithParent = { ...pet, parent_full_name: profile?.full_name || 'You' };
+        setAllPetsInGroups({
+          ...allPetsInGroups,
+          [group.id]: [...(allPetsInGroups[group.id] || []), petWithParent]
+        });
+
+        console.log('🔄 UI updated optimistically');
+
+      } catch (err) {
+        console.error('❌ Error adding pet to group:', err);
+        setGroupManagementError('Failed to add pet to group');
+      }
+    } else {
+      // Deactivate pet in group
+      try {
+        console.log('🔄 Deactivating pet from group:', pet.id, group.id);
+
+        const { error } = await supabase
+          .from("pet_group_members")
+          .update({ active: false })
+          .eq("pet_id", pet.id)
+          .eq("group_id", group.id);
+
+        if (error) {
+          console.error('❌ Error deactivating pet from group:', error);
+          setGroupManagementError('Failed to remove pet from group');
+          return;
+        }
+
+        console.log('✅ Pet deactivated successfully');
+
+        // Optimistically update UI - remove pet from group immediately
+        setPetMemberships(petMemberships.filter(
+          m => !(m.pet_id === pet.id && m.group_id === group.id)
+        ));
+
+        // Remove pet from the group's pets list
+        setAllPetsInGroups({
+          ...allPetsInGroups,
+          [group.id]: (allPetsInGroups[group.id] || []).filter(p => p.id !== pet.id)
+        });
+
+        console.log('🔄 UI updated optimistically');
+
+      } catch (err) {
+        console.error('❌ Error removing pet from group:', err);
+        setGroupManagementError('Failed to remove pet from group');
+      }
+    }
+  }
+
+  async function handleToggleChild(child: Child, group: Group) {
     setGroupManagementError("");
     const membership = memberships.find(
       (m) => m.child_id === child.id && m.group_id === group.id
@@ -1056,44 +1735,108 @@ export default function ClientDashboard() {
     if (!membership) {
       // Activate child in group
       try {
-        const { data, error } = await supabase.rpc('activate_child_in_group', {
-          p_child_id: child.id,
-          p_group_id: group.id,
-          p_added_by: user!.id
-        });
-        
-        if (error) {
-          console.error('Error activating child in group:', error);
-          setGroupManagementError('Failed to add child to group');
-          return;
+        console.log('🔄 Activating child in group:', child.id, group.id);
+
+        // First check if an inactive membership exists
+        const { data: existingMembership } = await supabase
+          .from("child_group_members")
+          .select("*")
+          .eq("child_id", child.id)
+          .eq("group_id", group.id)
+          .single();
+
+        if (existingMembership) {
+          // Update existing inactive membership to active
+          const { error: updateError } = await supabase
+            .from("child_group_members")
+            .update({ active: true })
+            .eq("child_id", child.id)
+            .eq("group_id", group.id);
+
+          if (updateError) {
+            console.error('❌ Error reactivating child in group:', updateError);
+            setGroupManagementError('Failed to add child to group');
+            return;
+          }
+        } else {
+          // Insert new membership
+          const { error: insertError } = await supabase
+            .from("child_group_members")
+            .insert({
+              child_id: child.id,
+              group_id: group.id,
+              parent_id: user!.id,
+              added_by: user!.id,
+              active: true
+            });
+
+          if (insertError) {
+            console.error('❌ Error adding child to group:', insertError);
+            setGroupManagementError('Failed to add child to group');
+            return;
+          }
         }
-        
-        // Refresh memberships to get the updated data
-        await loadGroups(user!.id, children);
-        
+
+        console.log('✅ Child activated successfully');
+
+        // Optimistically update UI - add child to group immediately
+        const newMembership: ChildGroupMember = {
+          id: uuidv4(),
+          child_id: child.id,
+          group_id: group.id,
+          added_by: user!.id,
+          added_at: new Date().toISOString(),
+          active: true
+        };
+        setMemberships([...memberships, newMembership]);
+
+        // Add child to the group's children list
+        const childWithParent = { ...child, parent_full_name: profile?.full_name || 'You' };
+        setAllChildrenInGroups({
+          ...allChildrenInGroups,
+          [group.id]: [...(allChildrenInGroups[group.id] || []), childWithParent]
+        });
+
+        console.log('🔄 UI updated optimistically');
+
       } catch (err) {
-        console.error('Error adding child to group:', err);
+        console.error('❌ Error adding child to group:', err);
         setGroupManagementError('Failed to add child to group');
       }
     } else {
       // Deactivate child in group
       try {
-        const { data, error } = await supabase.rpc('deactivate_child_in_group', {
-          p_child_id: child.id,
-          p_group_id: group.id
-        });
-        
+        console.log('🔄 Deactivating child from group:', child.id, group.id);
+
+        const { error } = await supabase
+          .from("child_group_members")
+          .update({ active: false })
+          .eq("child_id", child.id)
+          .eq("group_id", group.id);
+
         if (error) {
-          console.error('Error deactivating child in group:', error);
+          console.error('❌ Error deactivating child from group:', error);
           setGroupManagementError('Failed to remove child from group');
           return;
         }
-        
-        // Refresh memberships to get the updated data
-        await loadGroups(user!.id, children);
-        
+
+        console.log('✅ Child deactivated successfully');
+
+        // Optimistically update UI - remove child from group immediately
+        setMemberships(memberships.filter(
+          m => !(m.child_id === child.id && m.group_id === group.id)
+        ));
+
+        // Remove child from the group's children list
+        setAllChildrenInGroups({
+          ...allChildrenInGroups,
+          [group.id]: (allChildrenInGroups[group.id] || []).filter(c => c.id !== child.id)
+        });
+
+        console.log('🔄 UI updated optimistically');
+
       } catch (err) {
-        console.error('Error removing child from group:', err);
+        console.error('❌ Error removing child from group:', err);
         setGroupManagementError('Failed to remove child from group');
       }
     }
@@ -1106,167 +1849,386 @@ export default function ClientDashboard() {
   }
 
   return (
-    <div>
-      <Header currentPage="dashboard" />
-      
-      <div className="p-6 max-w-7xl mx-auto bg-white min-h-screen">
+    <Header currentPage="dashboard">
+      <div className="p-3 sm:p-4 md:p-6 max-w-7xl mx-auto bg-white">
         {/* Tab Navigation */}
-      <div className="flex border-b border-gray-200 mb-6">
+      <div className="flex border-b border-gray-200 mb-4 sm:mb-6 overflow-x-auto">
         <button
           onClick={() => setActiveTab('profile')}
-          className={`px-6 py-3 font-medium transition-colors ${
+          className={`px-3 sm:px-4 md:px-6 py-2 sm:py-3 font-medium text-xs sm:text-sm md:text-base transition-colors whitespace-nowrap ${
             activeTab === 'profile'
               ? 'border-b-2 border-blue-600 text-blue-600'
               : 'text-gray-500 hover:text-gray-700'
           }`}
         >
-          Profile
+          {t('profile')}
         </button>
         <button
           onClick={() => setActiveTab('groups')}
-          className={`px-6 py-3 font-medium transition-colors ${
+          className={`px-3 sm:px-4 md:px-6 py-2 sm:py-3 font-medium text-xs sm:text-sm md:text-base transition-colors whitespace-nowrap ${
             activeTab === 'groups'
               ? 'border-b-2 border-blue-600 text-blue-600'
               : 'text-gray-500 hover:text-gray-700'
           }`}
         >
-          Groups
+          {t('groups')}
         </button>
         <button
           onClick={() => setActiveTab('children')}
-          className={`px-6 py-3 font-medium transition-colors ${
+          className={`px-3 sm:px-4 md:px-6 py-2 sm:py-3 font-medium text-xs sm:text-sm md:text-base transition-colors whitespace-nowrap ${
             activeTab === 'children'
               ? 'border-b-2 border-blue-600 text-blue-600'
               : 'text-gray-500 hover:text-gray-700'
           }`}
         >
-          Children
+          {t('children')}
+        </button>
+        <button
+          onClick={() => setActiveTab('pets')}
+          className={`px-3 sm:px-4 md:px-6 py-2 sm:py-3 font-medium text-xs sm:text-sm md:text-base transition-colors whitespace-nowrap ${
+            activeTab === 'pets'
+              ? 'border-b-2 border-purple-600 text-purple-600'
+              : 'text-gray-500 hover:text-gray-700'
+          }`}
+        >
+          {t('pets')}
         </button>
 
       </div>
 
-      {/* Care Overview - Stats Overview */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
-        <div 
-          className="bg-white overflow-hidden shadow rounded-lg cursor-pointer hover:shadow-lg transition-shadow duration-200"
-          onClick={() => handleStatsClick('receiving')}
-          title="Click to view receiving care blocks"
-        >
-          <div className="p-5">
-            <div className="flex items-center">
-              <div className="flex-shrink-0">
-                <svg className="h-6 w-6 text-blue-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197m13.5-9a2.5 2.5 0 11-5 0 2.5 2.5 0 015 0z" />
-                </svg>
-              </div>
-              <div className="ml-5 w-0 flex-1">
-                <dl>
-                  <dt className="text-sm font-medium text-gray-500 truncate">Receiving Care</dt>
-                  <dd className="text-lg font-medium text-gray-900">{stats.receivingCare}</dd>
-                </dl>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <div 
-          className="bg-white overflow-hidden shadow rounded-lg cursor-pointer hover:shadow-lg transition-shadow duration-200"
-          onClick={() => handleStatsClick('providing')}
-          title="Click to view providing care blocks"
-        >
-          <div className="p-5">
-            <div className="flex items-center">
-              <div className="flex-shrink-0">
-                <svg className="h-6 w-6 text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-                </svg>
-              </div>
-              <div className="ml-5 w-0 flex-1">
-                <dl>
-                  <dt className="text-sm font-medium text-gray-500 truncate">Providing Care</dt>
-                  <dd className="text-lg font-medium text-gray-900">{stats.providingCare}</dd>
-                </dl>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <div 
-          className="bg-white overflow-hidden shadow rounded-lg cursor-pointer hover:shadow-lg transition-shadow duration-200"
-          onClick={() => handleStatsClick('event')}
-          title="Click to view event blocks"
-        >
-          <div className="p-5">
-            <div className="flex items-center">
-              <div className="flex-shrink-0">
-                <svg className="h-6 w-6 text-purple-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
-                </svg>
-              </div>
-              <div className="ml-5 w-0 flex-1">
-                <dl>
-                  <dt className="text-sm font-medium text-gray-500 truncate">Events</dt>
-                  <dd className="text-lg font-medium text-gray-900">{stats.events}</dd>
-                </dl>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <div 
-          className="bg-white overflow-hidden shadow rounded-lg cursor-pointer hover:shadow-lg transition-shadow duration-200"
-          onClick={() => handleStatsClick('total')}
-          title="Click to view all care blocks"
-        >
-          <div className="p-5">
-            <div className="flex items-center">
-              <div className="flex-shrink-0">
-                <svg className="h-6 w-6 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-                </svg>
-              </div>
-              <div className="ml-5 w-0 flex-1">
-                <dl>
-                  <dt className="text-sm font-medium text-gray-500 truncate">Total Blocks</dt>
-                  <dd className="text-lg font-medium text-gray-900">{stats.totalBlocks}</dd>
-                </dl>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-
+      {/* Swipeable Content Area */}
+      <div {...swipeHandlers}>
       {/* Profile Tab */}
       {activeTab === 'profile' && (
-        <div className="bg-white rounded-lg shadow-md p-6">
-          <h2 className="text-xl font-semibold mb-4">Profile Information</h2>
-          <div className="space-y-2">
-            <div><strong>Name:</strong> {profile?.full_name || <span className="text-gray-400">(not set)</span>}</div>
-            <div><strong>Email:</strong> {profile?.email || user?.email || <span className="text-gray-400">(not set)</span>}</div>
-            <div><strong>Phone:</strong> {formatPhone(profile?.phone) || <span className="text-gray-400">(not set)</span>}</div>
+        <div className="bg-white rounded-lg shadow-md p-3 sm:p-4 md:p-6">
+          <div className="flex justify-between items-center mb-4">
+            <h2 className="text-lg sm:text-xl font-semibold">{t('profile')}</h2>
+            {!editingProfile && (
+              <button
+                onClick={handleEditProfile}
+                className="px-4 py-2 bg-blue-600 text-white text-sm sm:text-base rounded-lg hover:bg-blue-700 transition shadow-soft hover:shadow-medium"
+              >
+                {t('editProfile')}
+              </button>
+            )}
           </div>
+
+          {!editingProfile ? (
+            <div className="space-y-4 text-sm sm:text-base">
+              {/* Top Section: Photo + Basic Info */}
+              <div className="flex flex-col sm:flex-row gap-4">
+                {/* Profile Photo on Left */}
+                <div className="flex-shrink-0">
+                  {profile?.profile_photo_url ? (
+                    <img
+                      src={profile.profile_photo_url}
+                      alt="Profile"
+                      className="w-32 h-32 rounded-full object-cover border-4 border-blue-200"
+                      onError={(e) => {
+                        (e.target as HTMLImageElement).style.display = 'none';
+                      }}
+                    />
+                  ) : (
+                    <div className="w-32 h-32 rounded-full bg-gray-200 border-4 border-gray-300 flex items-center justify-center">
+                      <span className="text-gray-400 text-sm">{t('noPhoto')}</span>
+                    </div>
+                  )}
+                </div>
+
+                {/* Basic Info on Right */}
+                <div className="flex-1 space-y-2">
+                  <div><strong>{t('name')}:</strong> {profile?.full_name || <span className="text-gray-400">{t('notSet')}</span>}</div>
+                  <div><strong>{t('phone')}:</strong> {formatPhone(profile?.phone) || <span className="text-gray-400">{t('notSet')}</span>}</div>
+                  <div><strong>{t('email')}:</strong> {profile?.email || user?.email || <span className="text-gray-400">{t('notSet')}</span>}</div>
+                </div>
+              </div>
+
+              {/* Bio Section */}
+              {profile?.bio && (
+                <div className="pt-2 border-t"><strong>{t('bio')}:</strong> <p className="mt-1 text-gray-700">{profile.bio}</p></div>
+              )}
+
+              {/* Profession and Employer */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2 border-t">
+                <div><strong>{t('profession')}:</strong> {profile?.profession || <span className="text-gray-400">{t('notSet')}</span>}</div>
+                <div><strong>{t('employer')}:</strong> {profile?.employer || <span className="text-gray-400">{t('notSet')}</span>}</div>
+              </div>
+
+              {/* Address Section */}
+              <div className="space-y-1 pt-2 border-t">
+                <div><strong>{t('address')}:</strong></div>
+                <div className="pl-4">
+                  <div>{profile?.address || <span className="text-gray-400">{t('notSet')}</span>}</div>
+                  <div>
+                    {profile?.city || <span className="text-gray-400">({t('city')})</span>}, {profile?.state || <span className="text-gray-400">({t('state')})</span>} {profile?.zip_code || <span className="text-gray-400">({t('zip')})</span>}
+                  </div>
+                </div>
+              </div>
+
+              {/* Emergency Contact Section */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2 border-t">
+                <div><strong>{t('emergencyContact')}:</strong> {profile?.emergency_contact || <span className="text-gray-400">{t('notSet')}</span>}</div>
+                <div><strong>{t('emergencyPhone')}:</strong> {formatPhone(profile?.emergency_contact_phone) || <span className="text-gray-400">{t('notSet')}</span>}</div>
+              </div>
+
+            </div>
+          ) : (
+            <div className="space-y-4">
+              {profileEditError && (
+                <div className="p-3 bg-red-50 border border-red-200 text-red-600 rounded-lg text-sm">
+                  {profileEditError}
+                </div>
+              )}
+
+              {/* Profile Photo Upload with Preview */}
+              <div className="border border-blue-200 rounded-lg p-4 bg-blue-50">
+                <div className="flex items-center justify-between mb-2">
+                  <label className="block text-sm font-medium">{t('profilePhoto')}</label>
+                  <label className="cursor-pointer">
+                    <input
+                      type="file"
+                      accept="image/*"
+                      onChange={(e) => {
+                        const file = e.target.files?.[0];
+                        if (file) handleFileSelect(file, 'profile');
+                        e.target.value = '';
+                      }}
+                      className="hidden"
+                      disabled={uploadingProfilePhoto}
+                    />
+                    <div
+                      className={`p-2 rounded-lg transition flex items-center gap-2 ${
+                        uploadingProfilePhoto
+                          ? 'bg-gray-200 cursor-not-allowed'
+                          : 'bg-blue-500 hover:bg-blue-600'
+                      }`}
+                      title="Upload Photo from Camera/Gallery"
+                    >
+                      <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" />
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 13a3 3 0 11-6 0 3 3 0 016 0z" />
+                      </svg>
+                      <span className="text-white text-sm font-medium">
+                        {uploadingProfilePhoto ? t('uploading') : t('choosePhoto')}
+                      </span>
+                    </div>
+                  </label>
+                </div>
+                <p className="text-xs text-gray-600 mt-1">Upload a photo from your camera or gallery (max 10MB, automatically compressed)</p>
+
+                {/* Upload Status Messages */}
+                {uploadingProfilePhoto && (
+                  <p className="text-sm text-blue-600 mt-2">Uploading and compressing photo...</p>
+                )}
+                {profilePhotoError && (
+                  <p className="text-sm text-red-600 mt-2">{profilePhotoError}</p>
+                )}
+
+                {/* Preview */}
+                {editProfilePhotoUrl && !uploadingProfilePhoto && (
+                  <div className="mt-3 flex justify-center">
+                    <div className="text-center">
+                      <p className="text-xs text-gray-600 mb-2">Preview:</p>
+                      <img
+                        src={editProfilePhotoUrl}
+                        alt="Profile Preview"
+                        className="w-32 h-32 rounded-full object-cover border-4 border-blue-300"
+                        onError={(e) => {
+                          (e.target as HTMLImageElement).style.display = 'none';
+                        }}
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Basic Info Section */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium mb-1">{t('fullName')} *</label>
+                  <input
+                    type="text"
+                    value={editFullName}
+                    onChange={(e) => setEditFullName(e.target.value)}
+                    className="w-full px-3 py-2 border border-blue-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    required
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium mb-1">{t('phone')} *</label>
+                  <input
+                    type="tel"
+                    value={editPhone}
+                    onChange={(e) => setEditPhone(e.target.value)}
+                    className="w-full px-3 py-2 border border-blue-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    placeholder="(123) 456-7890"
+                    required
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium mb-1">{t('emailReadOnly')}</label>
+                <input
+                  type="email"
+                  value={profile?.email || user?.email || ""}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg bg-gray-100 cursor-not-allowed"
+                  readOnly
+                  disabled
+                />
+              </div>
+
+              {/* Bio Section */}
+              <div>
+                <label className="block text-sm font-medium mb-1">{t('bioAboutMe')}</label>
+                <textarea
+                  value={editBio}
+                  onChange={(e) => setEditBio(e.target.value)}
+                  className="w-full px-3 py-2 border border-blue-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  placeholder="Tell us about yourself..."
+                  rows={4}
+                />
+              </div>
+
+              {/* Profession and Employer */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium mb-1">{t('profession')}</label>
+                  <input
+                    type="text"
+                    value={editProfession}
+                    onChange={(e) => setEditProfession(e.target.value)}
+                    className="w-full px-3 py-2 border border-blue-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    placeholder="e.g., Teacher, Engineer"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium mb-1">{t('employer')}</label>
+                  <input
+                    type="text"
+                    value={editEmployer}
+                    onChange={(e) => setEditEmployer(e.target.value)}
+                    className="w-full px-3 py-2 border border-blue-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    placeholder="Company name"
+                  />
+                </div>
+              </div>
+
+              {/* Address Section */}
+              <div>
+                <label className="block text-sm font-medium mb-1">{t('address')}</label>
+                <input
+                  type="text"
+                  value={editAddress}
+                  onChange={(e) => setEditAddress(e.target.value)}
+                  className="w-full px-3 py-2 border border-blue-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  placeholder="Street address"
+                />
+              </div>
+
+              {/* City, State, ZIP (aligned like address) */}
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div>
+                  <label className="block text-sm font-medium mb-1">{t('city')}</label>
+                  <input
+                    type="text"
+                    value={editCity}
+                    onChange={(e) => setEditCity(e.target.value)}
+                    className="w-full px-3 py-2 border border-blue-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    placeholder="City name"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium mb-1">{t('state')}</label>
+                  <input
+                    type="text"
+                    value={editState}
+                    onChange={(e) => setEditState(e.target.value.toUpperCase())}
+                    className="w-full px-3 py-2 border border-blue-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    placeholder="CA"
+                    maxLength={2}
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium mb-1">{t('zipCode')}</label>
+                  <input
+                    type="text"
+                    value={editZipCode}
+                    onChange={(e) => handleProfileZipCodeChange(e.target.value)}
+                    className="w-full px-3 py-2 border border-blue-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    placeholder="12345"
+                    maxLength={5}
+                  />
+                </div>
+              </div>
+
+              {/* Emergency Contact Section */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium mb-1">{t('emergencyContactName')}</label>
+                  <input
+                    type="text"
+                    value={editEmergencyContact}
+                    onChange={(e) => setEditEmergencyContact(e.target.value)}
+                    className="w-full px-3 py-2 border border-blue-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    placeholder="Contact name"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium mb-1">{t('emergencyContactPhone')}</label>
+                  <input
+                    type="tel"
+                    value={editEmergencyContactPhone}
+                    onChange={(e) => setEditEmergencyContactPhone(e.target.value)}
+                    className="w-full px-3 py-2 border border-blue-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    placeholder="(123) 456-7890"
+                  />
+                </div>
+              </div>
+
+              <div className="flex flex-col sm:flex-row gap-2 pt-2">
+                <button
+                  onClick={handleSaveProfile}
+                  className="flex-1 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition"
+                >
+                  {t('saveChanges')}
+                </button>
+                <button
+                  onClick={handleCancelProfileEdit}
+                  className="flex-1 px-4 py-2 bg-gray-500 text-white rounded-lg hover:bg-gray-600 transition"
+                >
+                  {t('cancel')}
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       )}
 
       {/* Children Tab */}
       {activeTab === 'children' && (
-        <div className="bg-white rounded-lg shadow-md p-6">
+        <div className="bg-white rounded-lg shadow-md p-3 sm:p-4 md:p-6">
           <div className="flex justify-between items-center mb-4">
-            <h2 className="text-xl font-semibold">Children</h2>
+            <h2 className="text-lg sm:text-xl font-semibold">{t('children')}</h2>
             <button
               onClick={() => setShowAddChild(!showAddChild)}
               className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition shadow-soft hover:shadow-medium"
             >
-              {showAddChild ? "Cancel" : "Add Child"}
+              {showAddChild ? t('cancel') : t('addChild')}
             </button>
           </div>
 
           {showAddChild && (
-            <form onSubmit={handleAddChild} className="mb-6 p-4 bg-white rounded-lg border border-cyan-200">
-              <h3 className="text-lg font-medium mb-4">Add New Child</h3>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+            <form onSubmit={handleAddChild} className="mb-6 p-3 sm:p-4 bg-white rounded-lg border border-cyan-200">
+              <h3 className="text-base sm:text-lg font-medium mb-3 sm:mb-4">{t('addNewChild')}</h3>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 sm:gap-4 mb-4">
                 <div>
-                  <label className="block text-sm font-medium mb-1">Child's Name</label>
+                  <label className="block text-sm font-medium mb-1">{t('childName')} *</label>
                   <input
                     type="text"
                     value={childName}
@@ -1277,7 +2239,7 @@ export default function ClientDashboard() {
                   />
                 </div>
                 <div>
-                  <label className="block text-sm font-medium mb-1">Birthdate</label>
+                  <label className="block text-sm font-medium mb-1">{t('birthdate')} *</label>
                   <input
                     type="date"
                     value={childBirthdate}
@@ -1287,6 +2249,117 @@ export default function ClientDashboard() {
                     required
                   />
                 </div>
+                <div>
+                  <label className="block text-sm font-medium mb-1">{t('zipCode')}</label>
+                  <input
+                    type="text"
+                    value={childZipCode}
+                    onChange={(e: React.ChangeEvent<HTMLInputElement>) => handleChildZipCodeChange(e.target.value)}
+                    className="w-full px-3 py-2 border border-blue-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                    placeholder="Enter zip code"
+                    maxLength={5}
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium mb-1">{t('town')}</label>
+                  <input
+                    type="text"
+                    value={childTown}
+                    onChange={(e: React.ChangeEvent<HTMLInputElement>) => setChildTown(e.target.value)}
+                    className="w-full px-3 py-2 border border-blue-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                    placeholder="Auto-filled from ZIP code"
+                  />
+                  {childTown && <p className="text-xs text-gray-500 mt-1">Auto-populated from ZIP code</p>}
+                </div>
+                <div>
+                  <label className="block text-sm font-medium mb-1">{t('schoolName')}</label>
+                  {loadingSchools ? (
+                    <div className="w-full px-3 py-2 border border-blue-300 rounded-lg text-gray-500">
+                      {t('loadingSchools')}
+                    </div>
+                  ) : showMissingSchoolInput ? (
+                    <div>
+                      <input
+                        type="text"
+                        value={missingSchoolName}
+                        onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
+                          setMissingSchoolName(e.target.value);
+                          setChildSchoolName(e.target.value);
+                        }}
+                        className="w-full px-3 py-2 border border-blue-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                        placeholder="Enter the school name not shown"
+                        autoFocus
+                      />
+                      <p className="text-xs text-gray-600 mt-1">
+                        We'll notify the admin to add this school to the database.
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowMissingSchoolInput(false);
+                          setMissingSchoolName("");
+                        }}
+                        className="text-xs text-blue-600 hover:text-blue-700 mt-1"
+                      >
+                        Back to school list
+                      </button>
+                    </div>
+                  ) : availableSchools.length > 0 ? (
+                    <select
+                      value={childSchoolName}
+                      onChange={(e: React.ChangeEvent<HTMLSelectElement>) => {
+                        const value = e.target.value;
+                        if (value === "__missing__") {
+                          setShowMissingSchoolInput(true);
+                          setChildSchoolName("");
+                        } else if (value === "__custom__") {
+                          setChildSchoolName("");
+                          // Show manual input without notification
+                        } else {
+                          setChildSchoolName(value);
+                        }
+                      }}
+                      className="w-full px-3 py-2 border border-blue-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                    >
+                      <option value="">Select a school</option>
+                      {availableSchools.map((school) => (
+                        <option key={school.id} value={school.name}>
+                          {school.name}
+                        </option>
+                      ))}
+                      <option value="__missing__">🔔 School not shown (notify admin)</option>
+                      <option value="__custom__">✏️ Other (type manually)</option>
+                    </select>
+                  ) : (
+                    <input
+                      type="text"
+                      value={childSchoolName}
+                      onChange={(e: React.ChangeEvent<HTMLInputElement>) => setChildSchoolName(e.target.value)}
+                      className="w-full px-3 py-2 border border-blue-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                      placeholder="Enter school name or ZIP code first"
+                    />
+                  )}
+                  {childSchoolName === "__custom__" && !showMissingSchoolInput && (
+                    <input
+                      type="text"
+                      value=""
+                      onChange={(e: React.ChangeEvent<HTMLInputElement>) => setChildSchoolName(e.target.value)}
+                      className="w-full px-3 py-2 border border-blue-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 mt-2"
+                      placeholder="Enter school name"
+                      autoFocus
+                    />
+                  )}
+                </div>
+                <div>
+                  <label className="block text-sm font-medium mb-1">{t('grade')}</label>
+                  <input
+                    type="text"
+                    value={childGrade}
+                    onChange={(e: React.ChangeEvent<HTMLInputElement>) => setChildGrade(e.target.value)}
+                    className="w-full px-3 py-2 border border-blue-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                    placeholder="Enter grade (e.g., 4, K, 12)"
+                  />
+                </div>
               </div>
               {childError && <div className="text-red-600 mb-4">{childError}</div>}
               <button
@@ -1294,15 +2367,15 @@ export default function ClientDashboard() {
                 disabled={addingChild}
                 className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition disabled:opacity-50 shadow-soft hover:shadow-medium"
               >
-                {addingChild ? "Adding..." : "Add Child"}
+                {addingChild ? t('adding') : t('addChild')}
               </button>
             </form>
           )}
 
           {children.length === 0 ? (
             <div className="text-center py-8 text-gray-500">
-              <p>No children added yet.</p>
-              <p className="text-sm">Click "Add Child" to get started.</p>
+              <p>{t('noChildren')}</p>
+              <p className="text-sm">{t('clickAddChild')}</p>
             </div>
           ) : (
             <div className="space-y-4">
@@ -1312,57 +2385,259 @@ export default function ClientDashboard() {
                   <div key={child.id} className="border border-cyan-200 rounded-lg p-4 flex flex-col gap-2 bg-white">
                     {editingChildId === child.id ? (
                       <>
-                        <input
-                          type="text"
-                          value={editChildName}
-                          onChange={(e) => setEditChildName(e.target.value)}
-                          className="px-3 py-2 border rounded mb-2"
-                          placeholder="Child's name"
-                          required
-                        />
-                        <input
-                          type="date"
-                          value={editChildBirthdate}
-                          onChange={(e) => setEditChildBirthdate(e.target.value)}
-                          className="px-3 py-2 border rounded mb-2"
-                          max={new Date().toISOString().split('T')[0]}
-                          required
-                        />
-                        {childEditError && <div className="text-red-600 mb-2">{childEditError}</div>}
-                        <div className="flex gap-2">
+                        {/* Photo Upload Section */}
+                        <div className="border border-blue-200 rounded-lg p-4 bg-blue-50 mb-3">
+                          <div className="flex items-center justify-between mb-2">
+                            <label className="block font-medium">{t('childPhotoOptional')}</label>
+                            <label className="cursor-pointer">
+                              <input
+                                type="file"
+                                accept="image/*"
+                                onChange={(e) => {
+                                  const file = e.target.files?.[0];
+                                  if (file) handleFileSelect(file, 'child');
+                                  e.target.value = '';
+                                }}
+                                className="hidden"
+                                disabled={uploadingChildPhoto}
+                              />
+                              <div
+                                className={`p-2 rounded-lg transition flex items-center gap-2 ${
+                                  uploadingChildPhoto
+                                    ? 'bg-gray-200 cursor-not-allowed'
+                                    : 'bg-blue-500 hover:bg-blue-600'
+                                }`}
+                                title="Upload Photo from Camera/Gallery"
+                              >
+                                <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" />
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 13a3 3 0 11-6 0 3 3 0 016 0z" />
+                                </svg>
+                                <span className="text-white text-sm font-medium">
+                                  {uploadingChildPhoto ? t('uploading') : t('choosePhoto')}
+                                </span>
+                              </div>
+                            </label>
+                          </div>
+                          <p className="text-xs text-gray-600 mt-1">Upload a photo from your camera or gallery (max 10MB, automatically compressed)</p>
+
+                          {/* Upload Status Messages */}
+                          {uploadingChildPhoto && (
+                            <p className="text-sm text-blue-600 mt-2">Uploading and compressing photo...</p>
+                          )}
+                          {childPhotoError && (
+                            <p className="text-sm text-red-600 mt-2">{childPhotoError}</p>
+                          )}
+
+                          {/* Preview */}
+                          {editChildPhotoUrl && !uploadingChildPhoto && (
+                            <div className="mt-3 flex justify-center">
+                              <div className="text-center">
+                                <p className="text-xs text-gray-600 mb-2">Preview:</p>
+                                <img
+                                  src={editChildPhotoUrl}
+                                  alt="Child Preview"
+                                  className="w-24 h-24 rounded-full object-cover border-4 border-blue-300"
+                                  onError={(e) => {
+                                    (e.target as HTMLImageElement).style.display = 'none';
+                                  }}
+                                />
+                              </div>
+                            </div>
+                          )}
+                        </div>
+
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                          <div>
+                            <label className="block text-sm font-medium mb-1">{t('childName')} *</label>
+                            <input
+                              type="text"
+                              value={editChildName}
+                              onChange={(e) => setEditChildName(e.target.value)}
+                              className="w-full px-3 py-2 border rounded"
+                              placeholder="Child's name"
+                              required
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-sm font-medium mb-1">{t('birthdate')} *</label>
+                            <input
+                              type="date"
+                              value={editChildBirthdate}
+                              onChange={(e) => setEditChildBirthdate(e.target.value)}
+                              className="w-full px-3 py-2 border rounded"
+                              max={new Date().toISOString().split('T')[0]}
+                              required
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-sm font-medium mb-1">{t('zipCode')}</label>
+                            <input
+                              type="text"
+                              value={editChildZipCode}
+                              onChange={(e) => handleEditChildZipCodeChange(e.target.value)}
+                              className="w-full px-3 py-2 border rounded"
+                              placeholder="Zip code"
+                              maxLength={5}
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-sm font-medium mb-1">{t('town')}</label>
+                            <input
+                              type="text"
+                              value={editChildTown}
+                              onChange={(e) => setEditChildTown(e.target.value)}
+                              className="w-full px-3 py-2 border rounded"
+                              placeholder="Auto-filled from ZIP code"
+                            />
+                            {editChildTown && <p className="text-xs text-gray-500 mt-1">Auto-populated from ZIP code</p>}
+                          </div>
+                          <div>
+                            <label className="block text-sm font-medium mb-1">{t('schoolName')}</label>
+                            {editLoadingSchools ? (
+                              <div className="w-full px-3 py-2 border rounded text-gray-500">
+                                {t('loadingSchools')}
+                              </div>
+                            ) : editAvailableSchools.length > 0 ? (
+                              <select
+                                value={editChildSchoolName}
+                                onChange={(e) => setEditChildSchoolName(e.target.value)}
+                                className="w-full px-3 py-2 border rounded"
+                              >
+                                <option value="">Select a school</option>
+                                {editAvailableSchools.map((school) => (
+                                  <option key={school.id} value={school.name}>
+                                    {school.name}
+                                  </option>
+                                ))}
+                                <option value="__custom__">Other (type manually)</option>
+                              </select>
+                            ) : (
+                              <input
+                                type="text"
+                                value={editChildSchoolName}
+                                onChange={(e) => setEditChildSchoolName(e.target.value)}
+                                className="w-full px-3 py-2 border rounded"
+                                placeholder="Enter school name or ZIP code first"
+                              />
+                            )}
+                            {editChildSchoolName === "__custom__" && (
+                              <input
+                                type="text"
+                                value=""
+                                onChange={(e) => setEditChildSchoolName(e.target.value)}
+                                className="w-full px-3 py-2 border rounded mt-2"
+                                placeholder="Enter school name"
+                                autoFocus
+                              />
+                            )}
+                          </div>
+                          <div>
+                            <label className="block text-sm font-medium mb-1">{t('grade')}</label>
+                            <input
+                              type="text"
+                              value={editChildGrade}
+                              onChange={(e) => setEditChildGrade(e.target.value)}
+                              className="w-full px-3 py-2 border rounded"
+                              placeholder="Grade"
+                            />
+                          </div>
+                        </div>
+                        {childEditError && <div className="text-red-600 mt-2">{childEditError}</div>}
+                        <div className="flex gap-2 mt-3">
                           <button
                             type="button"
                             onClick={() => handleSaveChildEdit(child)}
                             className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 transition"
                           >
-                            Save
+                            {t('save')}
                           </button>
                           <button
                             onClick={handleCancelChildEdit}
                             className="px-4 py-2 bg-gray-400 text-white rounded hover:bg-gray-500 transition"
                           >
-                            Cancel
+                            {t('cancel')}
                           </button>
                         </div>
                       </>
                     ) : (
                       <>
-                        <div className="flex items-center gap-2">
+                        {/* Top section with Edit button */}
+                        <div className="flex items-center justify-between mb-3">
                           <span className="font-medium text-lg">{child.full_name}</span>
                           <button
                             onClick={() => handleEditChild(child)}
-                            className="px-2 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700 transition"
+                            className="px-3 py-1 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition"
                           >
-                            Edit
+                            {t('edit')}
                           </button>
                         </div>
-                        <p className="text-gray-600">
-                          Age: {age !== null ? `${age} years old` : "Unknown"}
-                        </p>
-                        <p className="text-gray-600">
-                          Birthday: {formatBirthdate(child.birthdate)}
-                        </p>
-                        <p className="text-xs text-gray-400 mt-2">
+
+                        {/* Photo + Basic Info Layout */}
+                        <div className="flex flex-col sm:flex-row gap-4">
+                          {/* Profile Photo on Left */}
+                          <div className="flex-shrink-0">
+                            {child.photo_url ? (
+                              <img
+                                src={child.photo_url}
+                                alt={child.full_name}
+                                className="w-24 h-24 rounded-full object-cover border-4 border-blue-200"
+                                onError={(e) => {
+                                  // Fallback to gradient placeholder if image fails to load
+                                  const target = e.target as HTMLImageElement;
+                                  target.style.display = 'none';
+                                  const fallback = target.nextElementSibling as HTMLElement;
+                                  if (fallback) fallback.style.display = 'flex';
+                                }}
+                              />
+                            ) : null}
+                            <div
+                              className="w-24 h-24 rounded-full bg-gradient-to-br from-blue-400 to-cyan-400 border-4 border-blue-200 flex items-center justify-center"
+                              style={{ display: child.photo_url ? 'none' : 'flex' }}
+                            >
+                              <span className="text-white text-2xl font-bold">
+                                {child.full_name.charAt(0).toUpperCase()}
+                              </span>
+                            </div>
+                          </div>
+
+                          {/* Basic Info on Right */}
+                          <div className="flex-1 space-y-2 text-sm">
+                            <div><strong>{t('name')}:</strong> {child.full_name}</div>
+                            <div><strong>{t('birthday')}:</strong> {formatBirthdate(child.birthdate)}</div>
+                            <div><strong>{t('age')}:</strong> {age !== null ? `${age} ${t('yearsOld')}` : t('unknown')}</div>
+                          </div>
+                        </div>
+
+                        {/* School and Grade */}
+                        {(child.school_name || child.grade) && (
+                          <div className="grid grid-cols-2 gap-4 mt-3 pt-3 border-t">
+                            <div>
+                              <strong className="text-sm">{t('school')}:</strong>
+                              <div className="text-gray-700">{child.school_name || <span className="text-gray-400">{t('notSet')}</span>}</div>
+                            </div>
+                            <div>
+                              <strong className="text-sm">{t('grade')}:</strong>
+                              <div className="text-gray-700">{child.grade || <span className="text-gray-400">{t('notSet')}</span>}</div>
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Town and Zip Code */}
+                        {(child.town || child.zip_code) && (
+                          <div className="grid grid-cols-2 gap-4 mt-2">
+                            <div>
+                              <strong className="text-sm">{t('town')}:</strong>
+                              <div className="text-gray-700">{child.town || <span className="text-gray-400">{t('notSet')}</span>}</div>
+                            </div>
+                            <div>
+                              <strong className="text-sm">{t('zipCode')}:</strong>
+                              <div className="text-gray-700">{child.zip_code || <span className="text-gray-400">{t('notSet')}</span>}</div>
+                            </div>
+                          </div>
+                        )}
+
+                        <p className="text-xs text-gray-400 mt-3 pt-2 border-t">
                           Added: {new Date(child.created_at).toLocaleDateString()}
                         </p>
                       </>
@@ -1375,38 +2650,375 @@ export default function ClientDashboard() {
         </div>
       )}
 
+      {/* Pets Tab */}
+      {activeTab === 'pets' && (
+        <div className="bg-white rounded-lg shadow-md p-6">
+          <div className="flex justify-between items-center mb-4">
+            <h2 className="text-lg sm:text-xl font-semibold">{t('pets')}</h2>
+            <button
+              onClick={() => setShowAddPet(!showAddPet)}
+              className="px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition shadow-soft hover:shadow-medium"
+            >
+              {showAddPet ? t('cancel') : t('addPet')}
+            </button>
+          </div>
+
+          {showAddPet && (
+            <form onSubmit={handleAddPet} className="mb-6 p-4 bg-white rounded-lg border border-purple-200">
+              <h3 className="text-base sm:text-lg font-medium mb-4">{t('addNewPet')}</h3>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+                <div>
+                  <label className="block text-sm font-medium mb-1">{t('petName')}</label>
+                  <input
+                    type="text"
+                    value={petName}
+                    onChange={(e) => setPetName(e.target.value)}
+                    className="w-full px-3 py-2 border border-purple-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-purple-500"
+                    placeholder="Enter pet's name"
+                    required
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium mb-1">{t('species')}</label>
+                  <input
+                    type="text"
+                    value={petSpecies}
+                    onChange={(e) => setPetSpecies(e.target.value)}
+                    className="w-full px-3 py-2 border border-purple-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-purple-500"
+                    placeholder="e.g., Dog, Cat, Bird"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium mb-1">{t('breed')}</label>
+                  <input
+                    type="text"
+                    value={petBreed}
+                    onChange={(e) => setPetBreed(e.target.value)}
+                    className="w-full px-3 py-2 border border-purple-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-purple-500"
+                    placeholder="Enter breed"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium mb-1">{t('petAge')} ({t('yearsOld')})</label>
+                  <input
+                    type="number"
+                    value={petAge}
+                    onChange={(e) => setPetAge(e.target.value)}
+                    className="w-full px-3 py-2 border border-purple-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-purple-500"
+                    placeholder="Enter age"
+                    min="0"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium mb-1">{t('petBirthdate')}</label>
+                  <input
+                    type="date"
+                    value={petBirthdate}
+                    onChange={(e) => setPetBirthdate(e.target.value)}
+                    className="w-full px-3 py-2 border border-purple-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-purple-500"
+                    max={new Date().toISOString().split('T')[0]}
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium mb-1">{t('specialNeeds')}</label>
+                  <input
+                    type="text"
+                    value={petSpecialNeeds}
+                    onChange={(e) => setPetSpecialNeeds(e.target.value)}
+                    className="w-full px-3 py-2 border border-purple-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-purple-500"
+                    placeholder="Any special care requirements"
+                  />
+                </div>
+                <div className="md:col-span-2">
+                  <label className="block text-sm font-medium mb-1">{t('notes')}</label>
+                  <textarea
+                    value={petNotes}
+                    onChange={(e) => setPetNotes(e.target.value)}
+                    className="w-full px-3 py-2 border border-purple-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-purple-500"
+                    placeholder="Additional information about your pet"
+                    rows={3}
+                  />
+                </div>
+              </div>
+              {petError && <div className="text-red-600 mb-4">{petError}</div>}
+              <button
+                type="submit"
+                disabled={addingPet}
+                className="px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition disabled:opacity-50 shadow-soft hover:shadow-medium"
+              >
+                {addingPet ? t('adding') : t('addPet')}
+              </button>
+            </form>
+          )}
+
+          {pets.length === 0 ? (
+            <div className="text-center py-8 text-gray-500">
+              <p>{t('noPets')}</p>
+              <p className="text-sm">{t('clickAddPet')}</p>
+            </div>
+          ) : (
+            <div className="space-y-4">
+              {pets.map((pet) => (
+                <div key={pet.id} className="border border-purple-200 rounded-lg p-4 flex flex-col gap-2 bg-white">
+                  {editingPetId === pet.id ? (
+                    <>
+                      {/* Photo Upload Section */}
+                      <div className="border border-purple-200 rounded-lg p-4 bg-purple-50 mb-3">
+                        <div className="flex items-center justify-between mb-2">
+                          <label className="block font-medium">{t('petPhotoOptional')}</label>
+                          <label className="cursor-pointer">
+                            <input
+                              type="file"
+                              accept="image/*"
+                              onChange={(e) => {
+                                const file = e.target.files?.[0];
+                                if (file) handleFileSelect(file, 'pet');
+                                e.target.value = '';
+                              }}
+                              className="hidden"
+                              disabled={uploadingPetPhoto}
+                            />
+                            <div
+                              className={`p-2 rounded-lg transition flex items-center gap-2 ${
+                                uploadingPetPhoto
+                                  ? 'bg-gray-200 cursor-not-allowed'
+                                  : 'bg-purple-500 hover:bg-purple-600'
+                              }`}
+                              title="Upload Photo from Camera/Gallery"
+                            >
+                              <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" />
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 13a3 3 0 11-6 0 3 3 0 016 0z" />
+                              </svg>
+                              <span className="text-white text-sm font-medium">
+                                {uploadingPetPhoto ? t('uploading') : t('choosePhoto')}
+                              </span>
+                            </div>
+                          </label>
+                        </div>
+                        <p className="text-xs text-gray-600 mt-1">Upload a photo from your camera or gallery (max 10MB, automatically compressed)</p>
+
+                        {/* Upload Status Messages */}
+                        {uploadingPetPhoto && (
+                          <p className="text-sm text-purple-600 mt-2">Uploading and compressing photo...</p>
+                        )}
+                        {petPhotoError && (
+                          <p className="text-sm text-red-600 mt-2">{petPhotoError}</p>
+                        )}
+
+                        {/* Preview */}
+                        {editPetPhotoUrl && !uploadingPetPhoto && (
+                          <div className="mt-3 flex justify-center">
+                            <div className="text-center">
+                              <p className="text-xs text-gray-600 mb-2">Preview:</p>
+                              <img
+                                src={editPetPhotoUrl}
+                                alt="Pet Preview"
+                                className="w-24 h-24 rounded-full object-cover border-4 border-purple-300"
+                                onError={(e) => {
+                                  (e.target as HTMLImageElement).style.display = 'none';
+                                }}
+                              />
+                            </div>
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <input
+                          type="text"
+                          value={editPetName}
+                          onChange={(e) => setEditPetName(e.target.value)}
+                          className="px-3 py-2 border rounded"
+                          placeholder="Pet's name"
+                          required
+                        />
+                        <input
+                          type="text"
+                          value={editPetSpecies}
+                          onChange={(e) => setEditPetSpecies(e.target.value)}
+                          className="px-3 py-2 border rounded"
+                          placeholder="Species"
+                        />
+                        <input
+                          type="text"
+                          value={editPetBreed}
+                          onChange={(e) => setEditPetBreed(e.target.value)}
+                          className="px-3 py-2 border rounded"
+                          placeholder="Breed"
+                        />
+                        <input
+                          type="number"
+                          value={editPetAge}
+                          onChange={(e) => setEditPetAge(e.target.value)}
+                          className="px-3 py-2 border rounded"
+                          placeholder="Age"
+                          min="0"
+                        />
+                        <input
+                          type="date"
+                          value={editPetBirthdate}
+                          onChange={(e) => setEditPetBirthdate(e.target.value)}
+                          className="px-3 py-2 border rounded"
+                          max={new Date().toISOString().split('T')[0]}
+                        />
+                        <input
+                          type="text"
+                          value={editPetSpecialNeeds}
+                          onChange={(e) => setEditPetSpecialNeeds(e.target.value)}
+                          className="px-3 py-2 border rounded"
+                          placeholder="Special needs"
+                        />
+                      </div>
+                      <textarea
+                        value={editPetNotes}
+                        onChange={(e) => setEditPetNotes(e.target.value)}
+                        className="px-3 py-2 border rounded"
+                        placeholder="Notes"
+                        rows={2}
+                      />
+                      {petEditError && <div className="text-red-600 mb-2">{petEditError}</div>}
+                      <div className="flex gap-2">
+                        <button
+                          type="button"
+                          onClick={() => handleSavePetEdit(pet)}
+                          className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 transition"
+                        >
+                          Save
+                        </button>
+                        <button
+                          onClick={handleCancelPetEdit}
+                          className="px-4 py-2 bg-gray-400 text-white rounded hover:bg-gray-500 transition"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      {/* Top section with Edit button */}
+                      <div className="flex items-center justify-between mb-3">
+                        <span className="font-medium text-lg">{pet.name}</span>
+                        <button
+                          onClick={() => handleEditPet(pet)}
+                          className="px-3 py-1 text-sm bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition"
+                        >
+                          {t('edit')}
+                        </button>
+                      </div>
+
+                      {/* Photo + Basic Info Layout */}
+                      <div className="flex flex-col sm:flex-row gap-4">
+                        {/* Profile Photo on Left */}
+                        <div className="flex-shrink-0">
+                          {pet.photo_url ? (
+                            <img
+                              src={pet.photo_url}
+                              alt={pet.name}
+                              className="w-24 h-24 rounded-full object-cover border-4 border-purple-200"
+                              onError={(e) => {
+                                // Fallback to gradient placeholder if image fails to load
+                                const target = e.target as HTMLImageElement;
+                                target.style.display = 'none';
+                                const fallback = target.nextElementSibling as HTMLElement;
+                                if (fallback) fallback.style.display = 'flex';
+                              }}
+                            />
+                          ) : null}
+                          <div
+                            className="w-24 h-24 rounded-full bg-gradient-to-br from-purple-400 to-pink-400 border-4 border-purple-200 flex items-center justify-center"
+                            style={{ display: pet.photo_url ? 'none' : 'flex' }}
+                          >
+                            <span className="text-white text-2xl font-bold">
+                              {pet.name.charAt(0).toUpperCase()}
+                            </span>
+                          </div>
+                        </div>
+
+                        {/* Basic Info on Right */}
+                        <div className="flex-1 space-y-2 text-sm">
+                          <div><strong>{t('name')}:</strong> {pet.name}</div>
+                          <div><strong>{t('species')}:</strong> {pet.species || <span className="text-gray-400">{t('notSet')}</span>}</div>
+                          <div><strong>{t('breed')}:</strong> {pet.breed || <span className="text-gray-400">{t('notSet')}</span>}</div>
+                        </div>
+                      </div>
+
+                      {/* Age and Birthday */}
+                      {(pet.age !== null || pet.birthdate) && (
+                        <div className="grid grid-cols-2 gap-4 mt-3 pt-3 border-t">
+                          <div>
+                            <strong className="text-sm">{t('age')}:</strong>
+                            <div className="text-gray-700">{pet.age !== null ? `${pet.age} ${t('yearsOld')}` : <span className="text-gray-400">{t('notSet')}</span>}</div>
+                          </div>
+                          <div>
+                            <strong className="text-sm">{t('birthday')}:</strong>
+                            <div className="text-gray-700">{pet.birthdate ? formatBirthdate(pet.birthdate) : <span className="text-gray-400">{t('notSet')}</span>}</div>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Special Needs */}
+                      {pet.special_needs && (
+                        <div className="mt-3 pt-3 border-t">
+                          <strong className="text-sm">{t('specialNeeds')}:</strong>
+                          <div className="text-gray-700 mt-1">{pet.special_needs}</div>
+                        </div>
+                      )}
+
+                      {/* Notes */}
+                      {pet.notes && (
+                        <div className="mt-2">
+                          <strong className="text-sm">{t('notes')}:</strong>
+                          <div className="text-gray-700 mt-1">{pet.notes}</div>
+                        </div>
+                      )}
+
+                      <p className="text-xs text-gray-400 mt-3 pt-2 border-t">
+                        Added: {new Date(pet.created_at).toLocaleDateString()}
+                      </p>
+                    </>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Groups Tab */}
       {activeTab === 'groups' && (
         <div className="space-y-6">
-          {/* Group Creation Section */}
+          {/* Group Management Section */}
           <div className="bg-white rounded-lg shadow-md p-6">
             <div className="flex justify-between items-center mb-4">
-              <h2 className="text-xl font-semibold">Create Groups</h2>
+              <h2 className="text-lg sm:text-xl font-semibold">{t('groups')}</h2>
               <button
                 onClick={() => setShowAddGroup(!showAddGroup)}
-                className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 transition"
+                className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition font-medium shadow-soft hover:shadow-medium"
               >
-                {showAddGroup ? "Cancel" : "Create Group"}
+                {showAddGroup ? t('cancel') : t('addGroup')}
               </button>
             </div>
+            {groupManagementError && <div className="mb-4 p-4 bg-red-100 border border-red-400 text-red-700 rounded">{groupManagementError}</div>}
 
+            {/* Add Group Form */}
             {showAddGroup && (
-              <form onSubmit={handleAddGroup} className="mb-6 p-4 bg-white rounded-lg border border-cyan-200">
-                <h3 className="text-lg font-medium mb-4">Create New Group</h3>
+              <form onSubmit={handleAddGroup} className="mb-4 p-4 bg-white rounded-lg border border-cyan-200">
+                <h3 className="text-base sm:text-lg font-medium mb-4">{t('createNewGroup')}</h3>
                 <div className="space-y-4 mb-4">
                   <div>
-                    <label className="block text-sm font-medium mb-1">Group Type</label>
+                    <label className="block text-sm font-medium mb-1">{t('groupType')}</label>
                     <select
                       value={groupType}
-                      onChange={(e) => setGroupType(e.target.value as 'care' | 'event')}
+                      onChange={(e) => setGroupType(e.target.value as 'care' | 'pet')}
                       className="w-full px-3 py-2 border rounded focus:outline-none focus:ring-2 focus:ring-purple-500"
                     >
-                      <option value="care">Care Group (Network members only)</option>
-                      <option value="event">Event Group (Can include external attendees)</option>
+                      <option value="care">{t('careGroup')}</option>
+                      <option value="pet">{t('petGroup')}</option>
                     </select>
                   </div>
                   <div>
-                    <label className="block text-sm font-medium mb-1">Group Name</label>
+                    <label className="block text-sm font-medium mb-1">{t('groupName')}</label>
                     <input
                       type="text"
                       value={groupName}
@@ -1417,7 +3029,7 @@ export default function ClientDashboard() {
                     />
                   </div>
                   <div>
-                    <label className="block text-sm font-medium mb-1">Description (Optional)</label>
+                    <label className="block text-sm font-medium mb-1">{t('description')} ({t('optional')})</label>
                     <textarea
                       value={groupDescription}
                       onChange={(e) => setGroupDescription(e.target.value)}
@@ -1433,120 +3045,145 @@ export default function ClientDashboard() {
                   disabled={addingGroup}
                   className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 transition disabled:opacity-50"
                 >
-                  {addingGroup ? "Creating..." : "Create Group"}
+                  {addingGroup ? t('creating') : t('createGroup')}
                 </button>
               </form>
             )}
 
-            {/* Groups List */}
             {groups.length === 0 ? (
               <div className="text-center py-8 text-gray-500">
-                <p>No groups created yet.</p>
-                <p className="text-sm">Click "Create Group" to get started.</p>
+                <p>{t('noGroups')}</p>
+                <p className="text-sm">{t('createGroupFirst')}</p>
               </div>
             ) : (
-              <div className="space-y-4">
-                {groups.map((group) => (
-                  <div key={group.id} className="border border-cyan-200 rounded p-4 flex flex-col gap-2 bg-white">
-                    {editingGroupId === group.id ? (
-                      <>
-                        <select
-                          value={editGroupType}
-                          onChange={(e) => setEditGroupType(e.target.value as 'care' | 'event')}
-                          className="px-3 py-2 border rounded mb-2"
-                        >
-                          <option value="care">Care Group (Network members only)</option>
-                          <option value="event">Event Group (Can include external attendees)</option>
-                        </select>
-                        <input
-                          type="text"
-                          value={editGroupName}
-                          onChange={(e) => setEditGroupName(e.target.value)}
-                          className="px-3 py-2 border rounded mb-2"
-                          placeholder="Group name"
-                          required
-                        />
-                        <textarea
-                          value={editGroupDescription}
-                          onChange={(e) => setEditGroupDescription(e.target.value)}
-                          className="px-3 py-2 border rounded mb-2"
-                          placeholder="Group description"
-                          rows={2}
-                        />
-                        {groupEditError && <div className="text-red-600 mb-2">{groupEditError}</div>}
-                        <div className="flex gap-2">
-                          <button
-                            onClick={() => handleSaveGroupEdit(group)}
-                            className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 transition"
-                          >
-                            Save
-                          </button>
-                          <button
-                            onClick={handleCancelGroupEdit}
-                            className="px-4 py-2 bg-gray-400 text-white rounded hover:bg-gray-500 transition"
-                          >
-                            Cancel
-                          </button>
+              <div className="space-y-8">
+                {/* Children Groups Section */}
+                {groups.filter(g => g.group_type !== 'pet').length > 0 && (
+                  <div>
+                    <h3 className="text-base sm:text-lg font-medium mb-4 text-blue-800 flex items-center gap-2">
+                      <span className="px-3 py-1 bg-blue-100 rounded">{t('childrenGroups')}</span>
+                    </h3>
+                    <div className="space-y-6">
+                      {groups.filter(g => g.group_type !== 'pet').map((group) => {
+                        const allChildrenInGroup = allChildrenInGroups[group.id] || [];
+                        const allPetsInGroup = allPetsInGroups[group.id] || [];
+                        const isCreator = isGroupCreator(group);
+                        const isPetGroup = false;
+
+                        return (
+                          <div key={group.id} className="border border-cyan-200 rounded p-6 bg-white">
+                            <div className="mb-3">
+                              <h4 className="text-lg font-semibold mb-2">{group.name}</h4>
+                              <div className="flex gap-2">
+                                <button
+                                  onClick={() => handleEditGroup(group)}
+                                  className="px-3 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700 transition"
+                                >
+                                  {t('edit')}
+                                </button>
+                                <button
+                                  onClick={() => handleInviteGroup(group)}
+                                  className="px-3 py-1 text-xs bg-green-600 text-white rounded hover:bg-green-700 transition"
+                                >
+                                  {t('invite')}
+                                </button>
+                              </div>
+                            </div>
+
+                      {/* Edit Group Form */}
+                      {editingGroupId === group.id ? (
+                        <div className="mb-4 p-4 bg-gray-50 rounded-lg border border-gray-200">
+                          <h4 className="font-medium mb-3">Edit Group</h4>
+                          <div className="space-y-3">
+                            <div>
+                              <label className="block text-sm font-medium mb-1">Group Type</label>
+                              <select
+                                value={editGroupType}
+                                onChange={(e) => setEditGroupType(e.target.value as 'care' | 'pet')}
+                                className="w-full px-3 py-2 border rounded"
+                              >
+                                <option value="care">Care Group (For child care)</option>
+                                <option value="pet">Pet Group (For pet care)</option>
+                              </select>
+                            </div>
+                            <div>
+                              <label className="block text-sm font-medium mb-1">Group Name</label>
+                              <input
+                                type="text"
+                                value={editGroupName}
+                                onChange={(e) => setEditGroupName(e.target.value)}
+                                className="w-full px-3 py-2 border rounded"
+                                placeholder="Group name"
+                                required
+                              />
+                            </div>
+                            <div>
+                              <label className="block text-sm font-medium mb-1">Description</label>
+                              <textarea
+                                value={editGroupDescription}
+                                onChange={(e) => setEditGroupDescription(e.target.value)}
+                                className="w-full px-3 py-2 border rounded"
+                                placeholder="Group description"
+                                rows={2}
+                              />
+                            </div>
+                            {groupEditError && <div className="text-red-600 text-sm">{groupEditError}</div>}
+                            <div className="flex gap-2">
+                              <button
+                                onClick={() => handleSaveGroupEdit(group)}
+                                className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 transition"
+                              >
+                                Save
+                              </button>
+                              <button
+                                onClick={handleCancelGroupEdit}
+                                className="px-4 py-2 bg-gray-400 text-white rounded hover:bg-gray-500 transition"
+                              >
+                                Cancel
+                              </button>
+                            </div>
+                          </div>
                         </div>
-                      </>
-                    ) : (
-                      <>
-                        <div className="flex items-center gap-2">
-                          <span className="font-medium text-lg">{group.name}</span>
-                          <span className={`px-2 py-1 text-xs rounded ${
-                            group.group_type === 'care' 
-                              ? 'bg-blue-100 text-blue-800' 
-                              : 'bg-purple-100 text-purple-800'
-                          }`}>
-                            {group.group_type === 'care' ? 'Care Group' : 'Event Group'}
-                          </span>
-                          <button
-                            onClick={() => handleEditGroup(group)}
-                            className="px-2 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700 transition"
-                          >
-                            Edit
-                          </button>
-                          <button
-                            onClick={() => handleInviteGroup(group)}
-                            className="px-2 py-1 text-xs bg-green-600 text-white rounded hover:bg-green-700 transition"
-                          >
-                            Invite
-                          </button>
-                        </div>
-                        {group.description && <div className="text-gray-600">{group.description}</div>}
-                        <p className="text-xs text-gray-400 mt-2">
-                          Created: {new Date(group.created_at).toLocaleDateString()}
-                        </p>
-                        {invitingGroupId === group.id && (
-                          <form onSubmit={(e) => handleSubmitInvite(e, group)} className="mt-2 p-3 bg-white rounded border border-cyan-200">
-                            <div className="mb-2">
+                      ) : (
+                        <>
+                          {group.description && <p className="text-gray-600 mb-4">{group.description}</p>}
+                        </>
+                      )}
+
+                      {/* Invite Form */}
+                      {invitingGroupId === group.id && (
+                        <div className="mb-4 p-4 bg-green-50 rounded-lg border border-green-200">
+                          <h4 className="font-medium mb-3">Invite Parent to Group</h4>
+                          <form onSubmit={(e) => handleSubmitInvite(e, group)} className="space-y-3">
+                            <div>
                               <label className="block text-sm font-medium mb-1">Parent Email</label>
                               <input
                                 type="email"
                                 value={inviteEmail}
                                 onChange={(e) => setInviteEmail(e.target.value)}
                                 className="w-full px-3 py-2 border rounded"
-                                placeholder="parent@email.com"
+                                placeholder="parent@example.com"
                                 required
                               />
                             </div>
-                            <div className="mb-2">
-                              <label className="block text-sm font-medium mb-1">Custom Note</label>
+                            <div>
+                              <label className="block text-sm font-medium mb-1">Note (Optional)</label>
                               <textarea
                                 value={inviteNote}
-                                onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setInviteNote(e.target.value)}
+                                onChange={(e) => setInviteNote(e.target.value)}
                                 className="w-full px-3 py-2 border rounded"
-                                placeholder="Add a note (optional)"
+                                placeholder="Add a personal note..."
                                 rows={2}
                               />
                             </div>
-                            {inviteError && <div className="text-red-600 mb-2">{inviteError}</div>}
+                            {inviteError && <div className="text-red-600 text-sm">{inviteError}</div>}
                             <div className="flex gap-2">
                               <button
                                 type="submit"
-                                className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 transition"
+                                disabled={sendingInvite}
+                                className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 transition disabled:opacity-50"
                               >
-                                Send Invite
+                                {sendingInvite ? 'Sending...' : 'Send Invite'}
                               </button>
                               <button
                                 type="button"
@@ -1557,134 +3194,402 @@ export default function ClientDashboard() {
                               </button>
                             </div>
                           </form>
-                        )}
-                      </>
-                    )}
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-
-          {/* Group Management Section */}
-          <div className="bg-white rounded-lg shadow-md p-6">
-            <h2 className="text-xl font-semibold mb-4">Manage Group Memberships</h2>
-            {groupManagementError && <div className="mb-4 p-4 bg-red-100 border border-red-400 text-red-700 rounded">{groupManagementError}</div>}
-            
-            {groups.length === 0 ? (
-              <div className="text-center py-8 text-gray-500">
-                <p>No groups available.</p>
-                <p className="text-sm">Create a group first to manage memberships.</p>
-              </div>
-            ) : (
-              <div className="space-y-8">
-                {groups.map((group) => {
-                  const allChildrenInGroup = allChildrenInGroups[group.id] || [];
-                  const myChildren = allChildrenInGroup.filter(child => child.parent_id === user?.id);
-                  const otherChildren = allChildrenInGroup.filter(child => child.parent_id !== user?.id);
-                  const isCreator = isGroupCreator(group);
-                  
-                  return (
-                    <div key={group.id} className="border border-cyan-200 rounded p-6 bg-white">
-                      <div className="flex items-center justify-between mb-4">
-                        <h3 className="text-lg font-semibold">{group.name}</h3>
-                        <span className={`px-3 py-1 rounded-full text-xs font-medium ${
-                          isCreator 
-                            ? 'bg-purple-100 text-purple-800' 
-                            : 'bg-blue-100 text-blue-800'
-                        }`}>
-                          {isCreator ? 'Creator' : 'Member'}
-                        </span>
-                      </div>
-                      {group.description && <p className="text-gray-600 mb-4">{group.description}</p>}
-                      
-                      {/* All Children in Group */}
-                      <div className="mb-6">
-                        <h4 className="font-medium mb-3">All Children in this Group:</h4>
-                        {allChildrenInGroup.length === 0 ? (
-                          <div className="text-gray-500">No children are currently in this group.</div>
-                        ) : (
-                          <div className="space-y-2">
-                            {allChildrenInGroup.map((child) => {
-                              const isMyChild = child.parent_id === user?.id;
-                              return (
-                                <div key={child.id} className={`flex items-center justify-between p-2 rounded-lg ${
-                                  isMyChild ? 'bg-blue-50 border border-blue-200' : 'bg-gray-50 border border-gray-200'
-                                }`}>
-                                  <div className="flex items-center">
-                                    <span className="font-medium">{child.full_name}</span>
-                                    {child.birthdate && (
-                                      <span className="text-sm text-gray-500 ml-2">
-                                        (Age: {calculateAge(child.birthdate)})
-                                      </span>
-                                    )}
-                                    {isMyChild && (
-                                      <span className="text-xs bg-blue-100 text-blue-800 px-2 py-1 rounded ml-2">My Child</span>
-                                    )}
-                                  </div>
-                                  <span className="px-3 py-1 bg-green-100 text-green-800 rounded-full text-sm font-medium">
-                                    Member
-                                  </span>
-                                </div>
-                              );
-                            })}
-                          </div>
-                        )}
-                      </div>
-
-                      {/* Manage My Children Section */}
-                      {children.length > 0 && (
-                        <div>
-                          <h4 className="font-medium mb-4">Manage My Children:</h4>
-                          <div className="space-y-3">
-                            {children.map((child) => {
-                              const isMember = isChildInGroup(child.id, group.id);
-                              return (
-                                <div key={child.id} className="flex items-center justify-between p-3 bg-blue-50 rounded-lg border border-blue-200">
-                                  <div>
-                                    <span className="font-medium">{child.full_name}</span>
-                                    {child.birthdate && (
-                                      <span className="text-sm text-gray-500 ml-2">
-                                        (Age: {calculateAge(child.birthdate)})
-                                      </span>
-                                    )}
-                                  </div>
-                                  <button
-                                    onClick={() => handleToggle(child, group)}
-                                    className={`px-4 py-2 rounded-lg font-medium transition-colors ${
-                                      isMember 
-                                        ? 'bg-red-600 text-white hover:bg-red-700' 
-                                        : 'bg-green-600 text-white hover:bg-green-700'
-                                    }`}
-                                  >
-                                    {isMember ? 'Remove' : 'Add'}
-                                  </button>
-                                </div>
-                              );
-                            })}
-                          </div>
                         </div>
                       )}
 
-                      {children.length === 0 && (
-                        <div className="text-gray-500">
-                          No children added yet. Add children from the Children tab first.
-                        </div>
+                      {/* Show Children for Care Groups */}
+                      {!isPetGroup && (
+                        <>
+                          {/* All Children in Group */}
+                          <div className="mb-6">
+                            <h4 className="font-medium mb-3">{t('allChildrenInGroup')}:</h4>
+                            {allChildrenInGroup.length === 0 ? (
+                              <div className="text-gray-500">{t('noChildrenInGroup')}</div>
+                            ) : (
+                              <div className="space-y-2">
+                                {allChildrenInGroup.map((child) => {
+                                  const isMyChild = child.parent_id === user?.id;
+                                  return (
+                                    <div key={child.id} className={`flex items-center justify-between p-2 rounded-lg ${
+                                      isMyChild ? 'bg-blue-50 border border-blue-200' : 'bg-gray-50 border border-gray-200'
+                                    }`}>
+                                      <div className="flex items-center">
+                                        <span className="font-medium">{child.full_name}</span>
+                                        {child.birthdate && (
+                                          <span className="text-sm text-gray-500 ml-2">
+                                            ({Math.floor((new Date().getTime() - new Date(child.birthdate).getTime()) / (1000 * 60 * 60 * 24 * 365))})
+                                          </span>
+                                        )}
+                                        {isMyChild && (
+                                          <span className="ml-2 text-xs bg-blue-600 text-white px-2 py-1 rounded">You</span>
+                                        )}
+                                      </div>
+                                      <span className="text-xs text-gray-500">
+                                        {t('parent')}: {child.parent_full_name || t('unknown')}
+                                      </span>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            )}
+                          </div>
+
+                          {/* Your Children */}
+                          {children.length > 0 && (
+                            <div>
+                              <h4 className="font-medium mb-3">{t('addRemoveYourChildren')}:</h4>
+                              <div className="space-y-2">
+                                {children.map((child) => {
+                                  const isMember = allChildrenInGroup.some(c => c.id === child.id);
+                                  return (
+                                    <div key={child.id} className="flex items-center justify-between p-2 bg-gray-50 rounded-lg border border-gray-200">
+                                      <div className="flex items-center">
+                                        <span className="font-medium">{child.full_name}</span>
+                                        {child.birthdate && (
+                                          <span className="text-sm text-gray-500 ml-2">
+                                            ({calculateAge(child.birthdate)})
+                                          </span>
+                                        )}
+                                      </div>
+                                      <button
+                                        onClick={() => handleToggleChild(child, group)}
+                                        className={`px-4 py-2 rounded-lg font-medium transition-colors ${
+                                          isMember
+                                            ? 'bg-red-600 text-white hover:bg-red-700'
+                                            : 'bg-green-600 text-white hover:bg-green-700'
+                                        }`}
+                                      >
+                                        {isMember ? t('remove') : t('add')}
+                                      </button>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          )}
+
+                          {children.length === 0 && (
+                            <div className="text-gray-500">
+                              No children added yet. Add children from the Children tab first.
+                            </div>
+                          )}
+                        </>
+                      )}
+
+                      {/* Show Pets for Pet Groups */}
+                      {isPetGroup && (
+                        <>
+                          {/* All Pets in Group */}
+                          <div className="mb-6">
+                            <h4 className="font-medium mb-3">{t('allPetsInGroup')}:</h4>
+                            {allPetsInGroup.length === 0 ? (
+                              <div className="text-gray-500">{t('noPetsInGroup')}</div>
+                            ) : (
+                              <div className="space-y-2">
+                                {allPetsInGroup.map((pet) => {
+                                  const isMyPet = pet.parent_id === user?.id;
+                                  return (
+                                    <div key={pet.id} className={`flex items-center justify-between p-2 rounded-lg ${
+                                      isMyPet ? 'bg-purple-50 border border-purple-200' : 'bg-gray-50 border border-gray-200'
+                                    }`}>
+                                      <div className="flex items-center">
+                                        <span className="font-medium">{pet.name}</span>
+                                        {pet.species && (
+                                          <span className="text-sm text-gray-500 ml-2">({pet.species})</span>
+                                        )}
+                                        {isMyPet && (
+                                          <span className="ml-2 text-xs bg-purple-600 text-white px-2 py-1 rounded">You</span>
+                                        )}
+                                      </div>
+                                      <span className="text-xs text-gray-500">
+                                        {t('parent')}: {pet.parent_full_name || t('unknown')}
+                                      </span>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            )}
+                          </div>
+
+                          {/* Your Pets */}
+                          {pets.length > 0 && (
+                            <div>
+                              <h4 className="font-medium mb-3">{t('addRemoveYourPets')}:</h4>
+                              <div className="space-y-2">
+                                {pets.map((pet) => {
+                                  const isMember = allPetsInGroup.some(p => p.id === pet.id);
+                                  return (
+                                    <div key={pet.id} className="flex items-center justify-between p-2 bg-gray-50 rounded-lg border border-gray-200">
+                                      <div className="flex items-center">
+                                        <span className="font-medium">{pet.name}</span>
+                                        {pet.species && (
+                                          <span className="text-sm text-gray-500 ml-2">({pet.species})</span>
+                                        )}
+                                      </div>
+                                      <button
+                                        onClick={() => handleTogglePet(pet, group)}
+                                        className={`px-4 py-2 rounded-lg font-medium transition-colors ${
+                                          isMember
+                                            ? 'bg-red-600 text-white hover:bg-red-700'
+                                            : 'bg-green-600 text-white hover:bg-green-700'
+                                        }`}
+                                      >
+                                        {isMember ? t('remove') : t('add')}
+                                      </button>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          )}
+
+                          {pets.length === 0 && (
+                            <div className="text-gray-500">
+                              No pets added yet. Add pets from the Pets tab first.
+                            </div>
+                          )}
+                        </>
                       )}
                     </div>
                   );
                 })}
+                    </div>
+                  </div>
+                )}
+
+                {/* Pet Groups Section */}
+                {groups.filter(g => g.group_type === 'pet').length > 0 && (
+                  <div>
+                    <h3 className="text-base sm:text-lg font-medium mb-4 text-purple-800 flex items-center gap-2">
+                      <span className="px-3 py-1 bg-purple-100 rounded">{t('petGroups')}</span>
+                    </h3>
+                    <div className="space-y-6">
+                      {groups.filter(g => g.group_type === 'pet').map((group) => {
+                        const allChildrenInGroup = allChildrenInGroups[group.id] || [];
+                        const allPetsInGroup = allPetsInGroups[group.id] || [];
+                        const isCreator = isGroupCreator(group);
+                        const isPetGroup = true;
+
+                        return (
+                          <div key={group.id} className="border border-purple-200 rounded p-6 bg-white">
+                            <div className="mb-3">
+                              <h4 className="text-lg font-semibold mb-2">{group.name}</h4>
+                              <div className="flex gap-2">
+                                <button
+                                  onClick={() => handleEditGroup(group)}
+                                  className="px-3 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700 transition"
+                                >
+                                  {t('edit')}
+                                </button>
+                                <button
+                                  onClick={() => handleInviteGroup(group)}
+                                  className="px-3 py-1 text-xs bg-green-600 text-white rounded hover:bg-green-700 transition"
+                                >
+                                  {t('invite')}
+                                </button>
+                              </div>
+                            </div>
+
+                      {/* Edit Group Form */}
+                      {editingGroupId === group.id ? (
+                        <div className="mb-4 p-4 bg-gray-50 rounded-lg border border-gray-200">
+                          <h4 className="font-medium mb-3">Edit Group</h4>
+                          <div className="space-y-3">
+                            <div>
+                              <label className="block text-sm font-medium mb-1">Group Type</label>
+                              <select
+                                value={editGroupType}
+                                onChange={(e) => setEditGroupType(e.target.value as 'care' | 'pet')}
+                                className="w-full px-3 py-2 border rounded"
+                              >
+                                <option value="care">Care Group (For child care)</option>
+                                <option value="pet">Pet Group (For pet care)</option>
+                              </select>
+                            </div>
+                            <div>
+                              <label className="block text-sm font-medium mb-1">Group Name</label>
+                              <input
+                                type="text"
+                                value={editGroupName}
+                                onChange={(e) => setEditGroupName(e.target.value)}
+                                className="w-full px-3 py-2 border rounded"
+                                placeholder="Group name"
+                                required
+                              />
+                            </div>
+                            <div>
+                              <label className="block text-sm font-medium mb-1">Description</label>
+                              <textarea
+                                value={editGroupDescription}
+                                onChange={(e) => setEditGroupDescription(e.target.value)}
+                                className="w-full px-3 py-2 border rounded"
+                                placeholder="Group description"
+                                rows={2}
+                              />
+                            </div>
+                            {groupEditError && <div className="text-red-600 text-sm">{groupEditError}</div>}
+                            <div className="flex gap-2">
+                              <button
+                                onClick={() => handleSaveGroupEdit(group)}
+                                className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 transition"
+                              >
+                                Save
+                              </button>
+                              <button
+                                onClick={handleCancelGroupEdit}
+                                className="px-4 py-2 bg-gray-400 text-white rounded hover:bg-gray-500 transition"
+                              >
+                                Cancel
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      ) : (
+                        <>
+                          {group.description && <p className="text-gray-600 mb-4">{group.description}</p>}
+                        </>
+                      )}
+
+                      {/* Invite Form */}
+                      {invitingGroupId === group.id && (
+                        <div className="mb-4 p-4 bg-green-50 rounded-lg border border-green-200">
+                          <h4 className="font-medium mb-3">Invite Parent to Group</h4>
+                          <form onSubmit={(e) => handleSubmitInvite(e, group)} className="space-y-3">
+                            <div>
+                              <label className="block text-sm font-medium mb-1">Parent Email</label>
+                              <input
+                                type="email"
+                                value={inviteEmail}
+                                onChange={(e) => setInviteEmail(e.target.value)}
+                                className="w-full px-3 py-2 border rounded"
+                                placeholder="parent@example.com"
+                                required
+                              />
+                            </div>
+                            <div>
+                              <label className="block text-sm font-medium mb-1">Note (Optional)</label>
+                              <textarea
+                                value={inviteNote}
+                                onChange={(e) => setInviteNote(e.target.value)}
+                                className="w-full px-3 py-2 border rounded"
+                                placeholder="Add a personal note..."
+                                rows={2}
+                              />
+                            </div>
+                            {inviteError && <div className="text-red-600 text-sm">{inviteError}</div>}
+                            <div className="flex gap-2">
+                              <button
+                                type="submit"
+                                disabled={sendingInvite}
+                                className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 transition disabled:opacity-50"
+                              >
+                                {sendingInvite ? 'Sending...' : 'Send Invite'}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={handleCancelInvite}
+                                className="px-4 py-2 bg-gray-400 text-white rounded hover:bg-gray-500 transition"
+                              >
+                                Cancel
+                              </button>
+                            </div>
+                          </form>
+                        </div>
+                      )}
+
+                      {/* Show Pets for Pet Groups */}
+                      {isPetGroup && (
+                        <>
+                          {/* All Pets in Group */}
+                          <div className="mb-6">
+                            <h4 className="font-medium mb-3">{t('allPetsInGroup')}:</h4>
+                            {allPetsInGroup.length === 0 ? (
+                              <div className="text-gray-500">{t('noPetsInGroup')}</div>
+                            ) : (
+                              <div className="space-y-2">
+                                {allPetsInGroup.map((pet) => {
+                                  const isMyPet = pet.parent_id === user?.id;
+                                  return (
+                                    <div key={pet.id} className={`flex items-center justify-between p-2 rounded-lg ${
+                                      isMyPet ? 'bg-purple-50 border border-purple-200' : 'bg-gray-50 border border-gray-200'
+                                    }`}>
+                                      <div className="flex items-center">
+                                        <span className="font-medium">{pet.name}</span>
+                                        {pet.species && (
+                                          <span className="text-sm text-gray-500 ml-2">({pet.species})</span>
+                                        )}
+                                        {isMyPet && (
+                                          <span className="ml-2 text-xs bg-purple-600 text-white px-2 py-1 rounded">You</span>
+                                        )}
+                                      </div>
+                                      <span className="text-xs text-gray-500">
+                                        {t('parent')}: {pet.parent_full_name || t('unknown')}
+                                      </span>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            )}
+                          </div>
+
+                          {/* Your Pets */}
+                          {pets.length > 0 && (
+                            <div>
+                              <h4 className="font-medium mb-3">{t('addRemoveYourPets')}:</h4>
+                              <div className="space-y-2">
+                                {pets.map((pet) => {
+                                  const isMember = allPetsInGroup.some(p => p.id === pet.id);
+                                  return (
+                                    <div key={pet.id} className="flex items-center justify-between p-2 bg-gray-50 rounded-lg border border-gray-200">
+                                      <div className="flex items-center">
+                                        <span className="font-medium">{pet.name}</span>
+                                        {pet.species && (
+                                          <span className="text-sm text-gray-500 ml-2">({pet.species})</span>
+                                        )}
+                                      </div>
+                                      <button
+                                        onClick={() => handleTogglePet(pet, group)}
+                                        className={`px-4 py-2 rounded-lg font-medium transition-colors ${
+                                          isMember
+                                            ? 'bg-red-600 text-white hover:bg-red-700'
+                                            : 'bg-green-600 text-white hover:bg-green-700'
+                                        }`}
+                                      >
+                                        {isMember ? t('remove') : t('add')}
+                                      </button>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          )}
+
+                          {pets.length === 0 && (
+                            <div className="text-gray-500">
+                              No pets added yet. Add pets from the Pets tab first.
+                            </div>
+                          )}
+                        </>
+                      )}
+                    </div>
+                  );
+                })}
+                    </div>
+                  </div>
+                )}
               </div>
             )}
+
           </div>
         </div>
       )}
+      </div>
     </div>
 
     {/* Care Data Popup */}
     {showPopup && (
-      <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-        <div className="bg-white rounded-lg p-6 w-full max-w-4xl mx-4 max-h-[80vh] overflow-y-auto">
+      <div className="fixed left-0 right-0 bg-black bg-opacity-50 flex items-center justify-center p-4" style={{ top: '145px', bottom: '90px', zIndex: 9999 }}>
+        <div className="bg-white rounded-lg p-6 w-full max-w-4xl mx-4 max-h-full overflow-y-auto">
           <div className="flex justify-between items-center mb-4">
             <h2 className="text-xl font-semibold text-gray-900">{popupTitle}</h2>
             <button
@@ -1696,72 +3601,7 @@ export default function ClientDashboard() {
               </svg>
             </button>
           </div>
-          
-          <div className="p-6 overflow-y-auto max-h-[60vh]">
-            {!Array.isArray(popupData) || popupData.length === 0 ? (
-              <div className="text-center py-8 text-gray-500">
-                No {popupTitle.toLowerCase()} found.
-              </div>
-            ) : (
-              <div className="space-y-4">
-                {popupData.map((block) => (
-                  <div key={block.id} className="border border-gray-200 rounded-lg p-4 hover:bg-gray-50 transition-colors">
-                    <div className="flex justify-between items-start">
-                      <div className="flex-1">
-                        {/* Title and description removed as requested */}
-                        
-                        {/* Additional Information */}
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-3 text-sm">
-                          <div>
-                            <span className="font-medium text-gray-700">Group:</span>
-                            <span className="ml-2 text-gray-600">{block.group_name}</span>
-                          </div>
-                          <div>
-                            <span className="font-medium text-gray-700">Parent Providing Care:</span>
-                            <span className="ml-2 text-gray-600">{block.parent_providing}</span>
-                          </div>
-                                                     <div>
-                             <span className="font-medium text-gray-700">Children Participating:</span>
-                             <span className="ml-2 text-gray-600">
-                               {block.children && block.children.length > 0 
-                                 ? block.children.map(c => c.full_name).join(', ')
-                                 : 'No children assigned'}
-                             </span>
-                           </div>
-                        </div>
-
-                        {/* Reschedule Button for Providing Care Blocks */}
-                        {popupType === 'providing' && (
-                          <div className="mt-4 pt-4 border-t border-gray-200">
-                            <button
-                              onClick={() => handleRescheduleClick(block)}
-                              className="w-full px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors text-sm"
-                            >
-                              Request Reschedule
-                            </button>
-                          </div>
-                        )}
-                        
-                                                 {/* Date, Time, and Status - Keep the green highlighting */}
-                         <div className="flex flex-wrap gap-4 text-sm text-gray-500 bg-green-50 border border-green-200 rounded-lg p-3">
-                           <span>📅 {new Date(block.date + 'T00:00:00').toLocaleDateString()}</span>
-                           <span>🕐 {block.start_time} - {block.end_time}</span>
-                          <span className={`px-2 py-1 rounded-full text-xs font-medium ${
-                            block.status === 'scheduled' ? 'bg-green-100 text-green-800' :
-                            block.status === 'in_progress' ? 'bg-yellow-100 text-yellow-800' :
-                            block.status === 'completed' ? 'bg-blue-100 text-blue-800' :
-                            'bg-gray-800'
-                          }`}>
-                            {block.status}
-                          </span>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
+          {popupContent}
         </div>
       </div>
     )}
@@ -1794,6 +3634,17 @@ export default function ClientDashboard() {
         onRescheduleSuccess={handleRescheduleSuccess}
       />
     )}
-  </div>
+
+    {/* Image Crop Modal */}
+    {imageToCrop && (
+      <ImageCropModal
+        image={imageToCrop}
+        onCropComplete={handleCroppedImage}
+        onCancel={handleCancelCrop}
+        aspectRatio={1}
+        circularCrop={true}
+      />
+    )}
+  </Header>
 );
 }

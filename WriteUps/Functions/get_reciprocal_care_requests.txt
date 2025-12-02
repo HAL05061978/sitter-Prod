@@ -1,0 +1,26 @@
+
+BEGIN
+    RETURN QUERY
+    SELECT 
+        cr.id as care_request_id,
+        cr.group_id,
+        g.name as group_name,
+        cr.requester_id,
+        p.full_name as requester_name,
+        cr.requested_date,
+        cr.start_time,
+        cr.end_time,
+        cr.notes,
+        cr.status,
+        cr.created_at,
+        COUNT(cresp.id)::INTEGER as response_count,
+        COUNT(CASE WHEN cresp.status = 'accepted' THEN 1 END)::INTEGER as accepted_response_count
+    FROM care_requests cr
+    JOIN groups g ON cr.group_id = g.id
+    JOIN profiles p ON cr.requester_id = p.id
+    LEFT JOIN care_responses cresp ON cr.id = cresp.request_id
+    WHERE cr.requester_id = get_reciprocal_care_requests.parent_id
+    AND cr.is_reciprocal = true
+    GROUP BY cr.id, g.name, p.full_name
+    ORDER BY cr.created_at DESC;
+END;

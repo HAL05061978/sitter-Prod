@@ -6,21 +6,51 @@ import { supabase } from "../lib/supabase";
 import LogoutButton from "./LogoutButton";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { CounterDebugger } from "../../lib/counter-debugger";
+import { useTranslation } from "react-i18next";
+import { pushNotificationService } from "../../lib/push-notifications";
+import { Capacitor } from "@capacitor/core";
 
 interface HeaderProps {
   currentPage?: string;
+  children?: React.ReactNode;
 }
 
-export default function Header({ currentPage = "dashboard" }: HeaderProps) {
+export default function Header({ currentPage = "dashboard", children }: HeaderProps) {
   const router = useRouter();
   const pathname = usePathname();
+  const { t, i18n } = useTranslation();
   const [user, setUser] = useState<any>(null);
   const [userRole, setUserRole] = useState<string>('parent');
   const [pendingInvitations, setPendingInvitations] = useState<number>(0);
 
-  const [unreadChatMessages, setUnreadChatMessages] = useState<number>(0);
-  const [schedulerMessagesCount, setSchedulerMessagesCount] = useState<number>(0);
-  const [newCalendarBlocksCount, setNewCalendarBlocksCount] = useState<number>(0);
+  const toggleLanguage = () => {
+    const newLang = i18n.language === 'en' ? 'es' : 'en';
+    i18n.changeLanguage(newLang);
+  };
+
+  // Initialize counters from localStorage to prevent flickering during fetch
+  const [unreadChatMessages, setUnreadChatMessages] = useState<number>(() => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('unreadChatMessages');
+      return saved ? parseInt(saved, 10) : 0;
+    }
+    return 0;
+  });
+  const [schedulerMessagesCount, setSchedulerMessagesCount] = useState<number>(() => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('schedulerMessagesCount');
+      return saved ? parseInt(saved, 10) : 0;
+    }
+    return 0;
+  });
+  const [newCalendarBlocksCount, setNewCalendarBlocksCount] = useState<number>(() => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('newCalendarBlocksCount');
+      return saved ? parseInt(saved, 10) : 0;
+    }
+    return 0;
+  });
 
   // Function to fetch pending invitations count
   const fetchPendingInvitations = async (userId: string) => {
@@ -69,6 +99,7 @@ export default function Header({ currentPage = "dashboard" }: HeaderProps) {
 
       if (!userGroups || userGroups.length === 0) {
         setUnreadChatMessages(0);
+        localStorage.setItem('unreadChatMessages', '0');
         return;
       }
 
@@ -83,6 +114,7 @@ export default function Header({ currentPage = "dashboard" }: HeaderProps) {
 
       if (!allMessages || allMessages.length === 0) {
         setUnreadChatMessages(0);
+        localStorage.setItem('unreadChatMessages', '0');
         return;
       }
 
@@ -100,6 +132,7 @@ export default function Header({ currentPage = "dashboard" }: HeaderProps) {
       // Count total unviewed messages across all groups
       const unviewedChatCount = messageIds.filter(id => !viewedMessageIds.includes(id)).length;
       setUnreadChatMessages(unviewedChatCount);
+      localStorage.setItem('unreadChatMessages', unviewedChatCount.toString());
     } catch (error) {
       // Error fetching unread chat messages
     }
@@ -107,6 +140,7 @@ export default function Header({ currentPage = "dashboard" }: HeaderProps) {
 
   // Function to fetch and calculate scheduler messages count (Messages/Scheduler button)
   const fetchSchedulerMessagesCount = async (userId: string) => {
+    CounterDebugger.logCounterFetch('scheduler', userId, 'Header.fetchSchedulerMessagesCount');
     try {
       // Fetch all the data needed to calculate the counter
       const { data: invitations } = await supabase.rpc('get_open_block_invitations', {
@@ -152,13 +186,53 @@ export default function Header({ currentPage = "dashboard" }: HeaderProps) {
         // Pet care functions not deployed yet, skip
       }
 
-      // Combine child and pet care responses
-      const careResponses = [...(childResponses || []), ...petResponses];
+      // Fetch HANGOUT/SLEEPOVER invitations
+      let hangoutResponses: any[] = [];
+      try {
+        const { data, error } = await supabase.rpc('get_hangout_sleepover_responses', {
+          p_parent_id: userId
+        });
+        if (!error) {
+          hangoutResponses = data || [];
+        }
+      } catch (err) {
+        // Hangout/sleepover function not deployed yet, skip
+      }
+
+      // Combine child, pet, and hangout/sleepover care responses
+      const careResponses = [...(childResponses || []), ...petResponses, ...hangoutResponses];
 
       // Get responses to MY requests (when I'm the requester)
       const { data: responsesToMyRequests } = await supabase.rpc('get_responses_for_requester', {
         p_requester_id: userId
       });
+
+      // Get PET care responses to MY requests (when I'm the requester)
+      let petResponsesToMyRequests: any[] = [];
+      try {
+        const { data, error } = await supabase.rpc('get_pet_care_responses_for_requester', {
+          p_requester_id: userId
+        });
+        if (!error) {
+          petResponsesToMyRequests = data || [];
+        } else {
+          CounterDebugger.logDatabaseError(
+            'get_pet_care_responses_for_requester',
+            'get_pet_care_responses_for_requester',
+            error
+          );
+        }
+      } catch (err) {
+        // Pet care responses function not deployed yet, skip
+        CounterDebugger.logDatabaseError(
+          'get_pet_care_responses_for_requester',
+          'get_pet_care_responses_for_requester',
+          { message: 'Function not deployed or catch error', error: err }
+        );
+      }
+
+      // Combine child and pet care responses
+      const allResponsesToMyRequests = [...(responsesToMyRequests || []), ...petResponsesToMyRequests];
 
       const { data: rescheduleRequests } = await supabase.rpc('get_reschedule_requests', {
         p_parent_id: userId
@@ -178,6 +252,14 @@ export default function Header({ currentPage = "dashboard" }: HeaderProps) {
         .eq('type', 'care_declined')
         .eq('is_read', false); // Only unread notifications
 
+      // Fetch hangout_accepted notifications (when someone accepts your hangout invitation)
+      const { data: hangoutAcceptedNotifications } = await supabase
+        .from('notifications')
+        .select('*')
+        .eq('user_id', userId)
+        .eq('type', 'hangout_accepted')
+        .eq('is_read', false); // Only unread notifications
+
       // Calculate the count
       let schedulerCount = 0;
 
@@ -185,36 +267,16 @@ export default function Header({ currentPage = "dashboard" }: HeaderProps) {
       const savedReadMessages = localStorage.getItem('readSchedulerMessages');
       const readMessages = savedReadMessages ? new Set(JSON.parse(savedReadMessages)) : new Set<string>();
 
-      console.log('🔍 Header Counter Debug - Data Fetched:', {
-        invitationsCount: (invitations || []).length,
-        childRequestsCount: (childRequests || []).length,
-        petRequestsCount: (petRequests || []).length,
-        totalRequestsCount: careRequests.length,
-        childResponsesCount: (childResponses || []).length,
-        petResponsesCount: (petResponses || []).length,
-        totalResponsesCount: careResponses.length,
-        responsesToMyRequestsCount: (responsesToMyRequests || []).length,
-        rescheduleRequestsCount: (rescheduleRequests || []).length,
-        rescheduleNotificationsCount: (rescheduleNotifications || []).length,
-        careDeclinedNotificationsCount: (careDeclinedNotifications || []).length,
-        readMessagesCount: readMessages.size
-      });
 
       // 1. Pending care requests (reciprocal care requests needing response)
       const pendingCareResponses = (careResponses || []).filter((r: any) =>
         r.status === 'pending' && !readMessages.has(`pending-${r.care_response_id}`)
       );
-      console.log('📊 Header - Pending care responses:', {
-        total: (careResponses || []).filter((r: any) => r.status === 'pending').length,
-        unread: pendingCareResponses.length,
-        sample: pendingCareResponses[0],
-        allStatuses: (careResponses || []).map((r: any) => ({ id: r.care_response_id, status: r.status }))
-      });
       schedulerCount += pendingCareResponses.length;
 
       // 2. Responses to my requests (when I'm the requester)
       // Only count responses with status 'submitted' (not 'accepted' or 'declined')
-      const submittedResponses = (responsesToMyRequests || []).filter((response: any) =>
+      const submittedResponses = (allResponsesToMyRequests || []).filter((response: any) =>
         response.status === 'submitted'
       );
 
@@ -224,23 +286,20 @@ export default function Header({ currentPage = "dashboard" }: HeaderProps) {
         requestsWithSubmittedResponses.add(response.care_request_id);
       });
 
-      console.log('📊 Header - Responses to my requests:', {
-        totalResponses: (responsesToMyRequests || []).length,
-        submittedResponses: submittedResponses.length,
-        uniqueRequestsWithSubmitted: requestsWithSubmittedResponses.size,
-        sample: (responsesToMyRequests || [])[0],
-        allResponses: (responsesToMyRequests || []).map((r: any) => ({
-          request_id: r.care_request_id,
-          response_id: r.care_response_id,
-          status: r.status,
-          responder: r.responder_name
-        }))
-      });
       schedulerCount += requestsWithSubmittedResponses.size;
 
-      // 3. Pending open block invitations
+      // 3. Pending open block invitations (grouped by parent to count as 1 message)
+      const invitationGroups = new Map();
       (invitations || []).filter((inv: any) => inv.status === 'pending').forEach((inv: any) => {
-        const key = `${inv.open_block_parent_id || inv.open_block_parent_name}-${inv.care_response_id}`;
+        const key = inv.open_block_parent_id || inv.open_block_parent_name;
+        if (!invitationGroups.has(key)) {
+          invitationGroups.set(key, []);
+        }
+        invitationGroups.get(key).push(inv);
+      });
+
+      // Count each group as 1 message (regardless of how many blocks in the offer)
+      invitationGroups.forEach((invs, key) => {
         if (!readMessages.has(`invitation-group-${key}`)) {
           schedulerCount++;
         }
@@ -300,13 +359,31 @@ export default function Header({ currentPage = "dashboard" }: HeaderProps) {
       });
 
       // 8. Care declined notifications (when your response was not accepted)
-      (careDeclinedNotifications || []).forEach((n: any) => {
-        if (!readMessages.has(`care-declined-${n.id}`)) {
-          schedulerCount++;
-        }
-      });
+      const careDeclinedCount = (careDeclinedNotifications || []).filter((n: any) =>
+        !readMessages.has(`care-declined-${n.id}`)
+      ).length;
+      schedulerCount += careDeclinedCount;
 
-      console.log('📊 Header - FINAL Counter:', schedulerCount);
+      // 9. Hangout accepted notifications (when someone accepts your hangout invitation)
+      const hangoutAcceptedCount = (hangoutAcceptedNotifications || []).filter((n: any) =>
+        !readMessages.has(`hangout-accepted-${n.id}`)
+      ).length;
+      schedulerCount += hangoutAcceptedCount;
+
+      // Log the final calculation
+      CounterDebugger.logCounterCalculation('scheduler', {
+        pendingCareResponses: pendingCareResponses.length,
+        requestsWithSubmittedResponses: requestsWithSubmittedResponses.size,
+        openBlockInvitationGroups: invitationGroups.size,
+        acceptedOpenBlockInvitations: (invitations || []).filter((inv: any) => inv.status === 'accepted').length,
+        rescheduleRequests: (rescheduleRequests || []).length,
+        rescheduleRequestNotifications: (rescheduleNotifications || []).filter((n: any) => n.type === 'reschedule_request' && n.is_read === false).length,
+        rescheduleCounters: (rescheduleNotifications || []).filter((n: any) => n.type === 'reschedule_counter_sent' && !(rescheduleNotifications || []).some((rn: any) => (rn.type === 'reschedule_counter_accepted' || rn.type === 'reschedule_counter_declined') && rn.data?.counter_request_id === n.data?.counter_request_id)).length,
+        acceptDeclineNotifications: (rescheduleNotifications || []).filter((n: any) => n.type === 'reschedule_accepted' || n.type === 'reschedule_declined' || n.type === 'reschedule_counter_accepted' || n.type === 'reschedule_counter_declined').length,
+        careDeclinedNotifications: careDeclinedCount,
+        hangoutAcceptedNotifications: hangoutAcceptedCount,
+        readMessagesInLocalStorage: readMessages.size
+      }, schedulerCount);
 
       // Update the state
       setSchedulerMessagesCount(schedulerCount);
@@ -320,6 +397,7 @@ export default function Header({ currentPage = "dashboard" }: HeaderProps) {
 
   // Function to fetch new calendar blocks count (Calendar button)
   const fetchNewCalendarBlocksCount = async (userId: string) => {
+    CounterDebugger.logCounterFetch('calendar', userId, 'Header.fetchNewCalendarBlocksCount');
     try {
       // Fetch care_accepted notifications (when your response was accepted)
       const { data: careAcceptedNotifications, error: careAcceptedError } = await supabase
@@ -333,29 +411,45 @@ export default function Header({ currentPage = "dashboard" }: HeaderProps) {
         console.error('Error fetching care_accepted notifications:', careAcceptedError);
       }
 
-      // Load calendar count from localStorage (for blocks YOU created by accepting responses)
-      const savedCount = localStorage.getItem('newCalendarBlocksCount');
-      let count = savedCount ? parseInt(savedCount, 10) : 0;
-
-      // Calculate total blocks from notifications
+      // Calculate total blocks from notifications ONLY
       // Each notification has a blocks_created field (2 for reciprocal care, 1-2 for open blocks)
+      // Note: We no longer use localStorage because notifications have the accurate count
       const notificationBlocks = (careAcceptedNotifications || []).reduce((total, notification) => {
         const blocksCreated = notification.data?.blocks_created || 2; // Default to 2 for old notifications
         return total + blocksCreated;
       }, 0);
 
-      console.log('📅 Calendar Counter Debug:', {
-        careAcceptedNotifications: (careAcceptedNotifications || []).length,
-        notificationBlocks: notificationBlocks,
-        localStorageCount: count,
-        totalCount: count + notificationBlocks,
-        notifications: careAcceptedNotifications
-      });
+      // Fetch unseen calendar updates (photo/notes changes by provider)
+      let unseenUpdatesCount = 0;
+      try {
+        const { data: unseenCount, error: unseenError } = await supabase.rpc(
+          'get_unseen_calendar_updates_count',
+          { p_user_id: userId }
+        );
+        if (!unseenError && unseenCount !== null) {
+          unseenUpdatesCount = unseenCount;
+        }
+      } catch (err) {
+        // Function may not exist yet - ignore error
+        console.log('get_unseen_calendar_updates_count not available yet');
+      }
 
-      // Add blocks from notifications
-      count += notificationBlocks;
+      const totalCount = notificationBlocks + unseenUpdatesCount;
 
-      setNewCalendarBlocksCount(count);
+      // Log the calculation
+      CounterDebugger.logCounterCalculation('calendar', {
+        totalNotifications: (careAcceptedNotifications || []).length,
+        notificationDetails: (careAcceptedNotifications || []).map((n: any) => ({
+          id: n.id,
+          blocks_created: n.data?.blocks_created || 2,
+          care_type: n.data?.care_type,
+          created_at: n.created_at
+        })),
+        unseenUpdatesCount
+      }, totalCount);
+
+      setNewCalendarBlocksCount(totalCount);
+      localStorage.setItem('newCalendarBlocksCount', totalCount.toString());
     } catch (error) {
       console.error('Error fetching calendar blocks count:', error);
     }
@@ -378,18 +472,18 @@ export default function Header({ currentPage = "dashboard" }: HeaderProps) {
     supabase.auth.getUser().then(async ({ data }) => {
       if (data.user) {
         setUser(data.user);
-        
+
         // Fetch user role
         const { data: profileData } = await supabase
           .from("profiles")
           .select("role")
           .eq("id", data.user.id)
           .single();
-        
+
         if (profileData?.role) {
           setUserRole(profileData.role);
         }
-        
+
         await Promise.all([
           fetchPendingInvitations(data.user.id),
           fetchUnreadChatMessages(data.user.id),
@@ -399,6 +493,39 @@ export default function Header({ currentPage = "dashboard" }: HeaderProps) {
       }
     });
   }, []);
+
+  // Listen for counter refresh events (triggered when accepting invitations, etc.)
+  useEffect(() => {
+    const handleRefreshCounters = () => {
+      if (user) {
+        // Add a small delay to ensure database consistency
+        setTimeout(async () => {
+          await Promise.all([
+            fetchSchedulerMessagesCount(user.id),
+            fetchNewCalendarBlocksCount(user.id)
+          ]);
+        }, 300);
+      }
+    };
+
+    window.addEventListener('refreshCounters', handleRefreshCounters);
+    return () => window.removeEventListener('refreshCounters', handleRefreshCounters);
+  }, [user]);
+
+  // Listen for calendar block viewed events (to refresh counter when unseen block is opened)
+  useEffect(() => {
+    const handleCalendarBlockViewed = () => {
+      if (user) {
+        // Add a small delay to ensure database consistency
+        setTimeout(async () => {
+          await fetchNewCalendarBlocksCount(user.id);
+        }, 200);
+      }
+    };
+
+    window.addEventListener('calendarBlockViewed', handleCalendarBlockViewed);
+    return () => window.removeEventListener('calendarBlockViewed', handleCalendarBlockViewed);
+  }, [user]);
 
   // Listen for invitation acceptance events
   useEffect(() => {
@@ -424,12 +551,14 @@ export default function Header({ currentPage = "dashboard" }: HeaderProps) {
     };
 
     const handleSchedulerCountUpdated = () => {
+      CounterDebugger.logEventReceived('schedulerCountUpdated', 'Header.handleSchedulerCountUpdated');
       if (user) {
         fetchSchedulerMessagesCount(user.id);
       }
     };
 
     const handleCalendarCountUpdated = () => {
+      CounterDebugger.logEventReceived('calendarCountUpdated', 'Header.handleCalendarCountUpdated');
       if (user) {
         fetchNewCalendarBlocksCount(user.id);
       }
@@ -579,7 +708,6 @@ export default function Header({ currentPage = "dashboard" }: HeaderProps) {
           filter: `user_id=eq.${user.id}`
         },
         (payload) => {
-          console.log('📬 New notification received:', payload.new);
           // Refresh counters when new notification is inserted
           fetchSchedulerMessagesCount(user.id);
           fetchNewCalendarBlocksCount(user.id);
@@ -608,6 +736,14 @@ export default function Header({ currentPage = "dashboard" }: HeaderProps) {
     }
   }, [user]);
 
+  // Update app badge when counters change
+  useEffect(() => {
+    const totalUnread = schedulerMessagesCount + newCalendarBlocksCount + unreadChatMessages;
+    if (Capacitor.isNativePlatform()) {
+      pushNotificationService.setBadge(totalUnread);
+    }
+  }, [schedulerMessagesCount, newCalendarBlocksCount, unreadChatMessages]);
+
 
   useEffect(() => {
     if (user) {
@@ -631,46 +767,91 @@ export default function Header({ currentPage = "dashboard" }: HeaderProps) {
   };
 
   return (
-    <>
-      {/* Top Header - Profile, Logo, Logout */}
-      <div className="bg-white shadow-soft border-b border-gray-200">
-        <div className="p-3 sm:p-4 md:p-6 max-w-7xl mx-auto">
+    <div className="app-container">
+      {/* Top Header */}
+      <div className="app-header">
+        <div className="p-3 max-w-7xl mx-auto">
+          {/* App Name - Top Center */}
+          <h1 className="text-xl font-bold text-gray-900 text-center mb-2">{t('appName')}</h1>
+
           <div className="flex justify-between items-center">
-            {/* Profile Button - Left */}
-            <button
-              onClick={() => router.push(userRole === 'tutor' ? '/tutor-dashboard' : '/dashboard')}
-              className="p-2 sm:p-2.5 md:p-3 rounded-lg transition shadow-soft bg-emerald-500 text-white hover:bg-emerald-600 hover:shadow-medium"
-              title="Profile"
-            >
-              {/* User Icon */}
-              <svg className="w-5 h-5 sm:w-6 sm:h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
-              </svg>
-            </button>
+            {/* Left side - Profile, Settings & Logout */}
+            <div className="flex items-center gap-2">
+              {/* Profile Button */}
+              <button
+                onClick={() => router.push(userRole === 'tutor' ? '/tutor-dashboard' : '/dashboard')}
+                className="p-2 rounded-lg transition shadow-soft bg-emerald-500 text-white hover:bg-emerald-600 hover:shadow-medium"
+                title="Profile"
+              >
+                {/* User Icon */}
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+                </svg>
+              </button>
 
-            {/* Logo - Center */}
-            <h1 className="text-xl sm:text-2xl md:text-3xl font-bold text-gray-900">Care-N-Care</h1>
+              {/* Settings Button */}
+              <button
+                onClick={() => router.push('/settings')}
+                className="p-2 rounded-lg transition shadow-soft bg-gray-500 text-white hover:bg-gray-600 hover:shadow-medium"
+                title="Settings"
+              >
+                {/* Settings/Gear Icon */}
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                </svg>
+              </button>
 
-            {/* Logout Button - Right */}
+              {/* Logout Button */}
+              <button
+                onClick={async () => {
+                  await supabase.auth.signOut();
+                  router.replace("/auth");
+                }}
+                className="p-2 rounded-lg transition shadow-soft bg-red-500 text-white hover:bg-red-600 hover:shadow-medium"
+                title="Log Out"
+              >
+                {/* Logout Icon */}
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+                </svg>
+              </button>
+            </div>
+
+            {/* Right side - Language Toggle */}
             <button
-              onClick={async () => {
-                await supabase.auth.signOut();
-                router.replace("/auth");
-              }}
-              className="p-2 sm:p-2.5 md:p-3 rounded-lg transition shadow-soft bg-red-500 text-white hover:bg-red-600 hover:shadow-medium"
-              title="Log Out"
+              onClick={toggleLanguage}
+              className="flex items-center gap-1 px-2 py-1.5 rounded-lg transition shadow-soft bg-white border-2 border-gray-200 hover:border-gray-300 hover:shadow-medium"
+              title={i18n.language === 'en' ? 'Switch to Spanish' : 'Cambiar a Inglés'}
             >
-              {/* Logout Icon */}
-              <svg className="w-5 h-5 sm:w-6 sm:h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
-              </svg>
+              {/* UK Flag */}
+              <span className={`text-lg transition-opacity ${i18n.language === 'en' ? 'opacity-100' : 'opacity-40'}`}>
+                🇬🇧
+              </span>
+              {/* Toggle indicator */}
+              <div className="w-10 h-5 bg-gray-200 rounded-full relative mx-1">
+                <div
+                  className={`absolute top-0.5 w-4 h-4 bg-emerald-500 rounded-full transition-all duration-200 ${
+                    i18n.language === 'en' ? 'left-0.5' : 'left-5'
+                  }`}
+                />
+              </div>
+              {/* Spain Flag */}
+              <span className={`text-lg transition-opacity ${i18n.language === 'es' ? 'opacity-100' : 'opacity-40'}`}>
+                🇪🇸
+              </span>
             </button>
           </div>
         </div>
       </div>
 
-      {/* Bottom Navigation - Fixed */}
-      <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200 shadow-lg z-50">
+      {/* Content */}
+      <div className="app-content bg-gray-50">
+        {children}
+      </div>
+
+      {/* Bottom Navigation */}
+      <div className="app-footer">
         <div className="max-w-7xl mx-auto px-3 sm:px-4 md:px-6 py-3">
           <div className="flex justify-between items-center w-full gap-3 sm:gap-4 md:gap-6">
             {/* Messages Button - Left */}
@@ -723,6 +904,6 @@ export default function Header({ currentPage = "dashboard" }: HeaderProps) {
           </div>
         </div>
       </div>
-    </>
+    </div>
   );
 } 

@@ -1,7 +1,9 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import { useTranslation } from 'react-i18next';
 import { supabase } from '../../app/lib/supabase';
+import { getNotificationTitle, getNotificationMessage } from '../../lib/notification-translator';
 
 interface Notification {
   id: string;
@@ -18,6 +20,7 @@ interface NotificationsPanelProps {
 }
 
 export default function NotificationsPanel({ userId }: NotificationsPanelProps) {
+  const { t } = useTranslation();
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [loading, setLoading] = useState(true);
   const [unreadCount, setUnreadCount] = useState(0);
@@ -156,10 +159,10 @@ export default function NotificationsPanel({ userId }: NotificationsPanelProps) 
   if (notifications.length === 0) {
     return (
       <div className="bg-white rounded-lg shadow-md p-6 mb-6">
-        <h2 className="text-xl font-semibold mb-4">Notifications</h2>
+        <h2 className="text-xl font-semibold mb-4">{t('notificationsTitle')}</h2>
         <div className="text-center py-8 text-gray-500">
-          <p>No notifications yet.</p>
-          <p className="text-sm">You'll see reschedule requests and other updates here.</p>
+          <p>{t('noNotifications')}</p>
+          <p className="text-sm">{t('notificationsDescription')}</p>
         </div>
       </div>
     );
@@ -169,7 +172,7 @@ export default function NotificationsPanel({ userId }: NotificationsPanelProps) 
     <div className="bg-white rounded-lg shadow-md p-6 mb-6">
       <div className="flex items-center justify-between mb-4">
         <h2 className="text-xl font-semibold">
-          Notifications
+          {t('notificationsTitle')}
           {unreadCount > 0 && (
             <span className="ml-2 bg-blue-500 text-white text-xs rounded-full px-2 py-1">
               {unreadCount}
@@ -181,7 +184,7 @@ export default function NotificationsPanel({ userId }: NotificationsPanelProps) 
             onClick={markAllAsRead}
             className="text-sm text-blue-600 hover:text-blue-800"
           >
-            Mark all as read
+            {t('markAllAsRead')}
           </button>
         )}
       </div>
@@ -200,16 +203,16 @@ export default function NotificationsPanel({ userId }: NotificationsPanelProps) 
               <div className="flex-1">
                 <div className="flex items-center gap-2 mb-2">
                   <h3 className="font-semibold text-gray-900">
-                    {notification.title}
+                    {getNotificationTitle(notification, t)}
                   </h3>
                   {!notification.is_read && (
                     <span className="bg-blue-500 text-white text-xs rounded-full px-2 py-1">
-                      New
+                      {t('new')}
                     </span>
                   )}
                 </div>
                 <p className="text-gray-700 text-sm mb-2">
-                  {notification.message}
+                  {getNotificationMessage(notification, t)}
                 </p>
                 <div className="flex items-center justify-between text-xs text-gray-500">
                   <span>{formatTimeAgo(notification.created_at)}</span>
@@ -219,21 +222,21 @@ export default function NotificationsPanel({ userId }: NotificationsPanelProps) 
                         onClick={() => markAsRead(notification.id)}
                         className="text-blue-600 hover:text-blue-800"
                       >
-                        Mark as read
+                        {t('markAsRead')}
                       </button>
                       <button
                         onClick={() => handleRescheduleResponse(notification.id, 'declined')}
                         disabled={respondingTo === notification.id}
                         className="bg-red-600 text-white px-3 py-1 rounded text-xs hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed"
                       >
-                        {respondingTo === notification.id ? 'Processing...' : 'Decline'}
+                        {respondingTo === notification.id ? t('processing') : t('decline')}
                       </button>
                       <button
                         onClick={() => handleRescheduleResponse(notification.id, 'accepted')}
                         disabled={respondingTo === notification.id}
                         className="bg-green-600 text-white px-3 py-1 rounded text-xs hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed"
                       >
-                        {respondingTo === notification.id ? 'Processing...' : 'Accept'}
+                        {respondingTo === notification.id ? t('processing') : t('accept')}
                       </button>
                     </div>
                   )}

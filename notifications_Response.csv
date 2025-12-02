@@ -1,0 +1,2 @@
+id,user_id,type,title,message,data,is_read,created_at,updated_at
+623176ea-9506-4846-858a-6ff466343d8d,2a7f3ce2-69f8-4241-831f-5c3f38f35890,pet_care_request_received,New Pet Care Request,You have a new pet care request,"{""request_id"": ""6d5d0009-90ca-4e53-91b1-ec09f0132075"", ""request_type"": ""reciprocal"", ""requester_id"": ""1f66fb72-ccfb-4a55-8738-716a12543421"", ""requested_date"": ""2025-11-08""}",false,2025-11-08 04:27:10.248333+00,2025-11-08 04:27:10.248333+00

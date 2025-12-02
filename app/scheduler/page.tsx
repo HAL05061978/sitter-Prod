@@ -1,12 +1,16 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import Header from '../components/Header';
 import { supabase } from '../lib/supabase';
 import { formatDateOnly, formatTime, formatTimestampDate } from '../lib/date-utils';
 import type { User } from '@supabase/supabase-js';
 import RescheduleResponseModal from '../../components/care/RescheduleResponseModal';
+import { CounterDebugger } from '../../lib/counter-debugger';
+import { useTranslation } from 'react-i18next';
+import { getNotificationTitle, getNotificationMessage } from '../../lib/notification-translator';
 
 interface CareRequest {
   care_request_id: string;
@@ -80,12 +84,18 @@ interface Pet {
 
 // Open Block Invitations Section Component
 function OpenBlockInvitationsSection() {
+  const { t, i18n } = useTranslation();
   const [invitations, setInvitations] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [acceptingInvitation, setAcceptingInvitation] = useState<any>(null);
   const [availableChildren, setAvailableChildren] = useState<Array<{ id: string; full_name: string }>>([]);
   const [processing, setProcessing] = useState(false);
   const [expandedInvitations, setExpandedInvitations] = useState<Set<string>>(new Set());
+
+  // Helper to format date with current language
+  const formatDateLocalized = (dateString: string | Date) => {
+    return formatDateOnly(dateString, i18n.language);
+  };
 
   const toggleExpanded = (invitationId: string) => {
     const newExpanded = new Set(expandedInvitations);
@@ -190,7 +200,7 @@ function OpenBlockInvitationsSection() {
       <div className="text-center py-8">
         <div className="animate-spulse">
           <div className="h-8 bg-gray-200 rounded w-48 mx-auto mb-4"></div>
-          <p className="text-gray-600">Loading open block invitations...</p>
+          <p className="text-gray-600">{t('loadingOpenBlockInvitations')}</p>
         </div>
       </div>
     );
@@ -199,13 +209,13 @@ function OpenBlockInvitationsSection() {
   if (acceptingInvitation) {
     return (
       <div className="border rounded-lg p-4 bg-blue-50">
-        <h4 className="font-medium text-blue-900 mb-3">Accept Open Block Invitation</h4>
+        <h4 className="font-medium text-blue-900 mb-3">{t('acceptOpenBlockInvitation')}</h4>
         <p className="text-sm text-blue-700 mb-4">
           You're accepting an invitation to join {acceptingInvitation.open_block_parent_name}'s care block
         </p>
         
         <div className="space-y-3">
-          <label className="block text-sm font-medium text-gray-700">Select Child to Join Care Block</label>
+          <label className="block text-sm font-medium text-gray-700">{t('selectChildToJoin')}</label>
           <select 
             onChange={(e) => {
               if (e.target.value) {
@@ -229,14 +239,14 @@ function OpenBlockInvitationsSection() {
               className="px-4 py-2 border border-gray-300 text-gray-700 rounded hover:bg-gray-50"
               disabled={processing}
             >
-              Cancel
+              {t('cancel')}
             </button>
             <button
               onClick={() => setAcceptingInvitation(null)}
               className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
               disabled={processing}
             >
-              {processing ? 'Processing...' : 'Accept Invitation'}
+              {processing ? t('processing') : t('acceptInvitation')}
             </button>
           </div>
         </div>
@@ -247,7 +257,7 @@ function OpenBlockInvitationsSection() {
   if (invitations.length === 0) {
     return (
       <div className="text-center py-6 bg-gray-50 rounded-lg">
-        <p className="text-gray-500">No pending open block invitations at the moment.</p>
+        <p className="text-gray-500">{t('noPendingInvitations')}</p>
       </div>
     );
   }
@@ -269,12 +279,12 @@ function OpenBlockInvitationsSection() {
                 <p className="text-sm text-gray-600">
                   Reciprocal care: {
                     invitation.reciprocal_date && invitation.reciprocal_start_time && invitation.reciprocal_end_time
-                      ? `${formatDateOnly(invitation.reciprocal_date)} from ${invitation.reciprocal_start_time} to ${invitation.reciprocal_end_time}`
+                      ? `${formatDateLocalized(invitation.reciprocal_date)} from ${invitation.reciprocal_start_time} to ${invitation.reciprocal_end_time}`
                       : 'Details will be available after acceptance'
                   }
                 </p>
                 <p className="text-sm text-gray-500 mt-1">
-                  Group: {invitation.group_name} • {formatDateOnly(invitation.created_at)}
+                  Group: {invitation.group_name} • {formatDateLocalized(invitation.created_at)}
                 </p>
               </div>
               <div className="flex items-center space-x-2">
@@ -311,14 +321,14 @@ function OpenBlockInvitationsSection() {
                       disabled={processing}
                       className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 disabled:bg-gray-400 transition-colors"
                     >
-                      Accept Invitation
+                      {t('acceptInvitation')}
                     </button>
                     <button
                       onClick={() => handleDecline(invitation)}
                       disabled={processing}
                       className="px-4 py-2 bg-red-600 text-white rounded hover:bg-red-700 disabled:bg-gray-400 transition-colors"
                     >
-                      Decline Invitation
+                      {t('declineInvitation')}
                     </button>
                   </div>
                 )}
@@ -334,6 +344,13 @@ function OpenBlockInvitationsSection() {
 // RescheduleRequestsSection component removed - reschedule requests are now integrated into UnifiedMessagesInbox
 
 export default function SchedulerPage() {
+  const { t, i18n } = useTranslation();
+  const router = useRouter();
+
+  // Helper to format date with current language
+  const formatDateLocalized = (dateString: string | Date) => {
+    return formatDateOnly(dateString, i18n.language);
+  };
   const [user, setUser] = useState<User | null>(null);
   const [careRequests, setCareRequests] = useState<CareRequest[]>([]);
   const [careResponses, setCareResponses] = useState<CareResponse[]>([]);
@@ -406,15 +423,6 @@ export default function SchedulerPage() {
 
   // Check for date overlap (live validation)
   useEffect(() => {
-    console.log('🔍 Validation check running...', {
-      selectedRequest: selectedRequest?.care_type,
-      reciprocal_date: reciprocalResponse.reciprocal_date,
-      reciprocal_end_date: reciprocalResponse.reciprocal_end_date,
-      requested_date: selectedRequest?.requested_date,
-      requested_end_date: selectedRequest?.requested_end_date,  // SQL returns as requested_end_date
-      end_date: selectedRequest?.end_date  // Also check this
-    });
-
     if (!selectedRequest || selectedRequest.care_type !== 'pet') {
       setDateOverlapWarning('');
       return;
@@ -431,21 +439,11 @@ export default function SchedulerPage() {
     const recStart = new Date(reciprocalResponse.reciprocal_date);
     const recEnd = new Date(reciprocalResponse.reciprocal_end_date || reciprocalResponse.reciprocal_date);
 
-    console.log('📅 Date comparison:', {
-      reqStart: reqStart.toISOString().split('T')[0],
-      reqEnd: reqEnd.toISOString().split('T')[0],
-      recStart: recStart.toISOString().split('T')[0],
-      recEnd: recEnd.toISOString().split('T')[0],
-      overlaps: recStart <= reqEnd && recEnd >= reqStart
-    });
-
     // Check if date ranges overlap
     if (recStart <= reqEnd && recEnd >= reqStart) {
       const warning = '⚠️ Warning: Reciprocal dates overlap with the original request. You cannot watch their pet while they are watching yours. Please choose different dates.';
-      console.log('⚠️ OVERLAP DETECTED - Setting warning:', warning);
       setDateOverlapWarning(warning);
     } else {
-      console.log('✅ No overlap - Clearing warning');
       setDateOverlapWarning('');
     }
   }, [reciprocalResponse.reciprocal_date, reciprocalResponse.reciprocal_end_date, selectedRequest]);
@@ -509,7 +507,7 @@ export default function SchedulerPage() {
     const getAllMessages = () => {
       const messages: Array<{
         id: string;
-        type: 'open_block_invitation' | 'care_request' | 'care_response' | 'care_accepted' | 'care_declined' | 'open_block_accepted' | 'group_invitation' | 'event_invitation' | 'reschedule_request' | 'reschedule_accepted' | 'reschedule_declined' | 'reschedule_counter_sent' | 'reschedule_counter_accepted' | 'reschedule_counter_declined';
+        type: 'open_block_invitation' | 'care_request' | 'care_response' | 'care_accepted' | 'care_declined' | 'open_block_accepted' | 'group_invitation' | 'event_invitation' | 'reschedule_request' | 'reschedule_accepted' | 'reschedule_declined' | 'reschedule_counter_sent' | 'reschedule_counter_accepted' | 'reschedule_counter_declined' | 'hangout_accepted';
         title: string;
         subtitle: string;
         timestamp: string;
@@ -600,22 +598,27 @@ export default function SchedulerPage() {
 
         // Skip if this request is actually a counter-proposal
         if (counterProposalRequestIds.has(requestId) || counterProposalRequestIds.has(request.request_id)) {
-          console.log('Skipping reschedule_request message for counter-proposal:', requestId);
           return;
         }
 
         // Skip if this request has a PENDING counter-proposal (show counter instead)
         // Check both the map key (requestId) and the actual request.request_id
         if (originalRequestIdsWithPendingCounters.has(requestId) || originalRequestIdsWithPendingCounters.has(request.request_id)) {
-          console.log('Skipping reschedule_request message - has pending counter-proposal:', requestId);
           return;
         }
 
         messages.push({
           id: `reschedule-${requestId}`,
           type: 'reschedule_request',
-          title: `${request.requester_name} wants to reschedule ${request.original_date ? formatDateOnly(request.original_date) : 'a'} care block`,
-          subtitle: `From ${request.original_date ? formatDateOnly(request.original_date) : 'Unknown'} ${request.original_start_time || 'Unknown'}-${request.original_end_time || 'Unknown'} to ${formatDateOnly(request.new_date)} ${request.new_start_time}-${request.new_end_time}`,
+          title: request.original_date
+            ? t('wantsToReschedule', { name: request.requester_name, date: formatDateLocalized(request.original_date) })
+            : t('wantsToRescheduleA', { name: request.requester_name }),
+          subtitle: t('fromDateToDate', {
+            fromDate: request.original_date ? formatDateLocalized(request.original_date) : t('unknown'),
+            fromTime: `${request.original_start_time || t('unknown')}-${request.original_end_time || t('unknown')}`,
+            toDate: formatDateLocalized(request.new_date),
+            toTime: `${request.new_start_time}-${request.new_end_time}`
+          }),
           timestamp: request.created_at,
           data: request,
           actions: (
@@ -625,14 +628,14 @@ export default function SchedulerPage() {
                 disabled={processingReschedule}
                 className="px-3 py-1 bg-green-600 text-white text-sm rounded hover:bg-green-700 disabled:opacity-50"
               >
-                Accept
+                {t('accept')}
               </button>
               <button
                 onClick={() => handleRescheduleResponse(request.care_response_id, 'declined', undefined, request.request_id)}
                 disabled={processingReschedule}
                 className="px-3 py-1 bg-red-600 text-white text-sm rounded hover:bg-red-700 disabled:opacity-50"
               >
-                Decline
+                {t('decline')}
               </button>
             </div>
           )
@@ -651,7 +654,6 @@ export default function SchedulerPage() {
           );
 
           if (hasBeenAnswered) {
-            console.log('Skipping counter_sent notification - already answered:', counterRequestId);
             return; // Skip this notification
           }
         }
@@ -667,24 +669,24 @@ export default function SchedulerPage() {
                 disabled={processingReschedule}
                 className="px-3 py-1 bg-green-600 text-white text-sm rounded hover:bg-green-700 disabled:opacity-50"
               >
-                Accept
+                {t('accept')}
               </button>
               <button
                 onClick={() => handleRescheduleResponse(notification.data.care_response_id, 'declined', undefined, notification.data.counter_request_id)}
                 disabled={processingReschedule}
                 className="px-3 py-1 bg-red-600 text-white text-sm rounded hover:bg-red-700 disabled:opacity-50"
               >
-                Decline
+                {t('decline')}
               </button>
             </div>
           );
         }
 
         messages.push({
-          id: notification.type === 'care_declined' ? `care-declined-${notification.id}` : `reschedule-notification-${notification.id}`,
-          type: notification.type as 'reschedule_accepted' | 'reschedule_declined' | 'reschedule_counter_sent' | 'reschedule_counter_accepted' | 'reschedule_counter_declined' | 'care_declined',
-          title: notification.title,
-          subtitle: '',
+          id: notification.type === 'care_declined' ? `care-declined-${notification.id}` : notification.type === 'hangout_accepted' ? `hangout-accepted-${notification.id}` : `reschedule-notification-${notification.id}`,
+          type: notification.type as 'reschedule_accepted' | 'reschedule_declined' | 'reschedule_counter_sent' | 'reschedule_counter_accepted' | 'reschedule_counter_declined' | 'care_declined' | 'hangout_accepted',
+          title: getNotificationTitle(notification, t),
+          subtitle: getNotificationMessage(notification, t),
           timestamp: notification.created_at,
           data: notification.data,
           actions: actions
@@ -705,15 +707,19 @@ export default function SchedulerPage() {
           const openingEndTime = openingBlock.existing_block_end_time;
           const groupName = openingBlock.group_name;
           
-          let title = `${group.parentName} is opening `;
+          let title = '';
           if (openingDate && openingStartTime && openingEndTime) {
-            const date = new Date(openingDate);
             const startTime = openingStartTime.substring(0, 5); // Remove seconds
             const endTime = openingEndTime.substring(0, 5); // Remove seconds
-
-            title += `${formatDateOnly(openingDate)} from ${startTime} to ${endTime} block to ${groupName}`;
+            title = t('isOpeningBlock', {
+              name: group.parentName,
+              date: formatDateLocalized(openingDate),
+              startTime: startTime,
+              endTime: endTime,
+              group: groupName
+            });
           } else {
-            title += `a care block to ${groupName}`;
+            title = t('isOpeningBlockGeneric', { name: group.parentName, group: groupName });
           }
           
           messages.push({
@@ -730,20 +736,12 @@ export default function SchedulerPage() {
 
       // Add ACCEPTED open block invitations (for audit trail)
       const acceptedInvitations = invitations.filter(invitation => invitation.status === 'accepted');
-      console.log('📊 Accepted invitations to display:', acceptedInvitations);
 
       acceptedInvitations.forEach((invitation, index) => {
           const openingDate = invitation.existing_block_date;
           const openingStartTime = invitation.existing_block_start_time?.substring(0, 5);
           const openingEndTime = invitation.existing_block_end_time?.substring(0, 5);
           const groupName = invitation.group_name;
-
-          console.log('📊 Processing invitation:', {
-            is_provider_view: invitation.is_provider_view,
-            is_acceptor_view: invitation.is_acceptor_view,
-            acceptor_name: invitation.acceptor_name,
-            provider_name: invitation.open_block_parent_name
-          });
 
           // Show different message based on perspective
           if (invitation.is_provider_view) {
@@ -753,12 +751,15 @@ export default function SchedulerPage() {
             const msg = {
               id: `open-block-provider-${invitation.invitation_id || invitation.id || index}`,
               type: 'open_block_provider_notified',
-              title: `${acceptorName} accepted your ${groupName} open block offer for ${formatDateOnly(invitation.existing_block_date)}`,
+              title: t('acceptedYourOpenBlock', {
+                name: acceptorName,
+                group: groupName,
+                date: formatDateLocalized(invitation.existing_block_date)
+              }),
               subtitle: '',
               timestamp: invitation.created_at,
               data: invitation
             };
-            console.log('📊 Adding provider message:', msg);
             messages.push(msg);
           } else {
             // Current user is the acceptor (person who accepted the open block)
@@ -767,12 +768,15 @@ export default function SchedulerPage() {
             const msg = {
               id: `open-block-accepted-${invitation.invitation_id || index}`,
               type: 'open_block_accepted',
-              title: `You accepted ${providerName}'s ${groupName} open block offer for ${formatDateOnly(invitation.existing_block_date)}`,
+              title: t('youAcceptedOpenBlock', {
+                name: providerName,
+                group: groupName,
+                date: formatDateLocalized(invitation.existing_block_date)
+              }),
               subtitle: '',
               timestamp: invitation.created_at,
               data: invitation
             };
-            console.log('📊 Adding acceptor message:', msg);
             messages.push(msg);
           }
         });
@@ -784,24 +788,32 @@ export default function SchedulerPage() {
           // Get actual end time - use cached value if available, otherwise use notes or fallback
           const cachedActualEndTime = actualEndTimes.get(response.care_request_id);
           const actualEndTime = cachedActualEndTime || getActualEndTime(response.notes || '', response.end_time);
-          
-          // Debug logging
-          console.log('Processing care response for message:', {
-            responseId: response.care_response_id,
-            requesterName: response.requester_name,
-            requestedDate: response.requested_date,
-            endTime: response.end_time,
-            notes: response.notes,
-            actualEndTime: actualEndTime,
-            cachedActualEndTime: cachedActualEndTime,
-            hasNotes: !!response.notes,
-            notesLength: response.notes?.length || 0
-          });
-          
+
+          // Build care request title with translations
+          const endDateStr = response.end_date || (response as any).requested_end_date;
+          const hasMultiDay = endDateStr && endDateStr !== response.requested_date;
+          let careTitle = response.care_type === 'pet'
+            ? t('petCareRequestFrom', {
+                date: formatDateLocalized(response.requested_date),
+                startTime: formatTime(response.start_time),
+                endTime: formatTime(actualEndTime),
+                name: response.requester_name,
+                petName: response.pet_name || ''
+              })
+            : t('childCareRequestFrom', {
+                date: formatDateLocalized(response.requested_date),
+                startTime: formatTime(response.start_time),
+                endTime: formatTime(actualEndTime),
+                name: response.requester_name
+              });
+          if (hasMultiDay) {
+            careTitle += t('careRequestUntil', { date: formatDateLocalized(endDateStr) });
+          }
+
           messages.push({
           id: `pending-${response.care_response_id || index}`,
           type: 'care_request',
-          title: `A ${response.care_type === 'pet' ? '🐾 pet' : 'child'} care request for ${formatDateOnly(response.requested_date)} from ${formatTime(response.start_time)} to ${formatTime(actualEndTime)} has been sent from ${response.requester_name}${response.care_type === 'pet' && response.pet_name ? ` for ${response.pet_name}` : ''}${(response.end_date || response.requested_end_date) && (response.end_date || response.requested_end_date) !== response.requested_date ? ` until ${formatDateOnly(response.end_date || response.requested_end_date)}` : ''}`,
+          title: careTitle,
           subtitle: '', // Remove redundant subtitle since date/time is now in title
           timestamp: response.created_at,
           data: response,
@@ -827,7 +839,7 @@ export default function SchedulerPage() {
               })}
               className={`px-3 py-1 ${response.care_type === 'pet' ? 'bg-purple-600 hover:bg-purple-700' : 'bg-blue-600 hover:bg-blue-700'} text-white text-sm rounded`}
             >
-              Respond to Request
+              {t('respondToRequest')}
             </button>
           )
         });
@@ -841,7 +853,7 @@ export default function SchedulerPage() {
           messages.push({
             id: `responded-${response.care_response_id || index}`,
             type: 'care_request',
-            title: `Care request from ${response.requester_name} - Responded`,
+            title: t('careRequestResponded', { name: response.requester_name }),
             subtitle: '', // Remove redundant subtitle for accepted requests
             timestamp: response.created_at,
             data: response,
@@ -851,10 +863,6 @@ export default function SchedulerPage() {
 
       // Group responses to my requests by request (instead of showing separate messages for each response)
       const requestResponseMap = new Map();
-
-      console.log('🔍 Checking for responses to my requests...');
-      console.log('🔍 careRequests:', careRequests);
-      console.log('🔍 careResponses:', careResponses);
 
       careRequests.forEach(request => {
         // IMPORTANT: Only show this section if the current user is the REQUESTER
@@ -870,15 +878,12 @@ export default function SchedulerPage() {
         );
 
         if (requestResponses.length > 0) {
-          console.log(`🔍 Found ${requestResponses.length} responses for request ${request.care_request_id}:`, requestResponses);
           requestResponseMap.set(request.care_request_id, {
             request,
             responses: requestResponses
           });
         }
       });
-
-      console.log('🔍 Total requests with responses:', requestResponseMap.size);
 
       // Add one message per request that has responses
       requestResponseMap.forEach(({ request, responses }) => {
@@ -892,12 +897,16 @@ export default function SchedulerPage() {
 
         if (acceptedResponse) {
           // Show accepted message for the requester
-          const responderName = acceptedResponse.responder_name || 'Someone';
-          const groupName = acceptedResponse.group_name || 'your group';
+          const responderName = acceptedResponse.responder_name || t('unknown');
+          const groupName = acceptedResponse.group_name || t('group');
           messages.push({
             id: `request-accepted-${request.care_request_id}`,
             type: 'care_request',
-            title: `You accepted ${responderName}'s ${groupName} reciprocal offer for ${formatDateOnly(request.requested_date)}`,
+            title: t('youAcceptedReciprocal', {
+              name: responderName,
+              group: groupName,
+              date: formatDateLocalized(request.requested_date)
+            }),
             subtitle: '',
             timestamp: acceptedResponse.created_at,
             data: acceptedResponse,
@@ -905,10 +914,25 @@ export default function SchedulerPage() {
           });
         } else {
           // Only show the original request message if NO responses have been accepted
+          const careType = request.care_type === 'pet' ? t('petCare') : t('childCare');
           messages.push({
             id: `responses-${request.care_request_id}`,
             type: 'care_response',
-            title: `Your ${request.care_type === 'pet' ? 'pet' : 'child'} care request for ${formatDateOnly(request.requested_date)} from ${formatTime(request.start_time)} to ${formatTime(getActualEndTime(request.notes || '', request.end_time))} has received ${responseCount} response${responseCount !== 1 ? 's' : ''}`,
+            title: responseCount === 1
+              ? t('yourCareRequestReceived', {
+                  type: careType,
+                  date: formatDateLocalized(request.requested_date),
+                  startTime: formatTime(request.start_time),
+                  endTime: formatTime(getActualEndTime(request.notes || '', request.end_time)),
+                  count: responseCount
+                })
+              : t('yourCareRequestReceivedPlural', {
+                  type: careType,
+                  date: formatDateLocalized(request.requested_date),
+                  startTime: formatTime(request.start_time),
+                  endTime: formatTime(getActualEndTime(request.notes || '', request.end_time)),
+                  count: responseCount
+                }),
             subtitle: '', // Empty string instead of undefined
             timestamp: latestResponse.created_at,
             data: { request, responses, responseCount },
@@ -921,11 +945,14 @@ export default function SchedulerPage() {
       // Note: Declined responses are now shown via care_declined notifications from the database
       mySubmittedResponses.forEach((response, index) => {
         if (response.status === 'accepted') {
-          const requesterName = response.requester_name || 'Someone';
+          const requesterName = response.requester_name || t('unknown');
           messages.push({
             id: `status-${response.care_response_id || index}`,
             type: 'care_accepted',
-            title: `${requesterName} accepted your reciprocal response for ${formatDateOnly(response.requested_date)}`,
+            title: t('acceptedYourReciprocal', {
+              name: requesterName,
+              date: formatDateLocalized(response.requested_date)
+            }),
             subtitle: '', // Remove subtitle, all info is in title
             timestamp: response.created_at,
             data: response
@@ -938,7 +965,10 @@ export default function SchedulerPage() {
         messages.push({
           id: `group-invitation-${invitation.invitation_id || index}`,
           type: 'group_invitation',
-          title: `${invitation.inviter_name} has invited you to join "${invitation.group_name}"`,
+          title: t('invitedToJoinGroup', {
+            name: invitation.inviter_name,
+            group: invitation.group_name
+          }),
           subtitle: '', // Remove redundant subtitle
           timestamp: invitation.invited_at,
           data: invitation,
@@ -948,13 +978,13 @@ export default function SchedulerPage() {
                 onClick={() => handleAcceptGroupInvitation(invitation.group_id)}
                 className="px-3 py-1 bg-green-600 text-white text-sm rounded hover:bg-green-700"
               >
-                Accept
+                {t('accept')}
               </button>
               <button
                 onClick={() => handleDeclineGroupInvitation(invitation.group_id)}
                 className="px-3 py-1 bg-red-600 text-white text-sm rounded hover:bg-red-700"
               >
-                Decline
+                {t('decline')}
               </button>
             </div>
           )
@@ -966,8 +996,11 @@ export default function SchedulerPage() {
         messages.push({
           id: `event-invitation-${invitation.event_request_id || index}`,
           type: 'event_invitation',
-          title: `${invitation.inviter_name} has invited you to "${invitation.event_title}"`,
-          subtitle: `${formatDateOnly(invitation.care_date)} from ${formatTime(invitation.start_time)} to ${formatTime(getActualEndTime(invitation.notes || '', invitation.end_time))} • ${invitation.child_name}`,
+          title: t('invitedToEvent', {
+            name: invitation.inviter_name,
+            event: invitation.event_title
+          }),
+          subtitle: `${formatDateLocalized(invitation.care_date)} ${t('from')} ${formatTime(invitation.start_time)} ${t('to')} ${formatTime(getActualEndTime(invitation.notes || '', invitation.end_time))} • ${invitation.child_name}`,
           timestamp: invitation.created_at,
           data: invitation,
           actions: undefined // Actions will be shown in expanded view
@@ -976,11 +1009,16 @@ export default function SchedulerPage() {
 
       // Add hangout/sleepover invitations
       hangoutInvitations.forEach((invitation, index) => {
+        const hangoutType = invitation.request_type === 'hangout' ? t('hangout') : t('sleepover');
         messages.push({
           id: `hangout-${invitation.care_response_id}`,
           type: invitation.request_type, // 'hangout' or 'sleepover'
-          title: `${invitation.host_parent_name} invited ${invitation.invited_child_name} to a ${invitation.request_type}`,
-          subtitle: `${formatDateOnly(invitation.requested_date)} from ${formatTime(invitation.start_time)} to ${formatTime(invitation.end_time)}${invitation.end_date ? ' until ' + formatDateOnly(invitation.end_date) : ''} • ${invitation.group_name}`,
+          title: t('invitedToHangout', {
+            name: invitation.host_parent_name,
+            child: invitation.invited_child_name,
+            type: hangoutType
+          }),
+          subtitle: `${formatDateLocalized(invitation.requested_date)} ${t('from')} ${formatTime(invitation.start_time)} ${t('to')} ${formatTime(invitation.end_time)}${invitation.end_date ? ' ' + t('until') + ' ' + formatDateLocalized(invitation.end_date) : ''} • ${invitation.group_name}`,
           timestamp: invitation.created_at,
           data: invitation,
           actions: undefined // Actions will be shown in expanded view
@@ -1001,9 +1039,9 @@ export default function SchedulerPage() {
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
             </svg>
           </div>
-          <h3 className="text-lg font-medium text-gray-900 mb-2">No Messages</h3>
+          <h3 className="text-lg font-medium text-gray-900 mb-2">{t('noMessages')}</h3>
           <p className="text-gray-600">
-            You're all caught up! New notifications will appear here.
+            {t('allCaughtUp')}
           </p>
         </div>
       );
@@ -1015,121 +1053,78 @@ export default function SchedulerPage() {
           <div key={message.id} className="border border-gray-200 rounded-lg overflow-hidden">
             {/* Header - Always Visible */}
             <div
-              className={`p-4 bg-gray-50 transition-colors ${message.type !== 'care_declined' && message.type !== 'reschedule_request' ? 'hover:bg-gray-100 cursor-pointer' : ''}`}
+              className={`p-4 bg-gray-50 transition-colors ${message.type !== 'care_declined' && message.type !== 'reschedule_request' && message.type !== 'hangout_accepted' ? 'hover:bg-gray-100 cursor-pointer' : ''}`}
               onClick={() => {
-                // Don't allow expansion for care_declined or reschedule_request messages
-                if (message.type === 'care_declined' || message.type === 'reschedule_request') return;
+                // Don't allow expansion for care_declined, reschedule_request, or hangout_accepted messages (informational only)
+                if (message.type === 'care_declined' || message.type === 'reschedule_request' || message.type === 'hangout_accepted') return;
 
                 // Always toggle (expand/collapse)
                 toggleExpanded(message.id);
               }}
             >
-              <div className="flex items-center justify-between">
-                <div className="flex-1">
-                  <div className="flex items-center space-x-2">
-                    <h4 className="font-medium text-gray-900">{message.title}</h4>
+              {/* Stacked layout: Message content on top, buttons/badges below */}
+              <div className="flex flex-col space-y-3">
+                {/* Top section: Message content with badge and expand arrow */}
+                <div className="flex items-start justify-between">
+                  <div className="flex-1 pr-2">
+                    <div className="flex items-center flex-wrap gap-2 mb-1">
+                      <h4 className="font-medium text-gray-900">{message.title}</h4>
+                      {/* Badge inline with title */}
+                      {message.type !== 'reschedule_request' && message.type !== 'reschedule_counter_sent' && (
+                        <span className={`px-2 py-1 text-xs rounded-full whitespace-nowrap ${
+                          message.type === 'open_block_invitation' ? 'bg-yellow-100 text-yellow-800' :
+                          message.type === 'open_block_accepted' ? 'bg-green-100 text-green-800' :
+                          message.type === 'open_block_provider_notified' ? 'bg-blue-100 text-blue-800' :
+                          message.type === 'care_request' && message.data.status === 'accepted' ? 'bg-green-100 text-green-800' :
+                          message.type === 'care_request' ? 'bg-blue-100 text-blue-800' :
+                          message.type === 'care_response' ? 'bg-green-100 text-green-800' :
+                          message.type === 'care_accepted' ? 'bg-green-100 text-green-800' :
+                          message.type === 'care_declined' ? 'bg-red-100 text-red-800' :
+                          message.type === 'reschedule_accepted' ? 'bg-green-100 text-green-800' :
+                          message.type === 'reschedule_declined' ? 'bg-red-100 text-red-800' :
+                          message.type === 'reschedule_counter_sent' ? 'bg-yellow-100 text-yellow-800' :
+                          message.type === 'reschedule_counter_accepted' ? 'bg-green-100 text-green-800' :
+                          message.type === 'reschedule_counter_declined' ? 'bg-red-100 text-red-800' :
+                          message.type === 'hangout_accepted' ? 'bg-green-100 text-green-800' :
+                          message.type === 'group_invitation' ? 'bg-purple-100 text-purple-800' :
+                          message.type === 'event_invitation' ? 'bg-orange-100 text-orange-800' :
+                          message.type === 'hangout' ? 'bg-pink-100 text-pink-800' :
+                          message.type === 'sleepover' ? 'bg-indigo-100 text-indigo-800' :
+                          'bg-gray-100 text-gray-800'
+                        }`}>
+                          {message.type === 'open_block_invitation' ? t('invitation') :
+                           message.type === 'open_block_accepted' ? t('accepted') :
+                           message.type === 'open_block_provider_notified' ? t('blockAccepted') :
+                           message.type === 'care_request' && message.data.status === 'accepted' ? t('accepted') :
+                           message.type === 'care_request' ? t('request') :
+                           message.type === 'care_response' ? t('response') :
+                           message.type === 'care_accepted' ? t('accepted') :
+                           message.type === 'care_declined' ? t('notAccepted') :
+                           message.type === 'reschedule_accepted' ? t('accepted') :
+                           message.type === 'reschedule_declined' ? t('declined') :
+                           message.type === 'reschedule_counter_sent' ? t('counterSent') :
+                           message.type === 'reschedule_counter_accepted' ? t('accepted') :
+                           message.type === 'reschedule_counter_declined' ? t('declined') :
+                           message.type === 'hangout_accepted' ? t('accepted') :
+                           message.type === 'group_invitation' ? t('groupInvite') :
+                           message.type === 'event_invitation' ? t('eventInvite') :
+                           message.type === 'hangout' ? t('hangoutInvite') :
+                           message.type === 'sleepover' ? t('sleeoverInvite') :
+                           t('update')}
+                        </span>
+                      )}
+                    </div>
+                    {message.subtitle && message.type !== 'hangout_accepted' && (
+                      <p className="text-sm text-gray-600 mt-1">{message.subtitle}</p>
+                    )}
+                    <p className="text-sm text-gray-500 mt-1">
+                      {formatDateLocalized(message.timestamp)}
+                    </p>
                   </div>
-                  {message.subtitle && (
-                    <p className="text-sm text-gray-600 mt-1">{message.subtitle}</p>
-                  )}
-                  <p className="text-sm text-gray-500 mt-1">
-                    {formatDateOnly(message.timestamp)}
-                  </p>
-                </div>
-                <div className="flex items-center space-x-2">
-                  {/* Don't show badge for reschedule_request or reschedule_counter_sent since buttons are inline */}
-                  {message.type !== 'reschedule_request' && message.type !== 'reschedule_counter_sent' && (
-                    <span className={`px-2 py-1 text-xs rounded-full ${
-                      message.type === 'open_block_invitation' ? 'bg-yellow-100 text-yellow-800' :
-                      message.type === 'open_block_accepted' ? 'bg-green-100 text-green-800' :
-                      message.type === 'open_block_provider_notified' ? 'bg-blue-100 text-blue-800' :
-                      message.type === 'care_request' && message.data.status === 'accepted' ? 'bg-green-100 text-green-800' :
-                      message.type === 'care_request' ? 'bg-blue-100 text-blue-800' :
-                      message.type === 'care_response' ? 'bg-green-100 text-green-800' :
-                      message.type === 'care_accepted' ? 'bg-green-100 text-green-800' :
-                      message.type === 'care_declined' ? 'bg-red-100 text-red-800' :
-                      message.type === 'reschedule_accepted' ? 'bg-green-100 text-green-800' :
-                      message.type === 'reschedule_declined' ? 'bg-red-100 text-red-800' :
-                      message.type === 'reschedule_counter_sent' ? 'bg-yellow-100 text-yellow-800' :
-                      message.type === 'reschedule_counter_accepted' ? 'bg-green-100 text-green-800' :
-                      message.type === 'reschedule_counter_declined' ? 'bg-red-100 text-red-800' :
-                      message.type === 'group_invitation' ? 'bg-purple-100 text-purple-800' :
-                      message.type === 'event_invitation' ? 'bg-orange-100 text-orange-800' :
-                      message.type === 'hangout' ? 'bg-pink-100 text-pink-800' :
-                      message.type === 'sleepover' ? 'bg-indigo-100 text-indigo-800' :
-                      'bg-gray-100 text-gray-800'
-                    }`}>
-                      {message.type === 'open_block_invitation' ? 'Invitation' :
-                       message.type === 'open_block_accepted' ? 'Accepted' :
-                       message.type === 'open_block_provider_notified' ? 'Block Accepted' :
-                       message.type === 'care_request' && message.data.status === 'accepted' ? 'Accepted' :
-                       message.type === 'care_request' ? 'Request' :
-                       message.type === 'care_response' ? 'Response' :
-                       message.type === 'care_accepted' ? 'Accepted' :
-                       message.type === 'care_declined' ? 'Not Accepted' :
-                       message.type === 'reschedule_accepted' ? 'Accepted' :
-                       message.type === 'reschedule_declined' ? 'Declined' :
-                       message.type === 'reschedule_counter_sent' ? 'Counter Sent' :
-                       message.type === 'reschedule_counter_accepted' ? 'Accepted' :
-                       message.type === 'reschedule_counter_declined' ? 'Declined' :
-                       message.type === 'group_invitation' ? 'Group Invite' :
-                       message.type === 'event_invitation' ? 'Event Invite' :
-                       message.type === 'hangout' ? 'Hangout Invite' :
-                       message.type === 'sleepover' ? 'Sleepover Invite' :
-                       'Update'}
-                    </span>
-                  )}
-                  
-                  {/* Show Accept/Decline buttons to the right of Group Invite badge */}
-                  {message.type === 'group_invitation' && message.data.status === 'pending' && (
-                    <div className="flex space-x-2 ml-2">
-                      <button
-                        onClick={() => handleAcceptGroupInvitation(message.data.group_id)}
-                        className="px-3 py-1 bg-green-600 text-white text-sm rounded hover:bg-green-700"
-                      >
-                        Accept
-                      </button>
-                      <button
-                        onClick={() => handleDeclineGroupInvitation(message.data.group_id)}
-                        className="px-3 py-1 bg-red-600 text-white text-sm rounded hover:bg-red-700"
-                      >
-                        Decline
-                      </button>
-                    </div>
-                  )}
-                  
-                  {/* Show "Accepted" badge to the right of Group Invite badge */}
-                  {message.type === 'group_invitation' && message.data.status === 'accepted' && (
-                    <span className="px-3 py-1 bg-green-100 text-green-800 text-sm rounded ml-2">
-                      Accepted
-                    </span>
-                  )}
-                  
-                  {/* Show "Rejected" badge to the right of Group Invite badge */}
-                  {message.type === 'group_invitation' && message.data.status === 'rejected' && (
-                    <span className="px-3 py-1 bg-red-100 text-red-800 text-sm rounded ml-2">
-                      Rejected
-                    </span>
-                  )}
-                  
-                  {/* Show Accept/Decline buttons to the right of reschedule badge */}
-                  {message.type === 'reschedule_request' && message.actions && (
-                    <div className="ml-2" onClick={(e) => e.stopPropagation()}>
-                      {message.actions}
-                    </div>
-                  )}
-
-                  {/* Show Accept/Decline buttons to the right of counter-proposal badge */}
-                  {message.type === 'reschedule_counter_sent' && message.actions && (
-                    <div className="ml-2" onClick={(e) => e.stopPropagation()}>
-                      {message.actions}
-                    </div>
-                  )}
-
-                  {/* Only show expand arrow for messages that have expandable content */}
-                  {message.type !== 'group_invitation' && message.type !== 'care_declined' && message.type !== 'reschedule_request' && message.type !== 'reschedule_counter_sent' && (
+                  {/* Expand arrow on the right */}
+                  {message.type !== 'group_invitation' && message.type !== 'care_declined' && message.type !== 'reschedule_request' && message.type !== 'reschedule_counter_sent' && message.type !== 'hangout_accepted' && (
                     <svg
-                      className={`w-5 h-5 text-gray-400 transition-transform ${
+                      className={`w-5 h-5 text-gray-400 transition-transform flex-shrink-0 ${
                         expandedMessages.has(message.id) ? 'rotate-180' : ''
                       }`}
                       fill="none"
@@ -1140,6 +1135,57 @@ export default function SchedulerPage() {
                     </svg>
                   )}
                 </div>
+
+                {/* Bottom section: Action buttons (full width, below message) */}
+                {/* Group invitation buttons */}
+                {message.type === 'group_invitation' && message.data.status === 'pending' && (
+                  <div className="flex gap-2 pt-2 border-t border-gray-200">
+                    <button
+                      onClick={(e) => { e.stopPropagation(); handleAcceptGroupInvitation(message.data.group_id); }}
+                      className="flex-1 px-3 py-2 bg-green-600 text-white text-sm font-medium rounded hover:bg-green-700"
+                    >
+                      {t('accept')}
+                    </button>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); handleDeclineGroupInvitation(message.data.group_id); }}
+                      className="flex-1 px-3 py-2 bg-red-600 text-white text-sm font-medium rounded hover:bg-red-700"
+                    >
+                      {t('decline')}
+                    </button>
+                  </div>
+                )}
+
+                {/* Group invitation accepted badge */}
+                {message.type === 'group_invitation' && message.data.status === 'accepted' && (
+                  <div className="pt-2 border-t border-gray-200">
+                    <span className="inline-block px-3 py-1 bg-green-100 text-green-800 text-sm rounded">
+                      {t('accepted')}
+                    </span>
+                  </div>
+                )}
+
+                {/* Group invitation rejected badge */}
+                {message.type === 'group_invitation' && message.data.status === 'rejected' && (
+                  <div className="pt-2 border-t border-gray-200">
+                    <span className="inline-block px-3 py-1 bg-red-100 text-red-800 text-sm rounded">
+                      {t('rejected')}
+                    </span>
+                  </div>
+                )}
+
+                {/* Reschedule request buttons */}
+                {message.type === 'reschedule_request' && message.actions && (
+                  <div className="pt-2 border-t border-gray-200" onClick={(e) => e.stopPropagation()}>
+                    {message.actions}
+                  </div>
+                )}
+
+                {/* Counter-proposal buttons */}
+                {message.type === 'reschedule_counter_sent' && message.actions && (
+                  <div className="pt-2 border-t border-gray-200" onClick={(e) => e.stopPropagation()}>
+                    {message.actions}
+                  </div>
+                )}
               </div>
             </div>
 
@@ -1158,37 +1204,38 @@ export default function SchedulerPage() {
                   <div className="space-y-3 mb-4">
                     {message.data.invitations.map((invitation: any, index: number) => (
                       <div key={invitation.invitation_id || index} className="bg-gray-50 rounded-lg p-3 border-l-4 border-yellow-500">
-                        <div className="flex items-start justify-between">
-                          <div className="flex-1">
+                        {/* Stacked layout: content on top, buttons below */}
+                        <div className="flex flex-col space-y-3">
+                          <div>
                             <p className="font-medium text-gray-900 text-sm">
                               {invitation.reciprocal_date && invitation.reciprocal_start_time && invitation.reciprocal_end_time
-                                ? `Reciprocal care: ${formatDateOnly(invitation.reciprocal_date)} from ${formatTime(invitation.reciprocal_start_time)} to ${formatTime(invitation.reciprocal_end_time)}`
-                                : 'Reciprocal care details will be available after acceptance'}
+                                ? `${t('reciprocalCare')} ${formatDateLocalized(invitation.reciprocal_date)} ${t('from')} ${formatTime(invitation.reciprocal_start_time)} ${t('to')} ${formatTime(invitation.reciprocal_end_time)}`
+                                : t('reciprocalCareDetails')}
                             </p>
                             {invitation.notes && (
                               <p className="text-sm text-gray-500 mt-1">
-                                <strong>Notes:</strong> {invitation.notes}
+                                <strong>{t('notes')}:</strong> {invitation.notes}
                               </p>
                             )}
                             <p className="text-sm text-gray-500 mt-1">
-                              <strong>Group:</strong> {invitation.group_name || 'N/A'}
+                              <strong>{t('group')}:</strong> {invitation.group_name || 'N/A'}
                             </p>
                           </div>
                           {invitation.status === 'pending' && (
-                            <div className="flex gap-2 ml-4">
+                            <div className="flex gap-2 pt-2 border-t border-gray-200">
                               <button
                                 onClick={() => handleAccept(invitation)}
                                 disabled={processing}
-                                className="px-3 py-1 bg-green-600 text-white text-sm rounded hover:bg-green-700 disabled:bg-gray-400"
+                                className="flex-1 px-3 py-2 bg-green-600 text-white text-sm font-medium rounded hover:bg-green-700 disabled:bg-gray-400"
                               >
-                                Accept
+                                {t('accept')}
                               </button>
                               <button
                                 onClick={() => handleDecline(invitation)}
                                 disabled={processing}
-                                className="px-3 py-1 bg-red-600 text-white text-sm rounded hover:bg-red-700 disabled:bg-gray-400"
+                                className="flex-1 px-3 py-2 bg-red-600 text-white text-sm font-medium rounded hover:bg-red-700 disabled:bg-gray-400"
                               >
-                                Decline
+                                {t('decline')}
                               </button>
                             </div>
                           )}
@@ -1199,27 +1246,23 @@ export default function SchedulerPage() {
                 )}
 
                 {/* Show accepted open block details - ACCEPTOR VIEW */}
-                {message.type === 'open_block_accepted' && (() => {
-                  console.log('📊 Open block accepted message data:', message.data);
-                  return null;
-                })()}
                 {message.type === 'open_block_accepted' && (
                   <div className="space-y-3 mb-4">
                     {/* Block 1: You will receive care */}
                     <div className="bg-blue-50 rounded-lg p-3 border-l-4 border-blue-500">
                       <div className="flex-1">
                         <p className="font-medium text-gray-900 text-sm">
-                          You will receive care
+                          {t('youWillReceiveCare')}
                         </p>
                         <p className="text-sm text-gray-600 mt-1">
-                          {formatDateOnly(message.data.existing_block_date)} from{' '}
-                          {formatTime(message.data.existing_block_start_time)} to {formatTime(message.data.existing_block_end_time)}
+                          {formatDateLocalized(message.data.existing_block_date)} {t('from')}{' '}
+                          {formatTime(message.data.existing_block_start_time)} {t('to')} {formatTime(message.data.existing_block_end_time)}
                         </p>
                         <button
                           onClick={() => navigateToCareBlock(message.data.existing_block_date, 'needed')}
                           className="inline-block mt-3 px-4 py-2 bg-blue-600 text-white text-sm rounded hover:bg-blue-700 transition-colors"
                         >
-                          View in Calendar
+                          {t('viewInCalendar')}
                         </button>
                       </div>
                     </div>
@@ -1228,24 +1271,24 @@ export default function SchedulerPage() {
                     <div className="bg-green-50 rounded-lg p-3 border-l-4 border-green-500">
                       <div className="flex-1">
                         <p className="font-medium text-gray-900 text-sm">
-                          You will provide care
+                          {t('youWillProvideCare')}
                         </p>
                         {message.data.reciprocal_date && message.data.reciprocal_start_time && message.data.reciprocal_end_time ? (
                           <>
                             <p className="text-sm text-gray-600 mt-1">
-                              {formatDateOnly(message.data.reciprocal_date)} from{' '}
-                              {formatTime(message.data.reciprocal_start_time)} to {formatTime(message.data.reciprocal_end_time)}
+                              {formatDateLocalized(message.data.reciprocal_date)} {t('from')}{' '}
+                              {formatTime(message.data.reciprocal_start_time)} {t('to')} {formatTime(message.data.reciprocal_end_time)}
                             </p>
                             <button
                               onClick={() => navigateToCareBlock(message.data.reciprocal_date, 'provided')}
                               className="inline-block mt-3 px-4 py-2 bg-green-600 text-white text-sm rounded hover:bg-green-700 transition-colors"
                             >
-                              View in Calendar
+                              {t('viewInCalendar')}
                             </button>
                           </>
                         ) : (
                           <p className="text-sm text-gray-500 mt-1 italic">
-                            Check your calendar for the reciprocal care time
+                            {t('checkCalendarForReciprocal')}
                           </p>
                         )}
                       </div>
@@ -1254,27 +1297,23 @@ export default function SchedulerPage() {
                 )}
 
                 {/* Show accepted open block details - PROVIDER VIEW */}
-                {message.type === 'open_block_provider_notified' && (() => {
-                  console.log('📊 Open block provider notified message data:', message.data);
-                  return null;
-                })()}
                 {message.type === 'open_block_provider_notified' && (
                   <div className="space-y-3 mb-4">
                     {/* Block 1: You will provide care */}
                     <div className="bg-green-50 rounded-lg p-3 border-l-4 border-green-500">
                       <div className="flex-1">
                         <p className="font-medium text-gray-900 text-sm">
-                          You will provide care
+                          {t('youWillProvideCare')}
                         </p>
                         <p className="text-sm text-gray-600 mt-1">
-                          {formatDateOnly(message.data.existing_block_date)} from{' '}
-                          {formatTime(message.data.existing_block_start_time)} to {formatTime(message.data.existing_block_end_time)}
+                          {formatDateLocalized(message.data.existing_block_date)} {t('from')}{' '}
+                          {formatTime(message.data.existing_block_start_time)} {t('to')} {formatTime(message.data.existing_block_end_time)}
                         </p>
                         <button
                           onClick={() => navigateToCareBlock(message.data.existing_block_date, 'provided')}
                           className="inline-block mt-3 px-4 py-2 bg-green-600 text-white text-sm rounded hover:bg-green-700 transition-colors"
                         >
-                          View in Calendar
+                          {t('viewInCalendar')}
                         </button>
                       </div>
                     </div>
@@ -1283,24 +1322,24 @@ export default function SchedulerPage() {
                     <div className="bg-blue-50 rounded-lg p-3 border-l-4 border-blue-500">
                       <div className="flex-1">
                         <p className="font-medium text-gray-900 text-sm">
-                          You will receive care
+                          {t('youWillReceiveCare')}
                         </p>
                         {message.data.reciprocal_date && message.data.reciprocal_start_time && message.data.reciprocal_end_time ? (
                           <>
                             <p className="text-sm text-gray-600 mt-1">
-                              {formatDateOnly(message.data.reciprocal_date)} from{' '}
-                              {formatTime(message.data.reciprocal_start_time)} to {formatTime(message.data.reciprocal_end_time)}
+                              {formatDateLocalized(message.data.reciprocal_date)} {t('from')}{' '}
+                              {formatTime(message.data.reciprocal_start_time)} {t('to')} {formatTime(message.data.reciprocal_end_time)}
                             </p>
                             <button
                               onClick={() => navigateToCareBlock(message.data.reciprocal_date, 'needed')}
                               className="inline-block mt-3 px-4 py-2 bg-blue-600 text-white text-sm rounded hover:bg-blue-700 transition-colors"
                             >
-                              View in Calendar
+                              {t('viewInCalendar')}
                             </button>
                           </>
                         ) : (
                           <p className="text-sm text-gray-500 mt-1 italic">
-                            Check your calendar for the reciprocal care time
+                            {t('checkCalendarForReciprocal')}
                           </p>
                         )}
                       </div>
@@ -1312,16 +1351,17 @@ export default function SchedulerPage() {
                 {/* Show grouped responses if this is a response message */}
                 {message.type === 'care_response' && message.data.responses && (
                   <div className="space-y-3 mb-4">
-                    <h5 className="font-medium text-gray-900 text-sm">All Responses:</h5>
+                    <h5 className="font-medium text-gray-900 text-sm">{t('allResponses')}</h5>
                     {message.data.responses.map((response: any, index: number) => (
                       <div key={response.care_response_id || index} className={`bg-gray-50 rounded-lg p-3 border-l-4 ${response.care_type === 'pet' ? 'border-purple-500' : 'border-blue-500'}`}>
-                        <div className="flex items-start justify-between">
-                          <div className="flex-1">
+                        {/* Stacked layout: content on top, button below */}
+                        <div className="flex flex-col space-y-3">
+                          <div>
                             <p className="font-medium text-gray-900 text-sm">
                               Response from: {response.responder_name || 'Unknown User'}
                             </p>
                             <p className="text-sm text-gray-600 mt-1">
-                              Reciprocal care: {formatDateOnly(response.reciprocal_date)} from{' '}
+                              Reciprocal care: {formatDateLocalized(response.reciprocal_date)} from{' '}
                               {formatTime(response.reciprocal_start_time)} to {formatTime(response.reciprocal_end_time)}
                             </p>
                             {response.response_notes && (
@@ -1331,16 +1371,20 @@ export default function SchedulerPage() {
                             )}
                           </div>
                           {response.status === 'accepted' ? (
-                            <span className="px-3 py-1 bg-green-100 text-green-800 text-sm rounded ml-4">
-                              Accepted
-                            </span>
+                            <div className="pt-2 border-t border-gray-200">
+                              <span className="inline-block px-3 py-1 bg-green-100 text-green-800 text-sm rounded">
+                                Accepted
+                              </span>
+                            </div>
                           ) : (
-                            <button
-                              onClick={() => handleAcceptResponse(response.care_response_id)}
-                              className={`px-3 py-1 text-white text-sm rounded ml-4 ${response.care_type === 'pet' ? 'bg-purple-600 hover:bg-purple-700' : 'bg-green-600 hover:bg-green-700'}`}
-                            >
-                              Accept Response
-                            </button>
+                            <div className="pt-2 border-t border-gray-200">
+                              <button
+                                onClick={() => handleAcceptResponse(response.care_response_id)}
+                                className={`w-full px-3 py-2 text-white text-sm font-medium rounded ${response.care_type === 'pet' ? 'bg-purple-600 hover:bg-purple-700' : 'bg-green-600 hover:bg-green-700'}`}
+                              >
+                                Accept Response
+                              </button>
+                            </div>
                           )}
                         </div>
                       </div>
@@ -1355,17 +1399,17 @@ export default function SchedulerPage() {
                     <div className="bg-blue-50 rounded-lg p-3 border-l-4 border-blue-500">
                       <div className="flex-1">
                         <p className="font-medium text-gray-900 text-sm">
-                          You will receive care
+                          {t('youWillReceiveCare')}
                         </p>
                         <p className="text-sm text-gray-600 mt-1">
-                          {formatDateOnly(message.data.requested_date)} from{' '}
-                          {formatTime(message.data.start_time)} to {formatTime(getActualEndTime(message.data.notes || '', message.data.end_time))}
+                          {formatDateLocalized(message.data.requested_date)} {t('from')}{' '}
+                          {formatTime(message.data.start_time)} {t('to')} {formatTime(getActualEndTime(message.data.notes || '', message.data.end_time))}
                         </p>
                         <button
                           onClick={() => navigateToCareBlock(message.data.requested_date, 'needed')}
                           className="inline-block mt-3 px-4 py-2 bg-blue-600 text-white text-sm rounded hover:bg-blue-700 transition-colors"
                         >
-                          View in Calendar
+                          {t('viewInCalendar')}
                         </button>
                       </div>
                     </div>
@@ -1374,24 +1418,24 @@ export default function SchedulerPage() {
                     <div className="bg-green-50 rounded-lg p-3 border-l-4 border-green-500">
                       <div className="flex-1">
                         <p className="font-medium text-gray-900 text-sm">
-                          You will provide care
+                          {t('youWillProvideCare')}
                         </p>
                         {message.data.reciprocal_date && message.data.reciprocal_start_time && message.data.reciprocal_end_time ? (
                           <>
                             <p className="text-sm text-gray-600 mt-1">
-                              {formatDateOnly(message.data.reciprocal_date)} from{' '}
-                              {formatTime(message.data.reciprocal_start_time)} to {formatTime(message.data.reciprocal_end_time)}
+                              {formatDateLocalized(message.data.reciprocal_date)} {t('from')}{' '}
+                              {formatTime(message.data.reciprocal_start_time)} {t('to')} {formatTime(message.data.reciprocal_end_time)}
                             </p>
                             <button
                               onClick={() => navigateToCareBlock(message.data.reciprocal_date, 'provided')}
                               className="inline-block mt-3 px-4 py-2 bg-green-600 text-white text-sm rounded hover:bg-green-700 transition-colors"
                             >
-                              View in Calendar
+                              {t('viewInCalendar')}
                             </button>
                           </>
                         ) : (
                           <p className="text-sm text-gray-500 mt-1 italic">
-                            Check your calendar for the reciprocal care time
+                            {t('checkCalendarForReciprocal')}
                           </p>
                         )}
                       </div>
@@ -1406,17 +1450,17 @@ export default function SchedulerPage() {
                     <div className="bg-green-50 rounded-lg p-3 border-l-4 border-green-500">
                       <div className="flex-1">
                         <p className="font-medium text-gray-900 text-sm">
-                          You will provide care
+                          {t('youWillProvideCare')}
                         </p>
                         <p className="text-sm text-gray-600 mt-1">
-                          {formatDateOnly(message.data.requested_date)} from{' '}
-                          {formatTime(message.data.start_time)} to {formatTime(getActualEndTime(message.data.notes || '', message.data.end_time))}
+                          {formatDateLocalized(message.data.requested_date)} {t('from')}{' '}
+                          {formatTime(message.data.start_time)} {t('to')} {formatTime(getActualEndTime(message.data.notes || '', message.data.end_time))}
                         </p>
                         <button
                           onClick={() => navigateToCareBlock(message.data.requested_date, 'provided')}
                           className="inline-block mt-3 px-4 py-2 bg-green-600 text-white text-sm rounded hover:bg-green-700 transition-colors"
                         >
-                          View in Calendar
+                          {t('viewInCalendar')}
                         </button>
                       </div>
                     </div>
@@ -1425,17 +1469,17 @@ export default function SchedulerPage() {
                     <div className="bg-blue-50 rounded-lg p-3 border-l-4 border-blue-500">
                       <div className="flex-1">
                         <p className="font-medium text-gray-900 text-sm">
-                          You will receive care
+                          {t('youWillReceiveCare')}
                         </p>
                         <p className="text-sm text-gray-600 mt-1">
-                          {formatDateOnly(message.data.reciprocal_date)} from{' '}
-                          {formatTime(message.data.reciprocal_start_time)} to {formatTime(message.data.reciprocal_end_time)}
+                          {formatDateLocalized(message.data.reciprocal_date)} {t('from')}{' '}
+                          {formatTime(message.data.reciprocal_start_time)} {t('to')} {formatTime(message.data.reciprocal_end_time)}
                         </p>
                         <button
                           onClick={() => navigateToCareBlock(message.data.reciprocal_date, 'needed')}
                           className="inline-block mt-3 px-4 py-2 bg-blue-600 text-white text-sm rounded hover:bg-blue-700 transition-colors"
                         >
-                          View in Calendar
+                          {t('viewInCalendar')}
                         </button>
                       </div>
                     </div>
@@ -1449,17 +1493,17 @@ export default function SchedulerPage() {
                     <div className="bg-blue-50 rounded-lg p-3 border-l-4 border-blue-500">
                       <div className="flex-1">
                         <p className="font-medium text-gray-900 text-sm">
-                          New care block (receiving care)
+                          {t('newCareBlockReceiving')}
                         </p>
                         <p className="text-sm text-gray-600 mt-1">
-                          {formatDateOnly(message.data.new_date)} from{' '}
-                          {formatTime(message.data.new_start_time)} to {formatTime(message.data.new_end_time)}
+                          {formatDateLocalized(message.data.new_date)} {t('from')}{' '}
+                          {formatTime(message.data.new_start_time)} {t('to')} {formatTime(message.data.new_end_time)}
                         </p>
                         <button
                           onClick={() => navigateToCareBlock(message.data.new_date, 'needed')}
                           className="inline-block mt-3 px-4 py-2 bg-blue-600 text-white text-sm rounded hover:bg-blue-700 transition-colors"
                         >
-                          View in Calendar
+                          {t('viewInCalendar')}
                         </button>
                       </div>
                     </div>
@@ -1469,17 +1513,17 @@ export default function SchedulerPage() {
                 {/* Show declined reschedule details */}
                 {message.type === 'reschedule_declined' && (
                   <div className="space-y-3 mb-4">
-                    <h5 className="font-medium text-gray-900 text-sm">Cancelled care blocks:</h5>
+                    <h5 className="font-medium text-gray-900 text-sm">{t('cancelledCareBlocksLabel')}</h5>
 
                     {/* Block 1: The reschedule request that was declined */}
                     <div className="bg-red-50 rounded-lg p-3 border-l-4 border-red-500">
                       <div className="flex-1">
                         <p className="font-medium text-gray-900 text-sm">
-                          Declined reschedule
+                          {t('declinedReschedule')}
                         </p>
                         <p className="text-sm text-gray-600 mt-1">
-                          {formatDateOnly(message.data.declined_reschedule_date)} from{' '}
-                          {formatTime(message.data.declined_reschedule_start_time)} to {formatTime(message.data.declined_reschedule_end_time)}
+                          {formatDateLocalized(message.data.declined_reschedule_date)} {t('from')}{' '}
+                          {formatTime(message.data.declined_reschedule_start_time)} {t('to')} {formatTime(message.data.declined_reschedule_end_time)}
                         </p>
                       </div>
                     </div>
@@ -1489,11 +1533,11 @@ export default function SchedulerPage() {
                       <div className="bg-red-50 rounded-lg p-3 border-l-4 border-red-500">
                         <div className="flex-1">
                           <p className="font-medium text-gray-900 text-sm">
-                            Selected arrangement removed
+                            {t('selectedArrangementRemoved')}
                           </p>
                           <p className="text-sm text-gray-600 mt-1">
-                            {formatDateOnly(message.data.selected_cancellation_date)} from{' '}
-                            {formatTime(message.data.selected_cancellation_start_time)} to {formatTime(message.data.selected_cancellation_end_time)}
+                            {formatDateLocalized(message.data.selected_cancellation_date)} {t('from')}{' '}
+                            {formatTime(message.data.selected_cancellation_start_time)} {t('to')} {formatTime(message.data.selected_cancellation_end_time)}
                           </p>
                         </div>
                       </div>
@@ -1504,16 +1548,16 @@ export default function SchedulerPage() {
                 {/* Show counter-proposal sent details */}
                 {message.type === 'reschedule_counter_sent' && (
                   <div className="space-y-3 mb-4">
-                    <h5 className="font-medium text-gray-900 text-sm">Counter-proposal details:</h5>
+                    <h5 className="font-medium text-gray-900 text-sm">{t('counterProposalDetails')}</h5>
 
                     <div className="bg-yellow-50 rounded-lg p-3 border-l-4 border-yellow-500">
                       <div className="flex-1">
                         <p className="font-medium text-gray-900 text-sm">
-                          Original request
+                          {t('originalRequest')}
                         </p>
                         <p className="text-sm text-gray-600 mt-1">
-                          {formatDateOnly(message.data.original_requested_date)} from{' '}
-                          {formatTime(message.data.original_requested_start_time)} to {formatTime(message.data.original_requested_end_time)}
+                          {formatDateLocalized(message.data.original_requested_date)} {t('from')}{' '}
+                          {formatTime(message.data.original_requested_start_time)} {t('to')} {formatTime(message.data.original_requested_end_time)}
                         </p>
                       </div>
                     </div>
@@ -1521,11 +1565,11 @@ export default function SchedulerPage() {
                     <div className="bg-blue-50 rounded-lg p-3 border-l-4 border-blue-500">
                       <div className="flex-1">
                         <p className="font-medium text-gray-900 text-sm">
-                          Counter-proposal
+                          {t('counterProposal')}
                         </p>
                         <p className="text-sm text-gray-600 mt-1">
-                          {formatDateOnly(message.data.counter_date)} from{' '}
-                          {formatTime(message.data.counter_start_time)} to {formatTime(message.data.counter_end_time)}
+                          {formatDateLocalized(message.data.counter_date)} {t('from')}{' '}
+                          {formatTime(message.data.counter_start_time)} {t('to')} {formatTime(message.data.counter_end_time)}
                         </p>
                       </div>
                     </div>
@@ -1535,14 +1579,14 @@ export default function SchedulerPage() {
                       <div className="bg-red-50 rounded-lg p-3 border-l-4 border-red-500">
                         <div className="flex-1">
                           <p className="font-medium text-gray-900 text-sm">
-                            Block at risk if declined
+                            {t('blockAtRiskIfDeclined')}
                           </p>
                           <p className="text-sm text-gray-600 mt-1">
-                            {formatDateOnly(message.data.selected_cancellation_date)} from{' '}
-                            {formatTime(message.data.selected_cancellation_start_time)} to {formatTime(message.data.selected_cancellation_end_time)}
+                            {formatDateLocalized(message.data.selected_cancellation_date)} {t('from')}{' '}
+                            {formatTime(message.data.selected_cancellation_start_time)} {t('to')} {formatTime(message.data.selected_cancellation_end_time)}
                           </p>
                           <p className="text-xs text-gray-500 mt-1">
-                            {message.data.selected_cancellation_requesting_parent} requesting care from {message.data.selected_cancellation_receiving_parent}
+                            {t('requestingCareFrom', { requester: message.data.selected_cancellation_requesting_parent, receiver: message.data.selected_cancellation_receiving_parent })}
                           </p>
                         </div>
                       </div>
@@ -1556,17 +1600,17 @@ export default function SchedulerPage() {
                     <div className="bg-blue-50 rounded-lg p-3 border-l-4 border-blue-500">
                       <div className="flex-1">
                         <p className="font-medium text-gray-900 text-sm">
-                          New care block (receiving care)
+                          {t('newCareBlockReceiving')}
                         </p>
                         <p className="text-sm text-gray-600 mt-1">
-                          {formatDateOnly(message.data.new_date)} from{' '}
-                          {formatTime(message.data.new_start_time)} to {formatTime(message.data.new_end_time)}
+                          {formatDateLocalized(message.data.new_date)} {t('from')}{' '}
+                          {formatTime(message.data.new_start_time)} {t('to')} {formatTime(message.data.new_end_time)}
                         </p>
                         <button
                           onClick={() => navigateToCareBlock(message.data.new_date, 'needed')}
                           className="inline-block mt-3 px-4 py-2 bg-blue-600 text-white text-sm rounded hover:bg-blue-700 transition-colors"
                         >
-                          View in Calendar
+                          {t('viewInCalendar')}
                         </button>
                       </div>
                     </div>
@@ -1576,17 +1620,17 @@ export default function SchedulerPage() {
                 {/* Show counter-proposal declined details */}
                 {message.type === 'reschedule_counter_declined' && (
                   <div className="space-y-3 mb-4">
-                    <h5 className="font-medium text-gray-900 text-sm">Cancelled care blocks:</h5>
+                    <h5 className="font-medium text-gray-900 text-sm">{t('cancelledCareBlocksLabel')}</h5>
 
                     {/* Declined counter */}
                     <div className="bg-red-50 rounded-lg p-3 border-l-4 border-red-500">
                       <div className="flex-1">
                         <p className="font-medium text-gray-900 text-sm">
-                          Declined counter-proposal
+                          {t('declinedCounterProposal')}
                         </p>
                         <p className="text-sm text-gray-600 mt-1">
-                          {formatDateOnly(message.data.declined_counter_date)} from{' '}
-                          {formatTime(message.data.declined_counter_start_time)} to {formatTime(message.data.declined_counter_end_time)}
+                          {formatDateLocalized(message.data.declined_counter_date)} {t('from')}{' '}
+                          {formatTime(message.data.declined_counter_start_time)} {t('to')} {formatTime(message.data.declined_counter_end_time)}
                         </p>
                       </div>
                     </div>
@@ -1596,11 +1640,11 @@ export default function SchedulerPage() {
                       <div className="bg-red-50 rounded-lg p-3 border-l-4 border-red-500">
                         <div className="flex-1">
                           <p className="font-medium text-gray-900 text-sm">
-                            Selected arrangement removed
+                            {t('selectedArrangementRemoved')}
                           </p>
                           <p className="text-sm text-gray-600 mt-1">
-                            {formatDateOnly(message.data.selected_cancellation_date)} from{' '}
-                            {formatTime(message.data.selected_cancellation_start_time)} to {formatTime(message.data.selected_cancellation_end_time)}
+                            {formatDateLocalized(message.data.selected_cancellation_date)} {t('from')}{' '}
+                            {formatTime(message.data.selected_cancellation_start_time)} {t('to')} {formatTime(message.data.selected_cancellation_end_time)}
                           </p>
                         </div>
                       </div>
@@ -1611,43 +1655,43 @@ export default function SchedulerPage() {
                 {/* Show event invitation RSVP options if this is an event invitation */}
                 {message.type === 'event_invitation' && (
                   <div className="space-y-3 mb-4">
-                    <h5 className="font-medium text-gray-900 text-sm">Event Details:</h5>
+                    <h5 className="font-medium text-gray-900 text-sm">{t('eventDetails')}</h5>
                     <div className="bg-orange-50 rounded-lg p-3 border-l-4 border-orange-500">
                       <div className="flex-1">
                         <p className="font-medium text-gray-900 text-sm">
-                          Event: {message.data.event_title}
+                          {t('event')} {message.data.event_title}
                         </p>
                         <p className="text-sm text-gray-600 mt-1">
-                          Date: {formatDateOnly(message.data.care_date)} from {formatTime(message.data.start_time)} to {formatTime(message.data.end_time)}
+                          {t('date')}: {formatDateLocalized(message.data.care_date)} {t('from')} {formatTime(message.data.start_time)} {t('to')} {formatTime(message.data.end_time)}
                         </p>
                         <p className="text-sm text-gray-500 mt-1">
-                          Child: {message.data.child_name}
+                          {t('child')} {message.data.child_name}
                         </p>
                         <p className="text-sm text-gray-500 mt-1">
-                          Group: {message.data.group_name}
+                          {t('group')}: {message.data.group_name}
                         </p>
                       </div>
                     </div>
 
-                    <h5 className="font-medium text-gray-900 text-sm mt-4">RSVP:</h5>
+                    <h5 className="font-medium text-gray-900 text-sm mt-4">{t('rsvp')}</h5>
                     <div className="flex space-x-2">
                       <button
                         onClick={() => handleEventRSVP(message.data.event_request_id, 'going')}
                         className="px-4 py-2 bg-green-600 text-white text-sm rounded hover:bg-green-700"
                       >
-                        Going
+                        {t('going')}
                       </button>
                       <button
                         onClick={() => handleEventRSVP(message.data.event_request_id, 'maybe')}
                         className="px-4 py-2 bg-yellow-600 text-white text-sm rounded hover:bg-yellow-700"
                       >
-                        Maybe
+                        {t('maybe')}
                       </button>
                       <button
                         onClick={() => handleEventRSVP(message.data.event_request_id, 'not_going')}
                         className="px-4 py-2 bg-red-600 text-white text-sm rounded hover:bg-red-700"
                       >
-                        Not Going
+                        {t('notGoing')}
                       </button>
                     </div>
                   </div>
@@ -1656,52 +1700,52 @@ export default function SchedulerPage() {
                 {/* Show hangout/sleepover invitation details */}
                 {(message.type === 'hangout' || message.type === 'sleepover') && (
                   <div className="space-y-3 mb-4">
-                    <h5 className="font-medium text-gray-900 text-sm">{message.type === 'hangout' ? 'Hangout' : 'Sleepover'} Details:</h5>
+                    <h5 className="font-medium text-gray-900 text-sm">{message.type === 'hangout' ? t('hangoutDetails') : t('sleepoverDetails')}</h5>
                     <div className={`${message.type === 'hangout' ? 'bg-pink-50 border-pink-500' : 'bg-indigo-50 border-indigo-500'} rounded-lg p-3 border-l-4`}>
                       <div className="flex-1 space-y-2">
                         <p className="font-medium text-gray-900 text-sm">
-                          Host: {message.data.host_parent_name}
+                          {t('host')} {message.data.host_parent_name}
                         </p>
                         <p className="text-sm text-gray-600">
-                          Your child: {message.data.invited_child_name}
+                          {t('yourChild')} {message.data.invited_child_name}
                         </p>
                         {message.data.hosting_children_names && message.data.hosting_children_names.length > 0 && (
                           <p className="text-sm text-gray-600">
-                            Hosting children: {message.data.hosting_children_names.join(', ')}
+                            {t('hostingChildren')} {message.data.hosting_children_names.join(', ')}
                           </p>
                         )}
                         <p className="text-sm text-gray-600">
-                          Date: {formatDateOnly(message.data.requested_date)} from {formatTime(message.data.start_time)} to {formatTime(message.data.end_time)}
+                          {t('date')}: {formatDateLocalized(message.data.requested_date)} {t('from')} {formatTime(message.data.start_time)} {t('to')} {formatTime(message.data.end_time)}
                         </p>
                         {message.data.end_date && (
                           <p className="text-sm text-gray-600">
-                            Until: {formatDateOnly(message.data.end_date)} at {formatTime(message.data.end_time)}
+                            {t('until')} {formatDateLocalized(message.data.end_date)} {t('at')} {formatTime(message.data.end_time)}
                           </p>
                         )}
                         <p className="text-sm text-gray-500">
-                          Group: {message.data.group_name}
+                          {t('group')}: {message.data.group_name}
                         </p>
                         {message.data.notes && (
                           <p className="text-sm text-gray-500 mt-2">
-                            <strong>Notes:</strong> {message.data.notes}
+                            <strong>{t('notes')}:</strong> {message.data.notes}
                           </p>
                         )}
                       </div>
                     </div>
 
-                    <h5 className="font-medium text-gray-900 text-sm mt-4">Respond:</h5>
+                    <h5 className="font-medium text-gray-900 text-sm mt-4">{t('respond')}</h5>
                     <div className="flex space-x-2">
                       <button
                         onClick={() => handleAcceptHangoutInvitation(message.data, message.data.invited_child_id)}
                         className="px-4 py-2 bg-green-600 text-white text-sm rounded hover:bg-green-700"
                       >
-                        Accept
+                        {t('accept')}
                       </button>
                       <button
                         onClick={() => handleDeclineHangoutInvitation(message.data)}
                         className="px-4 py-2 bg-red-600 text-white text-sm rounded hover:bg-red-700"
                       >
-                        Decline
+                        {t('decline')}
                       </button>
                     </div>
                   </div>
@@ -1710,7 +1754,7 @@ export default function SchedulerPage() {
                 {/* Only show notes if they're not redundant with the main message */}
                 {message.data.notes && message.type !== 'care_request' && (
                   <div className="text-sm text-gray-600">
-                    <p><strong>Notes:</strong> {message.data.notes}</p>
+                    <p><strong>{t('notes')}:</strong> {message.data.notes}</p>
                   </div>
                 )}
               </div>
@@ -1747,8 +1791,6 @@ export default function SchedulerPage() {
   useEffect(() => {
     if (!user) return;
 
-    console.log('📡 Setting up real-time notifications subscription for scheduler page');
-
     const channel = supabase
       .channel('scheduler_notifications_updates')
       .on(
@@ -1760,7 +1802,6 @@ export default function SchedulerPage() {
           filter: `user_id=eq.${user.id}`
         },
         (payload) => {
-          console.log('📬 Scheduler: New notification received, refreshing data...', payload.new);
           // Refresh all data when new notification arrives
           fetchData();
         }
@@ -1768,7 +1809,6 @@ export default function SchedulerPage() {
       .subscribe();
 
     return () => {
-      console.log('📡 Cleaning up real-time notifications subscription');
       supabase.removeChannel(channel);
     };
   }, [user]);
@@ -1813,9 +1853,7 @@ export default function SchedulerPage() {
         setError('User not authenticated');
         return;
       }
-      
-      console.log('Fetching data for user:', user.id);
-      
+
       // Fetch user's groups
       const { data: groupsData, error: groupsError } = await supabase
         .from('group_members')
@@ -1877,9 +1915,6 @@ export default function SchedulerPage() {
         console.error('Error fetching pet care requests:', petRequestsError);
       }
 
-      console.log('🔍 Fetched combined requests:', allRequests);
-      console.log('🔍 Pet requests:', petRequests);
-      console.log('🔍 Child requests:', childRequests);
       setCareRequests(allRequests);
 
       // Fetch CHILD care responses
@@ -1921,10 +1956,6 @@ export default function SchedulerPage() {
       if (petResponsesError) {
         console.error('Error fetching pet care responses:', petResponsesError);
       }
-
-      console.log('🔍 Fetched combined responses:', combinedResponses);
-      console.log('🔍 Pet responses:', petResponses);
-      console.log('🔍 Child responses:', childResponses);
 
       // Also fetch responses to requests I made (for accepting)
       const { data: responsesToMyRequests, error: responsesToMyRequestsError } = await supabase.rpc('get_responses_for_requester', {
@@ -2023,8 +2054,6 @@ export default function SchedulerPage() {
         end_date: r.pet_care_requests.end_date
       }));
 
-      console.log('🔍 Pet responses to my requests:', formattedPetResponsesToMyRequests);
-
       // Fetch my submitted responses (for "My Responses" section)
       const { data: mySubmittedResponses, error: myResponsesError } = await supabase.rpc('get_my_submitted_responses', {
         parent_id: user.id
@@ -2048,12 +2077,12 @@ export default function SchedulerPage() {
         setRescheduleRequests(rescheduleRequestsData || []);
       }
 
-      // Fetch reschedule acceptance/decline notifications
+      // Fetch reschedule acceptance/decline notifications and hangout acceptance notifications
       const { data: rescheduleNotifications, error: rescheduleNotificationsError } = await supabase
         .from('notifications')
         .select('*')
         .eq('user_id', user.id)
-        .in('type', ['reschedule_accepted', 'reschedule_declined', 'reschedule_counter_sent', 'reschedule_counter_accepted', 'reschedule_counter_declined', 'care_declined'])
+        .in('type', ['reschedule_accepted', 'reschedule_declined', 'reschedule_counter_sent', 'reschedule_counter_accepted', 'reschedule_counter_declined', 'care_declined', 'hangout_accepted'])
         .order('created_at', { ascending: false });
 
       if (rescheduleNotificationsError) {
@@ -2062,8 +2091,6 @@ export default function SchedulerPage() {
       } else {
         setRescheduleNotifications(rescheduleNotifications || []);
       }
-
-      console.log('📊 Reschedule notifications fetched:', rescheduleNotifications);
 
       // Merge all responses - only include valid, non-duplicate responses
       const allResponses = [
@@ -2082,9 +2109,6 @@ export default function SchedulerPage() {
         // Remove duplicates based on care_response_id
         return index === self.findIndex(r => r.care_response_id === response.care_response_id);
       });
-
-      console.log('🔍 Final uniqueResponses being set to careResponses:', uniqueResponses);
-      console.log('🔍 Care types in responses:', uniqueResponses.map(r => ({ id: r.care_response_id, care_type: r.care_type })));
 
       setCareResponses(uniqueResponses);
 
@@ -2111,15 +2135,15 @@ export default function SchedulerPage() {
 
       if (blocks && blocks.length > 0) {
         // Navigate with block ID to auto-open
-        window.location.href = `/calendar?date=${date}&selectBlock=${blocks[0].id}`;
+        router.push(`/calendar?date=${date}&selectBlock=${blocks[0].id}`);
       } else {
         // Fallback to just the date
-        window.location.href = `/calendar?date=${date}`;
+        router.push(`/calendar?date=${date}`);
       }
     } catch (err) {
       console.error('Error finding block:', err);
       // Fallback to just the date
-      window.location.href = `/calendar?date=${date}`;
+      router.push(`/calendar?date=${date}`);
     }
   };
 
@@ -2127,10 +2151,6 @@ export default function SchedulerPage() {
     try {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) return;
-
-      console.log('🔍 Debug: Starting fetchChildrenForGroup');
-      console.log('🔍 Debug: groupId =', groupId);
-      console.log('🔍 Debug: user.id =', user.id);
 
       // Try a simpler approach - get children directly with a join
       const { data, error } = await supabase
@@ -2143,15 +2163,12 @@ export default function SchedulerPage() {
         .eq('active', true)
         .eq('children.parent_id', user.id);
 
-      console.log('🔍 Debug: Direct query result:', { data, error });
-
       if (error) {
         console.error('Error fetching children for group:', error);
         return;
       }
 
       if (!data || data.length === 0) {
-        console.log('🔍 Debug: No children found for this user in this group');
         setChildren([]);
         return;
       }
@@ -2162,7 +2179,6 @@ export default function SchedulerPage() {
         group_id: groupId
       }));
 
-      console.log('✅ Children fetched for group:', groupChildren);
       setChildren(groupChildren);
     } catch (err) {
       console.error('Error in fetchChildrenForGroup:', err);
@@ -2173,10 +2189,6 @@ export default function SchedulerPage() {
     try {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) return;
-
-      console.log('🔍 Debug: Starting fetchPetsForGroup');
-      console.log('🔍 Debug: groupId =', groupId);
-      console.log('🔍 Debug: user.id =', user.id);
 
       // Get pets for this user in this group
       const { data, error } = await supabase
@@ -2189,15 +2201,12 @@ export default function SchedulerPage() {
         .eq('active', true)
         .eq('pets.parent_id', user.id);
 
-      console.log('🔍 Debug: Direct query result:', { data, error });
-
       if (error) {
         console.error('Error fetching pets for group:', error);
         return;
       }
 
       if (!data || data.length === 0) {
-        console.log('🔍 Debug: No pets found for this user in this group');
         setPets([]);
         return;
       }
@@ -2209,7 +2218,6 @@ export default function SchedulerPage() {
         group_id: groupId
       }));
 
-      console.log('✅ Pets fetched for group:', groupPets);
       setPets(groupPets);
     } catch (err) {
       console.error('Error in fetchPetsForGroup:', err);
@@ -2244,7 +2252,6 @@ export default function SchedulerPage() {
         parent_id: item.children.parent_id
       }));
 
-      console.log('✅ All children fetched for group:', allChildren);
       setGroupChildren(allChildren);
     } catch (err) {
       console.error('Error in fetchAllGroupChildren:', err);
@@ -2256,10 +2263,6 @@ export default function SchedulerPage() {
     try {
       // If declining, check if it's a counter-proposal first
       if (response === 'declined') {
-        console.log('=== HANDLING RESCHEDULE DECLINE ===');
-        console.log('Care Request ID:', careRequestId);
-        console.log('Care Response ID:', careResponseId);
-
         if (!careRequestId) {
           // Need to look up the care_request_id from the care_response_id
           const { data: responseData, error: responseError } = await supabase
@@ -2290,12 +2293,9 @@ export default function SchedulerPage() {
         }
 
         const isCounterProposal = requestData.counter_proposal_to !== null;
-        console.log('✅ Is counter-proposal:', isCounterProposal);
 
         if (isCounterProposal) {
           // This is a counter-proposal - decline immediately without showing modal
-          console.log('Counter-proposal detected - declining immediately without modal');
-
           const confirmed = window.confirm(
             'Are you sure you want to decline this counter-proposal? The parent will be notified and their selected arrangement will be canceled.'
           );
@@ -2325,7 +2325,6 @@ export default function SchedulerPage() {
           }
 
           const selectedCancellationId = counterResponseData?.selected_cancellation_request_id || null;
-          console.log('Counter-proposer selected cancellation:', selectedCancellationId);
 
           const { data, error } = await supabase.rpc('handle_improved_reschedule_response', {
             p_care_response_id: careResponseId,
@@ -2355,7 +2354,6 @@ export default function SchedulerPage() {
         }
 
         // Not a counter-proposal - show the full modal with decline options
-        console.log('Original reschedule - showing modal with decline options');
         setSelectedRescheduleRequest({
           requestId: careRequestId,
           responseId: careResponseId
@@ -2559,18 +2557,13 @@ export default function SchedulerPage() {
   };
   
   const handleOpenResponseForm = async (request: CareRequest) => {
-    console.log('🐾 Opening response form for request:', request);
-    console.log('🐾 Care type:', request.care_type);
-
     setSelectedRequest(request);
     setShowResponseForm(true);
 
     // Fetch children or pets based on care type
     if (request.care_type === 'pet') {
-      console.log('🐾 Fetching pets for group:', request.group_id);
       await fetchPetsForGroup(request.group_id);
     } else {
-      console.log('👶 Fetching children for group:', request.group_id);
       await fetchChildrenForGroup(request.group_id);
     }
   };
@@ -2642,7 +2635,7 @@ export default function SchedulerPage() {
             p_message_content: notificationMessage
           });
         } catch (notifError) {
-          console.log('Notification failed (non-critical):', notifError);
+          // Notification failed (non-critical)
         }
       }
 
@@ -2675,7 +2668,12 @@ export default function SchedulerPage() {
       const requestId = responseToAccept?.care_request_id;
       const careType = responseToAccept?.care_type; // 'child' or 'pet'
 
-      console.log('🔍 Accepting response:', { responseId, careType, responseToAccept });
+      CounterDebugger.logReciprocalAcceptance(
+        responseId,
+        careType || 'child',
+        responseToAccept?.requester_id || 'unknown',
+        responseToAccept?.responder_id || user?.id || 'unknown'
+      );
 
       // Call the appropriate accept function based on care type
       let error;
@@ -2714,11 +2712,9 @@ export default function SchedulerPage() {
 
       fetchData();
 
-      // Dispatch events to update header counters
-      // Note: Don't mark as read here - the counter logic will handle it based on
-      // whether there are still pending responses for this request
-      window.dispatchEvent(new Event('schedulerCountUpdated'));
-      window.dispatchEvent(new Event('calendarCountUpdated'));
+      // Dispatch event to refresh counters in Header
+      CounterDebugger.logEventDispatch('refreshCounters', 'Scheduler.handleAcceptResponse', { responseId, careType });
+      window.dispatchEvent(new CustomEvent('refreshCounters'));
 
     } catch (err) {
       setError('An unexpected error occurred');
@@ -2769,8 +2765,6 @@ export default function SchedulerPage() {
         console.error('Error sending notification:', notificationError);
         return;
       }
-
-      console.log('Notification sent successfully:', notificationResult);
 
     } catch (error) {
       console.error('Error sending reciprocal acceptance notifications:', error);
@@ -2851,15 +2845,11 @@ export default function SchedulerPage() {
       // Auto-select the first (or only) child
       if (transformedChildren.length > 0) {
         const activeChild = transformedChildren[0]; // Get the first child
-        
-        console.log('🔍 DEBUG: Found children, auto-accepting with:', activeChild);
-        
+
         // Auto-accept with the active child
         await handleAcceptanceSubmit(invitation, activeChild.id);
         return; // Exit early, no need to show selection UI
       }
-      
-      console.log('🔍 DEBUG: No children found, transformedChildren:', transformedChildren);
 
       // Fallback: show selection if no children found
       setAvailableChildren(transformedChildren);
@@ -2872,30 +2862,31 @@ export default function SchedulerPage() {
   const handleAcceptanceSubmit = async (invitation?: any, childId?: string) => {
     // Use passed invitation or fall back to acceptingInvitation state
     const targetInvitation = invitation || acceptingInvitation;
-    
+
     if (!targetInvitation) {
       // No invitation provided
       return;
     }
-    
+
     try {
       setProcessing(true);
-      
+
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) throw new Error('User not authenticated');
 
-      // Log the exact parameters being sent to the function
+      CounterDebugger.logOpenBlockAcceptance(
+        targetInvitation.invitation_id || targetInvitation.care_response_id,
+        user.id,
+        targetInvitation.open_block_parent_id || targetInvitation.requester_id
+      );
+
       const functionParams = {
         p_care_response_id: targetInvitation.care_response_id,
         p_accepting_parent_id: user.id,
         p_accepted_child_id: childId || (availableChildren && availableChildren.length > 0 ? availableChildren[0].id : null)
       };
 
-      console.log('🔍 DEBUG: Calling accept_open_block_invitation with params:', functionParams);
-      
       const { error } = await supabase.rpc('accept_open_block_invitation', functionParams);
-      
-      console.log('🔍 DEBUG: RPC call result - error:', error);
 
       if (!childId && (!availableChildren || availableChildren.length === 0)) {
         throw new Error('No child selected and no children available');
@@ -2909,6 +2900,11 @@ export default function SchedulerPage() {
 
       // Dispatch events to update header counters
       window.dispatchEvent(new CustomEvent('invitationAccepted'));
+      CounterDebugger.logEventDispatch('calendarCountUpdated', 'Scheduler.handleAcceptanceSubmit', {
+        invitationId: targetInvitation.invitation_id,
+        acceptorId: user.id,
+        offererId: targetInvitation.open_block_parent_id
+      });
       window.dispatchEvent(new Event('calendarCountUpdated'));
 
       // Refresh the invitations list
@@ -3018,7 +3014,7 @@ export default function SchedulerPage() {
       // Send notification messages to all group members
       for (const member of groupMembers || []) {
         if (member.profile_id !== acceptingParentId) { // Don't send to the accepting parent
-          const messageContent = `${acceptingParent.full_name} accepted an open block invitation and added ${acceptedChild.full_name} to the care block for ${careBlock.groups.name} on ${formatDateOnly(careBlock.care_date)}.`;
+          const messageContent = `${acceptingParent.full_name} accepted an open block invitation and added ${acceptedChild.full_name} to the care block for ${careBlock.groups.name} on ${formatDateLocalized(careBlock.care_date)}.`;
           
           await supabase.rpc('send_care_response_notifications', {
             p_care_request_id: invitation.care_request_id || 'open_block',
@@ -3029,7 +3025,7 @@ export default function SchedulerPage() {
       }
 
       // Send a specific message to the accepting parent
-      const successMessage = `You successfully accepted the open block invitation and added ${acceptedChild.full_name} to the care block for ${careBlock.groups.name} on ${formatDateOnly(careBlock.care_date)}.`;
+      const successMessage = `You successfully accepted the open block invitation and added ${acceptedChild.full_name} to the care block for ${careBlock.groups.name} on ${formatDateLocalized(careBlock.care_date)}.`;
       
       await supabase.rpc('send_care_response_notifications', {
         p_care_request_id: invitation.care_request_id || 'open_block',
@@ -3061,7 +3057,7 @@ export default function SchedulerPage() {
       const acceptingParentMessage = {
         type: 'open_block_accepted',
         title: `You accepted ${invitation.open_block_parent_name}'s open block offer`,
-        subtitle: `Care block: ${formatDateOnly(invitation.existing_block_date)} from ${formatTime(invitation.existing_block_start_time)} to ${formatTime(getActualEndTime(invitation.notes || '', invitation.existing_block_end_time))}`,
+        subtitle: `Care block: ${formatDateLocalized(invitation.existing_block_date)} from ${formatTime(invitation.existing_block_start_time)} to ${formatTime(getActualEndTime(invitation.notes || '', invitation.existing_block_end_time))}`,
         timestamp: new Date().toISOString(),
         data: {
           invitation,
@@ -3102,8 +3098,6 @@ export default function SchedulerPage() {
         .select('id, request_id, responder_id, status, created_at, block_time_id')
         .eq('responder_id', user.id)
         .eq('status', 'accepted');
-
-      console.log('📊 Raw acceptor responses:', acceptedResponseIds);
 
       // Fetch full details for accepted responses
       const acceptedData = await Promise.all(
@@ -3152,8 +3146,6 @@ export default function SchedulerPage() {
         .select('id, request_id, responder_id, status, created_at, block_time_id')
         .eq('status', 'accepted');
 
-      console.log('📊 Raw provider responses:', providerResponseIds);
-
       // Filter for requests where current user is the requester
       const providerAcceptedData = await Promise.all(
         (providerResponseIds || []).map(async (response: any) => {
@@ -3190,10 +3182,6 @@ export default function SchedulerPage() {
 
       const providerAcceptedDataFiltered = providerAcceptedData.filter(item => item !== null);
 
-      // Debug logging
-      console.log('📊 Provider accepted data:', providerAcceptedDataFiltered);
-      console.log('📊 Acceptor accepted data:', acceptedDataFiltered);
-
       // Get acceptor names separately for provider view
       const providerAcceptedWithNames = await Promise.all(
         providerAcceptedDataFiltered.map(async (item: any) => {
@@ -3210,8 +3198,6 @@ export default function SchedulerPage() {
         })
       );
 
-      console.log('📊 Provider with names:', providerAcceptedWithNames);
-
       // Combine pending and accepted invitations (acceptor view + provider view)
       const allInvitations = [
         ...(pendingData || []),
@@ -3225,7 +3211,6 @@ export default function SchedulerPage() {
         }))
       ];
 
-      console.log('📊 All invitations combined:', allInvitations);
       setInvitations(allInvitations);
     } catch (error) {
       console.error('Error fetching invitations:', error);
@@ -3246,7 +3231,6 @@ export default function SchedulerPage() {
         return;
       }
 
-      console.log('✅ Group invitations fetched:', data);
       setGroupInvitations(data || []);
     } catch (error) {
       console.error('Error fetching group invitations:', error);
@@ -3269,7 +3253,6 @@ export default function SchedulerPage() {
         return;
       }
 
-      console.log('✅ Group invitation accepted:', data);
       showAlertOnce('Group invitation accepted successfully!');
       
       // Refresh the data immediately
@@ -3303,7 +3286,6 @@ export default function SchedulerPage() {
         return;
       }
 
-      console.log('✅ Group invitation declined:', data);
       showAlertOnce('Group invitation declined');
       
       // Refresh the data immediately
@@ -3334,7 +3316,6 @@ export default function SchedulerPage() {
         return;
       }
 
-      console.log('✅ Event invitations fetched:', data);
       setEventInvitations(data || []);
     } catch (error) {
       console.error('Error fetching event invitations:', error);
@@ -3355,7 +3336,6 @@ export default function SchedulerPage() {
         return;
       }
 
-      console.log('✅ Hangout/sleepover invitations fetched:', data);
       setHangoutInvitations(data || []);
     } catch (error) {
       console.error('Error fetching hangout/sleepover invitations:', error);
@@ -3379,11 +3359,13 @@ export default function SchedulerPage() {
         return;
       }
 
-      console.log('✅ Hangout/sleepover invitation accepted:', data);
       showAlertOnce(`${invitation.request_type === 'hangout' ? 'Hangout' : 'Sleepover'} invitation accepted successfully!`);
 
       // Refresh invitations
       await fetchHangoutInvitations();
+
+      // Trigger counter refresh in Header
+      window.dispatchEvent(new CustomEvent('refreshCounters'));
 
     } catch (error) {
       console.error('Error accepting invitation:', error);
@@ -3408,7 +3390,6 @@ export default function SchedulerPage() {
         return;
       }
 
-      console.log('✅ Hangout/sleepover invitation declined:', data);
       showAlertOnce('Invitation declined');
 
       // Refresh invitations
@@ -3438,7 +3419,6 @@ export default function SchedulerPage() {
         return;
       }
 
-      console.log('✅ Event RSVP submitted:', data);
       showAlertOnce(`RSVP submitted: ${responseType}`);
       
       // Refresh the data immediately
@@ -3467,24 +3447,10 @@ export default function SchedulerPage() {
     const readMessages = savedReadMessages ? new Set(JSON.parse(savedReadMessages)) : new Set<string>();
 
     // Messages counter logic - only count unread messages
-    console.log('🔍 Counter Calculation Debug:', {
-      totalCareResponses: careResponses.length,
-      totalCareRequests: careRequests.length,
-      totalInvitations: invitations.length,
-      totalRescheduleRequests: rescheduleRequests.length,
-      totalRescheduleNotifications: rescheduleNotifications.length,
-      readMessagesCount: readMessages.size
-    });
-
     // 1. Pending care requests (reciprocal care requests needing response)
     const pendingCareResponses = careResponses.filter(r =>
       r.status === 'pending' && !readMessages.has(`pending-${r.care_response_id}`)
     );
-    console.log('📊 Pending care responses (unread):', {
-      total: careResponses.filter(r => r.status === 'pending').length,
-      unread: pendingCareResponses.length,
-      data: pendingCareResponses
-    });
     schedulerCount += pendingCareResponses.length;
 
     // 2. Responses to my requests (submitted status)
@@ -3604,10 +3570,22 @@ export default function SchedulerPage() {
       // Save to localStorage
       localStorage.setItem('readSchedulerMessages', JSON.stringify(Array.from(readMessages)));
 
+      // Mark hangout_accepted notifications as read in the database (informational only, no action needed)
+      const hangoutAcceptedNotifications = rescheduleNotifications.filter(n => n.type === 'hangout_accepted' && !n.is_read);
+      if (hangoutAcceptedNotifications.length > 0) {
+        const notificationIds = hangoutAcceptedNotifications.map(n => n.id);
+        supabase
+          .from('notifications')
+          .update({ is_read: true })
+          .in('id', notificationIds)
+          .then(() => {
+            // Trigger counter update to refresh the badge
+            window.dispatchEvent(new CustomEvent('refreshCounters'));
+          });
+      }
+
       // Trigger counter update to refresh the badge
       window.dispatchEvent(new Event('schedulerCountUpdated'));
-
-      console.log('📧 Marked all scheduler messages as read');
     }, 2000); // 2 second delay
 
     return () => clearTimeout(timer);
@@ -3655,13 +3633,12 @@ export default function SchedulerPage() {
   }
                  
                  return (
-    <div className="min-h-screen bg-gray-50">
-      <Header currentPage="scheduler" />
-      <div className="p-6">
+    <Header currentPage="scheduler">
+      <div className="px-4 py-4">
         <div className="max-w-7xl mx-auto">
           {/* Header */}
           <div className="flex justify-between items-center mb-6">
-            <h1 className="text-3xl font-bold text-gray-900">Scheduler</h1>
+            <h1 className="text-3xl font-bold text-gray-900">{t('scheduler')}</h1>
           </div>
 
 
@@ -3669,8 +3646,8 @@ export default function SchedulerPage() {
           <div className="bg-white rounded-lg shadow mb-8">
             <div className="px-6 py-4 border-b border-gray-200">
               <div>
-                <h2 className="text-xl font-semibold text-gray-900">Messages</h2>
-                <p className="text-sm text-gray-600 mt-1">Click any message to expand and take action</p>
+                <h2 className="text-xl font-semibold text-gray-900">{t('messages')}</h2>
+                <p className="text-sm text-gray-600 mt-1">{t('clickMessageToExpand')}</p>
               </div>
             </div>
             <div className="p-6">
@@ -3678,62 +3655,36 @@ export default function SchedulerPage() {
             </div>
           </div>
 
-          {/* Pet Care Requests Section */}
-          <div className="bg-gradient-to-r from-purple-50 to-pink-50 rounded-lg shadow border-2 border-purple-200 mb-8 p-6">
-            <div className="flex items-center justify-between mb-4">
-              <div className="flex items-center space-x-3">
-                <svg className="w-8 h-8 text-purple-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14.828 14.828a4 4 0 01-5.656 0M9 10h.01M15 10h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                </svg>
-                <div>
-                  <h2 className="text-xl font-semibold text-gray-900">Pet Care Requests</h2>
-                  <p className="text-sm text-gray-600">Manage pet care scheduling with other pet owners</p>
-                </div>
-              </div>
-            </div>
-            <div className="bg-white rounded-lg p-4">
-              <p className="text-gray-700 mb-3">
-                Pet care scheduling works just like child care! You can:
-              </p>
-              <ul className="list-disc list-inside space-y-2 text-gray-600 ml-2">
-                <li>Request reciprocal pet care from other pet owners in your groups</li>
-                <li>View and respond to pet care requests in your Messages</li>
-                <li>Track pet care blocks in the <strong>Pet Care</strong> calendar view</li>
-                <li>Multi-day pet sitting support for vacations and trips</li>
-              </ul>
-              <div className="mt-4 p-3 bg-purple-50 border border-purple-200 rounded-md">
-                <p className="text-sm text-purple-800">
-                  <strong>💡 Tip:</strong> Switch to "Pet Care" mode in the Calendar to create new pet care requests and view your pet care schedule!
-                </p>
-              </div>
-            </div>
-          </div>
-
           {/* Reschedule requests are now integrated into the Unified Messages Inbox above */}
 
           {/* New Care Request Modal */}
           {showNewRequestForm && (
-            <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-              <div className="bg-white rounded-lg shadow-xl max-w-2xl w-full mx-4 max-h-[90vh] overflow-y-auto">
-                <div className="px-6 py-4 border-b border-gray-200">
-                  <div className="flex items-center justify-between">
-                    <h2 className="text-xl font-semibold text-gray-900">Create New Care Request</h2>
-                                  <button
-                      onClick={resetNewRequestForm}
-                      className="text-gray-400 hover:text-gray-600"
-                                  >
-                      <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                      </svg>
-                                  </button>
-         </div>
-       </div>
+            <div className="fixed left-0 right-0 bg-black bg-opacity-50 overflow-y-auto" style={{ top: '80px', bottom: '70px', zIndex: 9999 }}>
+              <div className="flex items-start justify-center p-4">
+                <div className="bg-white rounded-lg shadow-xl max-w-2xl w-full">
+                  {/* Fixed Header */}
+                  <div className="px-6 py-4 border-b border-gray-200 sticky top-0 bg-white rounded-t-lg z-10">
+                    <div className="flex items-center justify-between">
+                      <h2 className="text-xl font-semibold text-gray-900">{t('createNewCareRequest')}</h2>
+                      <button
+                        type="button"
+                        onClick={resetNewRequestForm}
+                        className="text-gray-600 hover:text-gray-900 p-2 -mr-2 rounded-full hover:bg-gray-100"
+                      >
+                        <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                        </svg>
+                      </button>
+                    </div>
+                  </div>
 
-       <form onSubmit={handleCreateRequest} className="p-6 space-y-4">
+                  {/* Form Content */}
+                  <form onSubmit={handleCreateRequest}>
+                    <div className="p-6 space-y-4">
   {/* Care Type Selector */}
   <div>
     <label className="block text-sm font-medium text-gray-700 mb-2">
-      Type *
+      {t('type')} *
     </label>
     <div className="grid grid-cols-3 gap-3">
       <button
@@ -3745,7 +3696,7 @@ export default function SchedulerPage() {
             : 'border-gray-300 hover:border-gray-400'
         }`}
       >
-        Care Request
+        {t('careRequestType')}
       </button>
       <button
         type="button"
@@ -3756,7 +3707,7 @@ export default function SchedulerPage() {
             : 'border-gray-300 hover:border-gray-400'
         }`}
       >
-        Hangout
+        {t('hangout')}
       </button>
       <button
         type="button"
@@ -3767,7 +3718,7 @@ export default function SchedulerPage() {
             : 'border-gray-300 hover:border-gray-400'
         }`}
       >
-        Sleepover
+        {t('sleepover')}
       </button>
     </div>
   </div>
@@ -3776,7 +3727,7 @@ export default function SchedulerPage() {
     {/* Date */}
     <div>
       <label className="block text-sm font-medium text-gray-700 mb-1">
-        {newRequest.care_type === 'sleepover' ? 'Start Date *' : 'Date *'}
+        {newRequest.care_type === 'sleepover' ? `${t('startDate')} *` : `${t('date')} *`}
       </label>
       <input
         type="date"
@@ -3793,7 +3744,7 @@ export default function SchedulerPage() {
     {newRequest.care_type === 'sleepover' && (
       <div>
         <label className="block text-sm font-medium text-gray-700 mb-1">
-          End Date *
+          {t('endDate')} *
         </label>
         <input
           type="date"
@@ -3810,7 +3761,7 @@ export default function SchedulerPage() {
     {/* Start Time */}
     <div>
       <label className="block text-sm font-medium text-gray-700 mb-1">
-        Start Time *
+        {t('startTime')} *
       </label>
       <input
         type="time"
@@ -3824,7 +3775,7 @@ export default function SchedulerPage() {
     {/* End Time */}
     <div>
       <label className="block text-sm font-medium text-gray-700 mb-1">
-        End Time *
+        {t('endTime')} *
       </label>
       <input
         type="time"
@@ -3838,7 +3789,7 @@ export default function SchedulerPage() {
     {/* Group */}
     <div>
       <label className="block text-sm font-medium text-gray-700 mb-1">
-        Group *
+        {t('group')} *
       </label>
       <select
         required
@@ -3861,7 +3812,7 @@ export default function SchedulerPage() {
         }}
         className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
       >
-        <option value="">Select a group</option>
+        <option value="">{t('selectGroup')}</option>
         {groups.map(group => (
           <option key={group.id} value={group.id}>
             {group.name}
@@ -3874,7 +3825,7 @@ export default function SchedulerPage() {
     {newRequest.care_type === 'reciprocal' && (
       <div>
         <label className="block text-sm font-medium text-gray-700 mb-1">
-          Child *
+          {t('child')} *
         </label>
         <select
           required
@@ -3885,10 +3836,10 @@ export default function SchedulerPage() {
         >
           <option value="">
             {!newRequest.group_id
-              ? 'Select a group first'
+              ? t('selectGroupFirst')
               : children.length === 0
-              ? 'No active children in this group'
-              : 'Select a child'
+              ? t('noActiveChildrenInGroup')
+              : t('selectChild')
             }
           </option>
           {children.map(child => (
@@ -3905,13 +3856,13 @@ export default function SchedulerPage() {
   {(newRequest.care_type === 'hangout' || newRequest.care_type === 'sleepover') && (
     <div>
       <label className="block text-sm font-medium text-gray-700 mb-2">
-        Hosting Children * (Select your children who will host)
+        {t('hostingChildrenLabel')} * {t('hostingChildrenDesc')}
       </label>
       <div className="border border-gray-300 rounded-md p-3 max-h-40 overflow-y-auto">
         {!newRequest.group_id ? (
-          <p className="text-sm text-gray-500">Select a group first</p>
+          <p className="text-sm text-gray-500">{t('selectGroupFirst')}</p>
         ) : children.length === 0 ? (
-          <p className="text-sm text-gray-500">No children available</p>
+          <p className="text-sm text-gray-500">{t('noChildrenAvailable')}</p>
         ) : (
           <div className="space-y-2">
             {children.map(child => (
@@ -3943,13 +3894,13 @@ export default function SchedulerPage() {
   {(newRequest.care_type === 'hangout' || newRequest.care_type === 'sleepover') && (
     <div>
       <label className="block text-sm font-medium text-gray-700 mb-2">
-        Invited Children * (Select children from the group to invite)
+        {t('invitedChildrenLabel')} * {t('invitedChildrenDesc')}
       </label>
       <div className="border border-gray-300 rounded-md p-3 max-h-40 overflow-y-auto">
         {!newRequest.group_id ? (
-          <p className="text-sm text-gray-500">Select a group first</p>
+          <p className="text-sm text-gray-500">{t('selectGroupFirst')}</p>
         ) : groupChildren.length === 0 ? (
-          <p className="text-sm text-gray-500">No children available in this group</p>
+          <p className="text-sm text-gray-500">{t('noChildrenInThisGroup')}</p>
         ) : (
           <div className="space-y-2">
             {groupChildren
@@ -3982,47 +3933,47 @@ export default function SchedulerPage() {
   {/* Notes */}
   <div>
     <label className="block text-sm font-medium text-gray-700 mb-1">
-      Notes (Optional)
+      {t('notesOptional')}
     </label>
     <textarea
       value={newRequest.notes}
       onChange={(e) => setNewRequest(prev => ({ ...prev, notes: e.target.value }))}
       rows={3}
       className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-      placeholder={
-        newRequest.care_type === 'reciprocal'
-          ? "Any additional details about the care needed..."
-          : `Any additional details about the ${newRequest.care_type}...`
-      }
+      placeholder={t('anyAdditionalNotes')}
     />
   </div>
+                    </div>
 
-  {/* Buttons */}
-  <div className="flex justify-end space-x-3 pt-4">
-    <button
-      type="button"
-      onClick={resetNewRequestForm}
-      className="px-4 py-2 text-gray-700 bg-gray-100 rounded-md hover:bg-gray-200"
-    >
-      Cancel
-    </button>
-    <button
-      type="submit"
-      className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700"
-    >
-      Create {newRequest.care_type === 'reciprocal' ? 'Request' : newRequest.care_type.charAt(0).toUpperCase() + newRequest.care_type.slice(1)}
-    </button>
-  </div>
-</form>
-
-          </div>
-        </div>
-      )}
+                    {/* Footer with Buttons */}
+                    <div className="px-6 py-4 border-t border-gray-200 flex justify-end space-x-3">
+                      <button
+                        type="button"
+                        onClick={resetNewRequestForm}
+                        className="px-4 py-2 text-gray-700 bg-gray-100 rounded-md hover:bg-gray-200"
+                      >
+                        {t('cancel')}
+                      </button>
+                      <button
+                        type="submit"
+                        className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700"
+                      >
+                        {newRequest.care_type === 'reciprocal' ? t('createRequestBtn') :
+                         newRequest.care_type === 'hangout' ? t('createHangoutBtn') :
+                         t('createSleepoverBtn')}
+                      </button>
+                    </div>
+                  </form>
+                </div>
+              </div>
+            </div>
+          )}
 
                     {/* Reciprocal Response Modal */}
           {showResponseForm && selectedRequest && (
-            <div 
-              className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4"
+            <div
+              className="fixed left-0 right-0 bg-black bg-opacity-50 flex items-center justify-center p-4"
+              style={{ top: '145px', bottom: '90px', zIndex: 9999 }}
               onClick={(e) => {
                 if (e.target === e.currentTarget) {
                   setShowResponseForm(false);
@@ -4030,7 +3981,7 @@ export default function SchedulerPage() {
                 }
               }}
             >
-              <div className="bg-white rounded-lg shadow-xl max-w-2xl w-full max-h-[90vh] overflow-y-auto">
+              <div className="bg-white rounded-lg shadow-xl max-w-2xl w-full max-h-full overflow-y-auto">
                 <div className="p-6">
                   <div className="flex items-center justify-between mb-4">
                     <h2 className="text-xl font-semibold text-gray-900">
@@ -4050,9 +4001,9 @@ export default function SchedulerPage() {
                   <div className="mb-4 p-4 bg-gray-50 rounded-lg">
                     <p className="text-sm text-gray-600">
                       <strong>Request:</strong> {selectedRequest.requester_name} needs {selectedRequest.care_type === 'pet' ? 'pet' : 'child'} care on{' '}
-                      {formatDateOnly(selectedRequest.requested_date)} from{' '}
+                      {formatDateLocalized(selectedRequest.requested_date)} from{' '}
                       {formatTime(selectedRequest.start_time)} to {formatTime(getActualEndTime(selectedRequest.notes || '', selectedRequest.end_time))}
-                      {selectedRequest.end_date && ` until ${formatDateOnly(selectedRequest.end_date)}`}
+                      {selectedRequest.end_date && ` until ${formatDateLocalized(selectedRequest.end_date)}`}
                       {selectedRequest.care_type === 'pet' && selectedRequest.pet_name && ` for ${selectedRequest.pet_name}`}
                     </p>
                   </div>
@@ -4225,10 +4176,8 @@ export default function SchedulerPage() {
           )}
 
         </div>
-
-
       </div>
-    </div>
+    </Header>
   );
 }
 

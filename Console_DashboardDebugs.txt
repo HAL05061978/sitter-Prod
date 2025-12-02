@@ -1,0 +1,322 @@
+🔧 Counter Debugger Initialized
+354-fcafd80e591c5ee9.js:1 📝 Available Commands:
+354-fcafd80e591c5ee9.js:1   - CounterDebugger.showHistory() - Show all logged events
+354-fcafd80e591c5ee9.js:1   - CounterDebugger.showCounterFlow() - Show counter update flow
+354-fcafd80e591c5ee9.js:1   - CounterDebugger.showEventDispatches() - Show all window events
+354-fcafd80e591c5ee9.js:1   - CounterDebugger.clear() - Clear event history
+354-fcafd80e591c5ee9.js:1   - CounterDebugger.setEnabled(false) - Disable debugging
+254-71947b2a967a6738.js:8  Multiple GoTrueClient instances detected in the same browser context. It is not an error, but this should be avoided as it may produce undefined behavior when used concurrently under the same storage key.
+tK @ 254-71947b2a967a6738.js:8
+tH @ 254-71947b2a967a6738.js:8
+_initSupabaseAuthClient @ 254-71947b2a967a6738.js:8
+tJ @ 254-71947b2a967a6738.js:8
+tV @ 254-71947b2a967a6738.js:8
+h @ page-43af903fdd7a62a1.js:1
+1557 @ page-43af903fdd7a62a1.js:1
+h @ webpack-5da6660a69bc5e55.js:1
+Promise.then
+633 @ page-43af903fdd7a62a1.js:1
+h @ webpack-5da6660a69bc5e55.js:1
+(anonymous) @ page-43af903fdd7a62a1.js:1
+(anonymous) @ webpack-5da6660a69bc5e55.js:1
+(anonymous) @ page-43af903fdd7a62a1.js:1
+l @ webpack-5da6660a69bc5e55.js:1
+(anonymous) @ webpack-5da6660a69bc5e55.js:1
+(anonymous) @ webpack-5da6660a69bc5e55.js:1
+[NEW] Explain Console errors by using Copilot in Edge: click
+         
+         to explain an error. 
+        Learn more
+        Don't show again
+254-71947b2a967a6738.js:8   GET https://hilkelodfneancwwzvoh.supabase.co/rest/v1/pets?select=*%2Cprofiles%21parent_id%28full_name%29&id=in.%28772c5584-9e20-42ba-8040-45b35dd2047f%2Cb8196fde-f21a-4bd0-9971-54b519f449d2%2Ccf49217b-4c1d-4d90-8f9e-677b8d941cdc%29 400 (Bad Request)
+(anonymous) @ 254-71947b2a967a6738.js:8
+h @ 254-71947b2a967a6738.js:8
+r @ 254-71947b2a967a6738.js:8
+Promise.then
+i @ 254-71947b2a967a6738.js:8
+(anonymous) @ 254-71947b2a967a6738.js:8
+(anonymous) @ 254-71947b2a967a6738.js:8
+then @ 254-71947b2a967a6738.js:1
+254-71947b2a967a6738.js:8   GET https://hilkelodfneancwwzvoh.supabase.co/rest/v1/pets?select=*%2Cprofiles%21parent_id%28full_name%29&id=in.%28772c5584-9e20-42ba-8040-45b35dd2047f%2Cb8196fde-f21a-4bd0-9971-54b519f449d2%2Ccf49217b-4c1d-4d90-8f9e-677b8d941cdc%29 400 (Bad Request)
+(anonymous) @ 254-71947b2a967a6738.js:8
+h @ 254-71947b2a967a6738.js:8
+r @ 254-71947b2a967a6738.js:8
+Promise.then
+i @ 254-71947b2a967a6738.js:8
+(anonymous) @ 254-71947b2a967a6738.js:8
+(anonymous) @ 254-71947b2a967a6738.js:8
+then @ 254-71947b2a967a6738.js:1
+254-71947b2a967a6738.js:8   GET https://hilkelodfneancwwzvoh.supabase.co/rest/v1/pets?select=*%2Cprofiles%21parent_id%28full_name%29&id=in.%28772c5584-9e20-42ba-8040-45b35dd2047f%2Cb8196fde-f21a-4bd0-9971-54b519f449d2%2Ccf49217b-4c1d-4d90-8f9e-677b8d941cdc%29 400 (Bad Request)
+(anonymous) @ 254-71947b2a967a6738.js:8
+h @ 254-71947b2a967a6738.js:8
+r @ 254-71947b2a967a6738.js:8
+Promise.then
+i @ 254-71947b2a967a6738.js:8
+(anonymous) @ 254-71947b2a967a6738.js:8
+(anonymous) @ 254-71947b2a967a6738.js:8
+then @ 254-71947b2a967a6738.js:1
+354-fcafd80e591c5ee9.js:1 🔄 [+1.77s] FETCHING SCHEDULER Counter {reason: 'Header.fetchSchedulerMessagesCount', userId: '88416767-8bca-46c7-9dd3-f191a134b46b'}
+354-fcafd80e591c5ee9.js:1 🔄 [+1.77s] FETCHING CALENDAR Counter {reason: 'Header.fetchNewCalendarBlocksCount', userId: '88416767-8bca-46c7-9dd3-f191a134b46b'}
+354-fcafd80e591c5ee9.js:1 🔄 [+1.85s] FETCHING SCHEDULER Counter {reason: 'Header.fetchSchedulerMessagesCount', userId: '88416767-8bca-46c7-9dd3-f191a134b46b'}
+354-fcafd80e591c5ee9.js:1 🔄 [+1.85s] FETCHING CALENDAR Counter {reason: 'Header.fetchNewCalendarBlocksCount', userId: '88416767-8bca-46c7-9dd3-f191a134b46b'}
+354-fcafd80e591c5ee9.js:1 📊 [+1.88s] CALENDAR Counter Calculated {finalCount: 0, breakdown: {…}}
+254-71947b2a967a6738.js:8   GET https://hilkelodfneancwwzvoh.supabase.co/rest/v1/pets?select=*%2Cprofiles%21parent_id%28full_name%29&id=in.%28772c5584-9e20-42ba-8040-45b35dd2047f%2Cb8196fde-f21a-4bd0-9971-54b519f449d2%2Ccf49217b-4c1d-4d90-8f9e-677b8d941cdc%29 400 (Bad Request)
+(anonymous) @ 254-71947b2a967a6738.js:8
+h @ 254-71947b2a967a6738.js:8
+r @ 254-71947b2a967a6738.js:8
+Promise.then
+i @ 254-71947b2a967a6738.js:8
+(anonymous) @ 254-71947b2a967a6738.js:8
+(anonymous) @ 254-71947b2a967a6738.js:8
+then @ 254-71947b2a967a6738.js:1
+354-fcafd80e591c5ee9.js:1 📊 [+1.94s] CALENDAR Counter Calculated {finalCount: 0, breakdown: {…}}
+254-71947b2a967a6738.js:8   POST https://hilkelodfneancwwzvoh.supabase.co/rest/v1/rpc/get_pet_care_responses_for_requester 400 (Bad Request)
+(anonymous) @ 254-71947b2a967a6738.js:8
+h @ 254-71947b2a967a6738.js:8
+r @ 254-71947b2a967a6738.js:8
+Promise.then
+i @ 254-71947b2a967a6738.js:8
+(anonymous) @ 254-71947b2a967a6738.js:8
+(anonymous) @ 254-71947b2a967a6738.js:8
+then @ 254-71947b2a967a6738.js:1
+117-3207f477e257d3c4.js:1  ❌ [+2.42s] DATABASE ERROR {operation: 'get_pet_care_responses_for_requester', functionName: 'get_pet_care_responses_for_requester', error: {…}}
+(anonymous) @ 117-3207f477e257d3c4.js:1
+logDatabaseError @ 354-fcafd80e591c5ee9.js:1
+b @ 354-fcafd80e591c5ee9.js:1
+await in b
+(anonymous) @ 354-fcafd80e591c5ee9.js:1
+Promise.then
+(anonymous) @ 354-fcafd80e591c5ee9.js:1
+aW @ fd9d1056-8cea67e50a752b32.js:1
+oe @ fd9d1056-8cea67e50a752b32.js:1
+ol @ fd9d1056-8cea67e50a752b32.js:1
+or @ fd9d1056-8cea67e50a752b32.js:1
+ol @ fd9d1056-8cea67e50a752b32.js:1
+or @ fd9d1056-8cea67e50a752b32.js:1
+ol @ fd9d1056-8cea67e50a752b32.js:1
+or @ fd9d1056-8cea67e50a752b32.js:1
+ol @ fd9d1056-8cea67e50a752b32.js:1
+or @ fd9d1056-8cea67e50a752b32.js:1
+ol @ fd9d1056-8cea67e50a752b32.js:1
+or @ fd9d1056-8cea67e50a752b32.js:1
+ol @ fd9d1056-8cea67e50a752b32.js:1
+or @ fd9d1056-8cea67e50a752b32.js:1
+ol @ fd9d1056-8cea67e50a752b32.js:1
+or @ fd9d1056-8cea67e50a752b32.js:1
+ol @ fd9d1056-8cea67e50a752b32.js:1
+or @ fd9d1056-8cea67e50a752b32.js:1
+ol @ fd9d1056-8cea67e50a752b32.js:1
+or @ fd9d1056-8cea67e50a752b32.js:1
+ol @ fd9d1056-8cea67e50a752b32.js:1
+or @ fd9d1056-8cea67e50a752b32.js:1
+ol @ fd9d1056-8cea67e50a752b32.js:1
+or @ fd9d1056-8cea67e50a752b32.js:1
+ol @ fd9d1056-8cea67e50a752b32.js:1
+or @ fd9d1056-8cea67e50a752b32.js:1
+ol @ fd9d1056-8cea67e50a752b32.js:1
+or @ fd9d1056-8cea67e50a752b32.js:1
+ol @ fd9d1056-8cea67e50a752b32.js:1
+or @ fd9d1056-8cea67e50a752b32.js:1
+ol @ fd9d1056-8cea67e50a752b32.js:1
+or @ fd9d1056-8cea67e50a752b32.js:1
+ol @ fd9d1056-8cea67e50a752b32.js:1
+or @ fd9d1056-8cea67e50a752b32.js:1
+ol @ fd9d1056-8cea67e50a752b32.js:1
+or @ fd9d1056-8cea67e50a752b32.js:1
+ol @ fd9d1056-8cea67e50a752b32.js:1
+or @ fd9d1056-8cea67e50a752b32.js:1
+ol @ fd9d1056-8cea67e50a752b32.js:1
+or @ fd9d1056-8cea67e50a752b32.js:1
+ol @ fd9d1056-8cea67e50a752b32.js:1
+or @ fd9d1056-8cea67e50a752b32.js:1
+ol @ fd9d1056-8cea67e50a752b32.js:1
+or @ fd9d1056-8cea67e50a752b32.js:1
+ol @ fd9d1056-8cea67e50a752b32.js:1
+or @ fd9d1056-8cea67e50a752b32.js:1
+ol @ fd9d1056-8cea67e50a752b32.js:1
+or @ fd9d1056-8cea67e50a752b32.js:1
+ol @ fd9d1056-8cea67e50a752b32.js:1
+or @ fd9d1056-8cea67e50a752b32.js:1
+ol @ fd9d1056-8cea67e50a752b32.js:1
+or @ fd9d1056-8cea67e50a752b32.js:1
+ol @ fd9d1056-8cea67e50a752b32.js:1
+or @ fd9d1056-8cea67e50a752b32.js:1
+ol @ fd9d1056-8cea67e50a752b32.js:1
+or @ fd9d1056-8cea67e50a752b32.js:1
+ol @ fd9d1056-8cea67e50a752b32.js:1
+or @ fd9d1056-8cea67e50a752b32.js:1
+ol @ fd9d1056-8cea67e50a752b32.js:1
+or @ fd9d1056-8cea67e50a752b32.js:1
+ol @ fd9d1056-8cea67e50a752b32.js:1
+or @ fd9d1056-8cea67e50a752b32.js:1
+ol @ fd9d1056-8cea67e50a752b32.js:1
+or @ fd9d1056-8cea67e50a752b32.js:1
+ol @ fd9d1056-8cea67e50a752b32.js:1
+or @ fd9d1056-8cea67e50a752b32.js:1
+ol @ fd9d1056-8cea67e50a752b32.js:1
+or @ fd9d1056-8cea67e50a752b32.js:1
+ol @ fd9d1056-8cea67e50a752b32.js:1
+or @ fd9d1056-8cea67e50a752b32.js:1
+ol @ fd9d1056-8cea67e50a752b32.js:1
+or @ fd9d1056-8cea67e50a752b32.js:1
+ol @ fd9d1056-8cea67e50a752b32.js:1
+or @ fd9d1056-8cea67e50a752b32.js:1
+ol @ fd9d1056-8cea67e50a752b32.js:1
+or @ fd9d1056-8cea67e50a752b32.js:1
+ol @ fd9d1056-8cea67e50a752b32.js:1
+or @ fd9d1056-8cea67e50a752b32.js:1
+ol @ fd9d1056-8cea67e50a752b32.js:1
+or @ fd9d1056-8cea67e50a752b32.js:1
+ol @ fd9d1056-8cea67e50a752b32.js:1
+or @ fd9d1056-8cea67e50a752b32.js:1
+ol @ fd9d1056-8cea67e50a752b32.js:1
+or @ fd9d1056-8cea67e50a752b32.js:1
+ol @ fd9d1056-8cea67e50a752b32.js:1
+or @ fd9d1056-8cea67e50a752b32.js:1
+ol @ fd9d1056-8cea67e50a752b32.js:1
+or @ fd9d1056-8cea67e50a752b32.js:1
+ol @ fd9d1056-8cea67e50a752b32.js:1
+or @ fd9d1056-8cea67e50a752b32.js:1
+ol @ fd9d1056-8cea67e50a752b32.js:1
+or @ fd9d1056-8cea67e50a752b32.js:1
+ol @ fd9d1056-8cea67e50a752b32.js:1
+or @ fd9d1056-8cea67e50a752b32.js:1
+ol @ fd9d1056-8cea67e50a752b32.js:1
+or @ fd9d1056-8cea67e50a752b32.js:1
+ol @ fd9d1056-8cea67e50a752b32.js:1
+or @ fd9d1056-8cea67e50a752b32.js:1
+ol @ fd9d1056-8cea67e50a752b32.js:1
+or @ fd9d1056-8cea67e50a752b32.js:1
+ol @ fd9d1056-8cea67e50a752b32.js:1
+or @ fd9d1056-8cea67e50a752b32.js:1
+ol @ fd9d1056-8cea67e50a752b32.js:1
+or @ fd9d1056-8cea67e50a752b32.js:1
+ol @ fd9d1056-8cea67e50a752b32.js:1
+id @ fd9d1056-8cea67e50a752b32.js:1
+o @ fd9d1056-8cea67e50a752b32.js:1
+M @ 117-3207f477e257d3c4.js:1
+254-71947b2a967a6738.js:8   POST https://hilkelodfneancwwzvoh.supabase.co/rest/v1/rpc/get_pet_care_responses_for_requester 400 (Bad Request)
+(anonymous) @ 254-71947b2a967a6738.js:8
+h @ 254-71947b2a967a6738.js:8
+r @ 254-71947b2a967a6738.js:8
+Promise.then
+i @ 254-71947b2a967a6738.js:8
+(anonymous) @ 254-71947b2a967a6738.js:8
+(anonymous) @ 254-71947b2a967a6738.js:8
+then @ 254-71947b2a967a6738.js:1
+117-3207f477e257d3c4.js:1  ❌ [+2.43s] DATABASE ERROR {operation: 'get_pet_care_responses_for_requester', functionName: 'get_pet_care_responses_for_requester', error: {…}}
+(anonymous) @ 117-3207f477e257d3c4.js:1
+logDatabaseError @ 354-fcafd80e591c5ee9.js:1
+b @ 354-fcafd80e591c5ee9.js:1
+await in b
+(anonymous) @ 354-fcafd80e591c5ee9.js:1
+aW @ fd9d1056-8cea67e50a752b32.js:1
+oe @ fd9d1056-8cea67e50a752b32.js:1
+ol @ fd9d1056-8cea67e50a752b32.js:1
+or @ fd9d1056-8cea67e50a752b32.js:1
+ol @ fd9d1056-8cea67e50a752b32.js:1
+or @ fd9d1056-8cea67e50a752b32.js:1
+ol @ fd9d1056-8cea67e50a752b32.js:1
+or @ fd9d1056-8cea67e50a752b32.js:1
+ol @ fd9d1056-8cea67e50a752b32.js:1
+or @ fd9d1056-8cea67e50a752b32.js:1
+ol @ fd9d1056-8cea67e50a752b32.js:1
+or @ fd9d1056-8cea67e50a752b32.js:1
+ol @ fd9d1056-8cea67e50a752b32.js:1
+or @ fd9d1056-8cea67e50a752b32.js:1
+ol @ fd9d1056-8cea67e50a752b32.js:1
+or @ fd9d1056-8cea67e50a752b32.js:1
+ol @ fd9d1056-8cea67e50a752b32.js:1
+or @ fd9d1056-8cea67e50a752b32.js:1
+ol @ fd9d1056-8cea67e50a752b32.js:1
+or @ fd9d1056-8cea67e50a752b32.js:1
+ol @ fd9d1056-8cea67e50a752b32.js:1
+or @ fd9d1056-8cea67e50a752b32.js:1
+ol @ fd9d1056-8cea67e50a752b32.js:1
+or @ fd9d1056-8cea67e50a752b32.js:1
+ol @ fd9d1056-8cea67e50a752b32.js:1
+or @ fd9d1056-8cea67e50a752b32.js:1
+ol @ fd9d1056-8cea67e50a752b32.js:1
+or @ fd9d1056-8cea67e50a752b32.js:1
+ol @ fd9d1056-8cea67e50a752b32.js:1
+or @ fd9d1056-8cea67e50a752b32.js:1
+ol @ fd9d1056-8cea67e50a752b32.js:1
+or @ fd9d1056-8cea67e50a752b32.js:1
+ol @ fd9d1056-8cea67e50a752b32.js:1
+or @ fd9d1056-8cea67e50a752b32.js:1
+ol @ fd9d1056-8cea67e50a752b32.js:1
+or @ fd9d1056-8cea67e50a752b32.js:1
+ol @ fd9d1056-8cea67e50a752b32.js:1
+or @ fd9d1056-8cea67e50a752b32.js:1
+ol @ fd9d1056-8cea67e50a752b32.js:1
+or @ fd9d1056-8cea67e50a752b32.js:1
+ol @ fd9d1056-8cea67e50a752b32.js:1
+or @ fd9d1056-8cea67e50a752b32.js:1
+ol @ fd9d1056-8cea67e50a752b32.js:1
+or @ fd9d1056-8cea67e50a752b32.js:1
+ol @ fd9d1056-8cea67e50a752b32.js:1
+or @ fd9d1056-8cea67e50a752b32.js:1
+ol @ fd9d1056-8cea67e50a752b32.js:1
+or @ fd9d1056-8cea67e50a752b32.js:1
+ol @ fd9d1056-8cea67e50a752b32.js:1
+or @ fd9d1056-8cea67e50a752b32.js:1
+ol @ fd9d1056-8cea67e50a752b32.js:1
+or @ fd9d1056-8cea67e50a752b32.js:1
+ol @ fd9d1056-8cea67e50a752b32.js:1
+or @ fd9d1056-8cea67e50a752b32.js:1
+ol @ fd9d1056-8cea67e50a752b32.js:1
+or @ fd9d1056-8cea67e50a752b32.js:1
+ol @ fd9d1056-8cea67e50a752b32.js:1
+or @ fd9d1056-8cea67e50a752b32.js:1
+ol @ fd9d1056-8cea67e50a752b32.js:1
+or @ fd9d1056-8cea67e50a752b32.js:1
+ol @ fd9d1056-8cea67e50a752b32.js:1
+or @ fd9d1056-8cea67e50a752b32.js:1
+ol @ fd9d1056-8cea67e50a752b32.js:1
+or @ fd9d1056-8cea67e50a752b32.js:1
+ol @ fd9d1056-8cea67e50a752b32.js:1
+or @ fd9d1056-8cea67e50a752b32.js:1
+ol @ fd9d1056-8cea67e50a752b32.js:1
+or @ fd9d1056-8cea67e50a752b32.js:1
+ol @ fd9d1056-8cea67e50a752b32.js:1
+or @ fd9d1056-8cea67e50a752b32.js:1
+ol @ fd9d1056-8cea67e50a752b32.js:1
+or @ fd9d1056-8cea67e50a752b32.js:1
+ol @ fd9d1056-8cea67e50a752b32.js:1
+or @ fd9d1056-8cea67e50a752b32.js:1
+ol @ fd9d1056-8cea67e50a752b32.js:1
+or @ fd9d1056-8cea67e50a752b32.js:1
+ol @ fd9d1056-8cea67e50a752b32.js:1
+or @ fd9d1056-8cea67e50a752b32.js:1
+ol @ fd9d1056-8cea67e50a752b32.js:1
+or @ fd9d1056-8cea67e50a752b32.js:1
+ol @ fd9d1056-8cea67e50a752b32.js:1
+or @ fd9d1056-8cea67e50a752b32.js:1
+ol @ fd9d1056-8cea67e50a752b32.js:1
+or @ fd9d1056-8cea67e50a752b32.js:1
+ol @ fd9d1056-8cea67e50a752b32.js:1
+or @ fd9d1056-8cea67e50a752b32.js:1
+ol @ fd9d1056-8cea67e50a752b32.js:1
+or @ fd9d1056-8cea67e50a752b32.js:1
+ol @ fd9d1056-8cea67e50a752b32.js:1
+or @ fd9d1056-8cea67e50a752b32.js:1
+ol @ fd9d1056-8cea67e50a752b32.js:1
+or @ fd9d1056-8cea67e50a752b32.js:1
+ol @ fd9d1056-8cea67e50a752b32.js:1
+or @ fd9d1056-8cea67e50a752b32.js:1
+ol @ fd9d1056-8cea67e50a752b32.js:1
+or @ fd9d1056-8cea67e50a752b32.js:1
+ol @ fd9d1056-8cea67e50a752b32.js:1
+or @ fd9d1056-8cea67e50a752b32.js:1
+ol @ fd9d1056-8cea67e50a752b32.js:1
+or @ fd9d1056-8cea67e50a752b32.js:1
+ol @ fd9d1056-8cea67e50a752b32.js:1
+or @ fd9d1056-8cea67e50a752b32.js:1
+ol @ fd9d1056-8cea67e50a752b32.js:1
+or @ fd9d1056-8cea67e50a752b32.js:1
+ol @ fd9d1056-8cea67e50a752b32.js:1
+id @ fd9d1056-8cea67e50a752b32.js:1
+o @ fd9d1056-8cea67e50a752b32.js:1
+M @ 117-3207f477e257d3c4.js:1
+354-fcafd80e591c5ee9.js:1 📊 [+2.66s] SCHEDULER Counter Calculated {finalCount: 0, breakdown: {…}}
+354-fcafd80e591c5ee9.js:1 📊 [+2.75s] SCHEDULER Counter Calculated {finalCount: 0, breakdown: {…}}

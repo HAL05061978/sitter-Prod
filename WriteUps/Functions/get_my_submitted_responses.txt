@@ -1,0 +1,37 @@
+CREATE OR REPLACE FUNCTION public.get_my_submitted_responses(parent_id uuid)
+ RETURNS TABLE(care_response_id uuid, care_request_id uuid, group_id uuid, group_name text, requester_id uuid, requester_name text, requested_date date, start_time time without time zone, end_time time without time zone, notes text, status text, created_at timestamp with time zone, reciprocal_date date, reciprocal_start_time time without time zone, reciprocal_end_time time without time zone, response_notes text, reciprocal_child_id uuid)
+ LANGUAGE plpgsql
+ SECURITY DEFINER
+AS $function$
+BEGIN
+    RETURN QUERY
+    SELECT 
+        cr.id as care_response_id,
+        cr.request_id as care_request_id,
+        cq.group_id,
+        g.name as group_name,
+        cq.requester_id,  -- This is UUID, not TEXT
+        p.full_name as requester_name,
+        cq.requested_date,
+        cq.start_time,
+        cq.end_time,
+        cq.notes,
+        cr.status,
+        cr.created_at,
+        cr.reciprocal_date,
+        cr.reciprocal_start_time,
+        cr.reciprocal_end_time,
+        cr.response_notes,
+        cr.reciprocal_child_id
+    FROM care_responses cr
+    JOIN care_requests cq ON cr.request_id = cq.id
+    JOIN groups g ON cq.group_id = g.id
+    JOIN profiles p ON cq.requester_id = p.id
+    WHERE cr.responder_id = get_my_submitted_responses.parent_id  -- Use function parameter explicitly
+    AND cr.response_type = 'pending'
+    AND cr.status = 'submitted'
+    AND cq.request_type = 'reciprocal'
+    AND cq.requester_id != get_my_submitted_responses.parent_id  -- Don't show responses to own requests
+    ORDER BY cr.created_at DESC;
+END;
+$function$

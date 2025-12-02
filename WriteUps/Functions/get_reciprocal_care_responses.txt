@@ -1,0 +1,33 @@
+
+BEGIN
+    RETURN QUERY
+    SELECT
+        cr.id as care_response_id,
+        cq.id as care_request_id,
+        cq.group_id,
+        g.name as group_name,
+        cq.requester_id,
+        p.full_name as requester_name,
+        cq.requested_date,
+        cq.start_time,
+        cq.end_time,
+        cq.notes,
+        cr.status,
+        cr.created_at,
+        cr.reciprocal_date,
+        cr.reciprocal_start_time,
+        cr.reciprocal_end_time,
+        cr.response_notes,
+        cr.responder_id,
+        rp.full_name as responder_name
+    FROM care_responses cr
+    JOIN care_requests cq ON cr.request_id = cq.id
+    JOIN groups g ON cq.group_id = g.id
+    JOIN profiles p ON cq.requester_id = p.id
+    LEFT JOIN profiles rp ON cr.responder_id = rp.id
+    WHERE cq.requester_id = parent_id
+    AND cr.response_type = 'pending'
+    AND cr.status IN ('pending', 'submitted', 'accepted', 'declined')  -- ADDED 'pending' here
+    AND cq.request_type = 'reciprocal'
+    ORDER BY cr.created_at DESC;
+END;

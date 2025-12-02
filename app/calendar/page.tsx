@@ -8,6 +8,9 @@ import { supabase } from '../lib/supabase';
 import { formatDateOnly, formatTime, parseDateSafely, normalizeDateForCalendar, formatDateForInput } from '../lib/date-utils';
 import RescheduleModal from '../../components/care/RescheduleModal';
 import LocationTrackingPanel from '../../components/care/LocationTrackingPanel';
+// DateRangePicker removed - using native date inputs for consistency
+import { useSwipeable } from 'react-swipeable';
+import { useTranslation } from 'react-i18next';
 
 interface ScheduledCare {
   id: string;
@@ -33,10 +36,13 @@ interface ScheduledCare {
   care_category?: 'child' | 'pet'; // Distinguish child vs pet care
   pet_name?: string; // For pet care blocks
   pet_species?: string; // For pet care blocks
+  has_unseen_updates?: boolean; // Track if block has unseen updates (photos/notes)
+  last_updated_at?: string;
+  last_updated_by?: string;
 }
 
 interface NewRequestData {
-  type: 'care' | 'hangout' | 'sleepover';
+  type: 'care' | 'hangout' | 'sleepover' | 'pet_care';
   group_id: string;
   child_id: string;
   pet_id?: string; // For pet care requests
@@ -52,8 +58,14 @@ interface NewRequestData {
 // Helper component for location tracking
 // SIMPLIFIED: Just pass the current user and care block info
 function LocationTrackingComponent({ selectedCare }: { selectedCare: ScheduledCare }) {
+  const { t, i18n } = useTranslation();
   const [user, setUser] = useState<any>(null);
   const [loading, setLoading] = useState(true);
+
+  // Helper to format date with current language
+  const formatDateLocalized = (dateString: string | Date) => {
+    return formatDateOnly(dateString, i18n.language);
+  };
 
   useEffect(() => {
     loadUser();
@@ -73,7 +85,7 @@ function LocationTrackingComponent({ selectedCare }: { selectedCare: ScheduledCa
 
   if (!user || loading) return (
     <div className="mt-6 pt-6 border-t border-gray-200 text-center py-4">
-      <p className="text-gray-500">Loading location tracking...</p>
+      <p className="text-gray-500">{t('loadingLocationTracking')}</p>
     </div>
   );
 
@@ -86,7 +98,7 @@ function LocationTrackingComponent({ selectedCare }: { selectedCare: ScheduledCa
         scheduledCareId={selectedCare.id}
         currentUserId={user.id}
         isProvider={isProvider}
-        careDate={formatDateOnly(selectedCare.care_date)}
+        careDate={formatDateLocalized(selectedCare.care_date)}
         startTime={formatTime(selectedCare.start_time)}
         endTime={formatTime(selectedCare.end_time)}
       />
@@ -95,6 +107,20 @@ function LocationTrackingComponent({ selectedCare }: { selectedCare: ScheduledCa
 }
 
 function CalendarPageContent() {
+  const { t, i18n } = useTranslation();
+
+  // Helper to get translated month name
+  const getTranslatedMonth = (date: Date) => {
+    const monthKeys = ['january', 'february', 'march', 'april', 'may', 'june',
+                       'july', 'august', 'september', 'october', 'november', 'december'];
+    return t(monthKeys[date.getMonth()]);
+  };
+
+  // Helper to format date with current language
+  const formatDateLocalized = (dateString: string | Date) => {
+    return formatDateOnly(dateString, i18n.language);
+  };
+
   const [currentDate, setCurrentDate] = useState(new Date());
   const [careFilter, setCareFilter] = useState<'all' | 'children' | 'pets'>('all'); // Filter for displaying blocks
 
@@ -201,9 +227,7 @@ function CalendarPageContent() {
         const currentHour = now.getHours();
         scrollToHour = Math.max(6, currentHour + 1); // Next hour, but not before 6am
       }
-      
-      console.log('🔍 Auto-scrolling to hour:', scrollToHour, 'for date:', selectedDate, 'isToday:', isToday);
-      
+
       setTimeout(() => {
         const hourElement = document.getElementById(`hour-${scrollToHour}`);
         if (hourElement) {
@@ -260,8 +284,6 @@ function CalendarPageContent() {
 
           if (error) {
             console.error('Error marking care_accepted notifications as read:', error);
-          } else {
-            console.log('✅ Marked care_accepted notifications as read');
           }
         }
       } catch (error) {
@@ -270,8 +292,6 @@ function CalendarPageContent() {
 
       // Trigger counter update
       window.dispatchEvent(new Event('calendarCountUpdated'));
-
-      console.log('📅 Marked calendar blocks as seen');
     }, 2000); // 2 second delay
 
     return () => clearTimeout(timer);
@@ -280,7 +300,6 @@ function CalendarPageContent() {
   // Listen for care notes updates from other users
   useEffect(() => {
     const handleCareNotesUpdated = (event: CustomEvent) => {
-      console.log('Received care notes update event:', event.detail);
       // Refresh the calendar data when notes are updated
       fetchScheduledCare();
     };
@@ -296,14 +315,13 @@ function CalendarPageContent() {
   useEffect(() => {
     const channel = supabase
       .channel('scheduled_care_changes')
-      .on('postgres_changes', 
-        { 
-          event: 'UPDATE', 
-          schema: 'public', 
-          table: 'scheduled_care' 
-        }, 
+      .on('postgres_changes',
+        {
+          event: 'UPDATE',
+          schema: 'public',
+          table: 'scheduled_care'
+        },
         (payload) => {
-          console.log('Real-time update received:', payload);
           // Refresh the calendar data when scheduled_care records are updated
           fetchScheduledCare();
         }
@@ -314,6 +332,48 @@ function CalendarPageContent() {
       supabase.removeChannel(channel);
     };
   }, []);
+
+  // Mark block as viewed when detail modal opens (to clear unseen updates indicator)
+  useEffect(() => {
+    const markBlockAsViewed = async () => {
+      if (showDetailModal && selectedCare && selectedCare.has_unseen_updates) {
+        try {
+          const { data: { user } } = await supabase.auth.getUser();
+          if (!user) return;
+
+          // Call the appropriate function based on care category
+          if (selectedCare.care_category === 'pet') {
+            await supabase.rpc('mark_scheduled_pet_care_viewed', {
+              p_scheduled_pet_care_id: selectedCare.id,
+              p_user_id: user.id
+            });
+          } else {
+            await supabase.rpc('mark_scheduled_care_viewed', {
+              p_scheduled_care_id: selectedCare.id,
+              p_user_id: user.id
+            });
+          }
+
+          // Update local state to remove the unseen indicator
+          setScheduledCare(prev => prev.map(care =>
+            care.id === selectedCare.id
+              ? { ...care, has_unseen_updates: false }
+              : care
+          ));
+
+          // Also update selectedCare to reflect the change
+          setSelectedCare(prev => prev ? { ...prev, has_unseen_updates: false } : null);
+
+          // Trigger header counter refresh
+          window.dispatchEvent(new CustomEvent('calendarBlockViewed'));
+        } catch (error) {
+          console.error('Error marking block as viewed:', error);
+        }
+      }
+    };
+
+    markBlockAsViewed();
+  }, [showDetailModal, selectedCare?.id]);
 
   // Fetch children when group changes
   useEffect(() => {
@@ -488,13 +548,20 @@ function CalendarPageContent() {
         .from('care-photos')
         .getPublicUrl(fileName);
 
-      // Update scheduled_care record with new photo URL
+      // Update scheduled_care or scheduled_pet_care record with new photo URL
       const currentPhotos = selectedCare.photo_urls || [];
       const updatedPhotos = [...currentPhotos, publicUrl];
 
+      // Determine which table to update based on care category
+      const tableName = selectedCare.care_category === 'pet' ? 'scheduled_pet_care' : 'scheduled_care';
+
       const { error: updateError } = await supabase
-        .from('scheduled_care')
-        .update({ photo_urls: updatedPhotos })
+        .from(tableName)
+        .update({
+          photo_urls: updatedPhotos,
+          last_updated_by: user.id,
+          last_updated_at: new Date().toISOString()
+        })
         .eq('id', selectedCare.id);
 
       if (updateError) {
@@ -558,16 +625,49 @@ function CalendarPageContent() {
         return;
       }
 
-      // Update database
+      // Update database - use correct table based on care category
       const updatedPhotos = (selectedCare.photo_urls || []).filter(url => url !== photoUrl);
-      const { error: updateError } = await supabase
-        .from('scheduled_care')
-        .update({ photo_urls: updatedPhotos })
-        .eq('id', selectedCare.id);
+      const tableName = selectedCare.care_category === 'pet' ? 'scheduled_pet_care' : 'scheduled_care';
 
-      if (updateError) {
-        console.error('Error updating photo URLs:', updateError);
-        return;
+      // Get current user for tracking updates
+      const { data: { user: currentUser } } = await supabase.auth.getUser();
+      const updateData = {
+        photo_urls: updatedPhotos,
+        last_updated_by: currentUser?.id,
+        last_updated_at: new Date().toISOString()
+      };
+
+      // For reciprocal care (provided), also update the related receiver block
+      if (selectedCare.care_type === 'provided') {
+        // Update provider's block
+        const { error: updateError } = await supabase
+          .from(tableName)
+          .update(updateData)
+          .eq('id', selectedCare.id);
+
+        if (updateError) {
+          console.error('Error updating photo URLs:', updateError);
+          return;
+        }
+
+        // Also update the receiver's related block
+        await supabase
+          .from(tableName)
+          .update(updateData)
+          .eq('related_request_id', selectedCare.related_request_id)
+          .in('care_type', ['needed', 'received'])
+          .neq('id', selectedCare.id);
+      } else {
+        // For non-reciprocal care, just update the single record
+        const { error: updateError } = await supabase
+          .from(tableName)
+          .update(updateData)
+          .eq('id', selectedCare.id);
+
+        if (updateError) {
+          console.error('Error updating photo URLs:', updateError);
+          return;
+        }
       }
 
       // Update local state
@@ -674,6 +774,27 @@ function CalendarPageContent() {
       setCurrentDate(newDate);
     }
   };
+
+  // Swipe handlers for calendar navigation
+  const swipeHandlers = useSwipeable({
+    onSwipedLeft: () => {
+      if (viewMode === 'weekly') {
+        navigateWeek('next');
+      } else {
+        navigateMonth('next');
+      }
+    },
+    onSwipedRight: () => {
+      if (viewMode === 'weekly') {
+        navigateWeek('prev');
+      } else {
+        navigateMonth('prev');
+      }
+    },
+    trackMouse: false, // Only track touch, not mouse
+    preventScrollOnSwipe: false, // Allow vertical scrolling
+    delta: 50, // Minimum swipe distance
+  });
 
   const getScheduledCareForDay = (date: Date) => {
     const dayCare = scheduledCare.filter(care => {
@@ -790,11 +911,9 @@ function CalendarPageContent() {
   const fetchAvailableParents = async (careBlockId: string) => {
     try {
       setLoadingParents(true);
-      console.log('🔍 Starting fetchAvailableParents for care block:', careBlockId);
-      
+
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) {
-        console.log('❌ No user found');
         return;
       }
 
@@ -806,13 +925,10 @@ function CalendarPageContent() {
         .single();
 
       if (blockError) {
-        console.log('❌ Error fetching care block:', blockError);
         setError('Error fetching care block');
         return;
       }
 
-      console.log('✅ Care block found:', careBlock);
-      
       // Get children already in this care block
       const { data: blockChildren, error: childrenError } = await supabase
         .from('scheduled_care_children')
@@ -820,12 +936,9 @@ function CalendarPageContent() {
         .eq('scheduled_care_id', careBlockId);
 
       if (childrenError) {
-        console.log('❌ Error fetching block children:', childrenError);
         setError('Error fetching block children');
         return;
       }
-
-      console.log('✅ Block children found:', blockChildren);
 
       const blockChildIds = new Set((blockChildren || []).map(c => c.child_id));
 
@@ -837,12 +950,9 @@ function CalendarPageContent() {
         .eq('active', true);
 
       if (activeChildrenError) {
-        console.log('❌ Error fetching active children:', activeChildrenError);
         setError('Error fetching active children');
         return;
       }
-
-      console.log('✅ Active children found:', activeChildren);
 
       const activeChildIdList = (activeChildren || []).map(c => c.child_id);
 
@@ -858,12 +968,9 @@ function CalendarPageContent() {
         .in('id', activeChildIdList);
 
       if (groupChildrenError) {
-        console.log('❌ Error fetching children details:', groupChildrenError);
         setError('Error fetching children details');
         return;
       }
-
-      console.log('✅ Group children details found:', groupChildren);
 
       // Get parent IDs of children already in the block
       const parentsWithChildrenInBlock = new Set(
@@ -871,10 +978,6 @@ function CalendarPageContent() {
           .filter(item => Array.from(blockChildIds).includes(item.id))
           .map(item => item.parent_id)
       );
-
-      console.log('✅ Parents with children already in block:', Array.from(parentsWithChildrenInBlock));
-      console.log('✅ Current user (block creator):', user.id);
-      console.log('✅ Care block parent_id:', careBlock.parent_id);
 
       // Also add the current user (creator of the block) to excluded parents
       parentsWithChildrenInBlock.add(user.id);
@@ -890,13 +993,9 @@ function CalendarPageContent() {
           full_name: item.full_name
         }));
 
-      console.log('✅ Available children (not in block and parent not in block):', availableChildren);
-
       // Get available parents for these children
       const available = await Promise.all(
         availableChildren.map(async (child) => {
-          console.log('🔍 Fetching parent for child:', child);
-          
           // CRITICAL FIX: First check if the child is still active in the group
           const { data: childGroupStatus, error: childGroupError } = await supabase
             .from('child_group_members')
@@ -906,17 +1005,13 @@ function CalendarPageContent() {
             .single();
             
           if (childGroupError) {
-            console.log('❌ Error checking child group status:', childGroupError);
             return null;
           }
-          
+
           if (!childGroupStatus.active) {
-            console.log('❌ Child is not active in group:', child.full_name);
             return null;
           }
-          
-          console.log('✅ Child is active in group:', child.full_name);
-          
+
           // First, get the child's parent_id directly from the children table
           const { data: childData, error: childError } = await supabase
             .from('children')
@@ -925,12 +1020,9 @@ function CalendarPageContent() {
             .single();
             
           if (childError) {
-            console.log('❌ Error fetching child parent_id:', childError);
             return null;
           }
-          
-          console.log('✅ Child parent_id:', childData.parent_id);
-          
+
           // Now get the parent's profile information
           const { data: parentData, error: parentError } = await supabase
             .from('profiles')
@@ -939,12 +1031,9 @@ function CalendarPageContent() {
             .single();
             
           if (parentError) {
-            console.log('❌ Error fetching parent profile:', parentError);
             return null;
           }
-          
-          console.log('✅ Parent profile found:', parentData);
-          
+
           // Check if this parent is an active member of the group
           const { data: groupMembership, error: membershipError } = await supabase
             .from('group_members')
@@ -954,12 +1043,9 @@ function CalendarPageContent() {
             .single();
             
           if (membershipError) {
-            console.log('❌ Error checking group membership:', membershipError);
             return null;
           }
-          
-          console.log('✅ Group membership status:', groupMembership);
-          
+
           // Only include parents who are active members of the group
           if (groupMembership.status === 'active') {
             return {
@@ -968,20 +1054,15 @@ function CalendarPageContent() {
               children: [child]
             };
           } else {
-            console.log('❌ Parent not active in group:', parentData.full_name);
             return null;
           }
         })
       );
-      
-      console.log('✅ Raw available parents data:', available);
 
       const filteredAvailable = available.filter((item): item is NonNullable<typeof item> => item !== null);
-      console.log('✅ Final filtered available parents:', filteredAvailable);
-      
+
       setAvailableParents(filteredAvailable);
     } catch (error) {
-      console.log('❌ Error in fetchAvailableParents:', error);
       setError('Error fetching available parents');
     } finally {
       setLoadingParents(false);
@@ -1070,16 +1151,6 @@ function CalendarPageContent() {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) return;
 
-      console.log('🚀 Creating open block invitations with data:', {
-        existingBlockId: selectedCare.id,
-        invitingParentId: user.id,
-        invitedParentIds: openBlockData.invitedParents.map(p => p.id),
-        reciprocalDates: openBlockData.reciprocalTimes.map(t => t.date),
-        reciprocalStartTimes: openBlockData.reciprocalTimes.map(t => t.startTime),
-        reciprocalEndTimes: openBlockData.reciprocalTimes.map(t => t.endTime),
-        notes: openBlockData.notes || ''
-      });
-
       // Call the Supabase function to create open block invitations
       const { data, error } = await supabase.rpc('create_open_block_invitation', {
         p_existing_block_id: selectedCare.id,
@@ -1091,15 +1162,12 @@ function CalendarPageContent() {
         p_notes: openBlockData.notes || ''
       });
 
-      console.log('✅ RPC response:', { data, error });
-
       if (error) {
         console.error('❌ Error creating open block invitations:', error);
         alert('Error creating open block invitations: ' + error.message);
         return;
       }
 
-      console.log(`✅ Successfully created ${data || 0} open block invitations`);
       alert('Open block invitations have been sent');
       setShowOpenBlockModal(false);
       setShowDetailModal(false); // Close the detail modal and return to calendar
@@ -1110,9 +1178,7 @@ function CalendarPageContent() {
       });
 
       // Refresh the calendar data
-      console.log('🔄 Refreshing calendar data...');
       await fetchScheduledCare();
-      console.log('✅ Calendar data refreshed');
     } catch (error) {
       console.error('❌ Exception in handleCreateOpenBlock:', error);
       setError('Error creating open block');
@@ -1357,17 +1423,13 @@ function CalendarPageContent() {
 
   const fetchChildrenForGroup = async (groupId: string) => {
     try {
-      console.log('🔍 Starting fetchChildrenForGroup for group:', groupId);
-      
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) {
-        console.log('❌ No user found');
         return;
       }
 
       // First, get the group type to determine how to fetch children
       const selectedGroup = groups.find(g => g.id === groupId);
-      console.log('✅ Selected group:', selectedGroup);
       
       if (selectedGroup?.group_type === 'event') {
         // For event groups, get children from child_group_members
@@ -1383,12 +1445,9 @@ function CalendarPageContent() {
           .eq('parent_id', user.id); // Only show current user's children
 
         if (error) {
-          console.log('❌ Error fetching children for event group:', error);
           setError('Error fetching children for event group');
           return;
         }
-
-        console.log('✅ Children fetched for event group (user filtered):', data);
         const groupChildren = data?.map(item => ({
           id: item.children[0]?.id || '',
           name: item.children[0]?.full_name || '',
@@ -1410,7 +1469,6 @@ function CalendarPageContent() {
           .eq('active', true);
 
         if (membershipsError) {
-          console.log('❌ Error fetching memberships:', membershipsError);
           setError('Error fetching memberships');
           return;
         }
@@ -1431,12 +1489,9 @@ function CalendarPageContent() {
           .eq('parent_id', user.id);
 
         if (error) {
-          console.log('❌ Error fetching children for care group:', error);
           setError('Error fetching children for care group');
           return;
         }
-
-        console.log('✅ Children fetched for care group (user filtered):', data);
         const groupChildren = data?.map(child => ({
           id: child.id,
           name: child.full_name,
@@ -1452,11 +1507,8 @@ function CalendarPageContent() {
 
   const fetchPetsForGroup = async (groupId: string) => {
     try {
-      console.log('🔍 Starting fetchPetsForGroup for group:', groupId);
-
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) {
-        console.log('❌ No user found');
         return;
       }
 
@@ -1472,7 +1524,6 @@ function CalendarPageContent() {
         .eq('active', true);
 
       if (membershipsError) {
-        console.log('❌ Error fetching pet memberships:', membershipsError);
         setError('Error fetching pet memberships');
         return;
       }
@@ -1493,12 +1544,9 @@ function CalendarPageContent() {
         .eq('parent_id', user.id);
 
       if (error) {
-        console.log('❌ Error fetching pets for group:', error);
         setError('Error fetching pets for group');
         return;
       }
-
-      console.log('✅ Pets fetched for group (user filtered):', data);
       const groupPets = data?.map(pet => ({
         id: pet.id,
         name: pet.name,
@@ -1540,7 +1588,6 @@ function CalendarPageContent() {
         parent_id: item.children.parent_id
       }));
 
-      console.log('✅ All children fetched for group:', allChildren);
       setGroupChildren(allChildren);
     } catch (err) {
       console.error('Error in fetchAllGroupChildren:', err);
@@ -1657,8 +1704,8 @@ function CalendarPageContent() {
         if (conflictingBlocks.length > 0) {
           const conflictDates = conflictingBlocks.map(b =>
             b.end_date
-              ? `${formatDateOnly(b.care_date)} - ${formatDateOnly(b.end_date)}`
-              : formatDateOnly(b.care_date)
+              ? `${formatDateLocalized(b.care_date)} - ${formatDateLocalized(b.end_date)}`
+              : formatDateLocalized(b.care_date)
           ).join(', ');
 
           alert(`Cannot create pet care request: You already have scheduled pet care during these dates (${conflictDates}). Please choose different dates.`);
@@ -1774,8 +1821,7 @@ function CalendarPageContent() {
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-gray-50">
-        <Header currentPage="calendar" />
+      <Header currentPage="calendar">
         <div className="p-6">
           <div className="max-w-7xl mx-auto">
             <div className="animate-pulse">
@@ -1788,14 +1834,13 @@ function CalendarPageContent() {
             </div>
           </div>
         </div>
-      </div>
+      </Header>
     );
   }
 
   if (error) {
     return (
-      <div className="min-h-screen bg-gray-50">
-        <Header currentPage="calendar" />
+      <Header currentPage="calendar">
         <div className="p-6">
           <div className="max-w-7xl mx-auto">
             <div className="bg-red-50 border border-red-200 rounded-lg p-4">
@@ -1809,7 +1854,7 @@ function CalendarPageContent() {
             </div>
           </div>
         </div>
-      </div>
+      </Header>
     );
   }
 
@@ -1828,14 +1873,13 @@ function CalendarPageContent() {
   ];
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      <Header currentPage="calendar" />
+    <Header currentPage="calendar">
       <div className="p-3 sm:p-4 md:p-6">
         <div className="max-w-7xl mx-auto">
           {/* Header */}
           <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 mb-6 sm:mb-8">
             <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3 sm:gap-6 w-full sm:w-auto">
-              <h1 className="text-2xl sm:text-3xl font-bold text-gray-900">Calendar</h1>
+              <h1 className="text-2xl sm:text-3xl font-bold text-gray-900">{t('calendar')}</h1>
 
               {/* Filter Controls */}
               <div className="flex items-center bg-white rounded-lg border border-gray-300 p-1">
@@ -1847,7 +1891,7 @@ function CalendarPageContent() {
                       : 'text-gray-600 hover:text-gray-900'
                   }`}
                 >
-                  All
+                  {t('all')}
                 </button>
                 <button
                   onClick={() => setCareFilter('children')}
@@ -1857,7 +1901,7 @@ function CalendarPageContent() {
                       : 'text-gray-600 hover:text-gray-900'
                   }`}
                 >
-                  Children
+                  {t('children')}
                 </button>
                 <button
                   onClick={() => setCareFilter('pets')}
@@ -1867,7 +1911,7 @@ function CalendarPageContent() {
                       : 'text-gray-600 hover:text-gray-900'
                   }`}
                 >
-                  Pets
+                  {t('pets')}
                 </button>
               </div>
             </div>
@@ -1891,7 +1935,7 @@ function CalendarPageContent() {
             }}
             title={viewMode === 'weekly' ? 'Click to return to monthly view' : ''}
           >
-            {format(currentDate, 'MMMM yyyy')}
+            {`${getTranslatedMonth(currentDate)} ${currentDate.getFullYear()}`}
           </h2>
           <button
             onClick={() => navigateMonth('next')}
@@ -1905,6 +1949,7 @@ function CalendarPageContent() {
       </div>
 
           {/* Calendar Views - Conditional Rendering */}
+          <div {...swipeHandlers}>
           {viewMode === 'monthly' ? (
             /* Monthly View */
             <div className="bg-white rounded-lg shadow overflow-hidden mb-6">
@@ -1948,7 +1993,7 @@ function CalendarPageContent() {
                           return (
                           <div
                             key={careIndex}
-                            className={`p-0.5 sm:p-1 md:p-1.5 text-[9px] sm:text-[10px] md:text-xs leading-tight ${getCareTypeColor(care.care_type, care.action_type, care.status, care.is_host, care.care_category)} cursor-pointer hover:opacity-80 ${
+                            className={`relative p-0.5 sm:p-1 md:p-1.5 text-[9px] sm:text-[10px] md:text-xs leading-tight ${getCareTypeColor(care.care_type, care.action_type, care.status, care.is_host, care.care_category)} cursor-pointer hover:opacity-80 ${
                               multiDayInfo.isMultiDay
                                 ? multiDayInfo.isFirstDay
                                   ? 'rounded-l border-r-0'
@@ -1956,8 +2001,8 @@ function CalendarPageContent() {
                                     ? 'rounded-r border-l-0'
                                     : 'rounded-none border-x-0'
                                 : 'rounded'
-                            }`}
-                            title={`${care.group_name} - ${formatTime(care.start_time)} to ${formatTime(getActualEndTime(care.notes || '', care.end_time))}${multiDayInfo.isMultiDay ? ` (Day ${multiDayInfo.dayNumber} of ${multiDayInfo.totalDays})` : ''}`}
+                            } ${care.has_unseen_updates ? 'ring-2 ring-orange-400 ring-offset-1' : ''}`}
+                            title={`${care.group_name} - ${formatTime(care.start_time)} to ${formatTime(getActualEndTime(care.notes || '', care.end_time))}${multiDayInfo.isMultiDay ? ` (Day ${multiDayInfo.dayNumber} of ${multiDayInfo.totalDays})` : ''}${care.has_unseen_updates ? ' (New updates!)' : ''}`}
                             onClick={(e) => {
                               e.stopPropagation();
                             setSelectedCare(care);
@@ -1965,6 +2010,10 @@ function CalendarPageContent() {
                             setShowDetailModal(true);
                           }}
                         >
+                          {/* Unseen updates indicator */}
+                          {care.has_unseen_updates && (
+                            <div className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-orange-500 rounded-full border border-white" title="New updates" />
+                          )}
                           {/* Care type label */}
                           <div className="font-semibold truncate text-[9px] sm:text-[10px] md:text-xs">
                             {multiDayInfo.isMultiDay ? (
@@ -2044,7 +2093,7 @@ function CalendarPageContent() {
                           return (
                           <div
                             key={careIndex}
-                            className={`p-0.5 sm:p-1 md:p-2 text-[9px] sm:text-[10px] md:text-xs leading-tight ${getCareTypeColor(care.care_type, care.action_type, care.status, care.is_host, care.care_category)} cursor-pointer hover:opacity-80 ${
+                            className={`relative p-0.5 sm:p-1 md:p-2 text-[9px] sm:text-[10px] md:text-xs leading-tight ${getCareTypeColor(care.care_type, care.action_type, care.status, care.is_host, care.care_category)} cursor-pointer hover:opacity-80 ${
                               multiDayInfo.isMultiDay
                                 ? multiDayInfo.isFirstDay
                                   ? 'rounded-l border-r-0'
@@ -2052,8 +2101,8 @@ function CalendarPageContent() {
                                     ? 'rounded-r border-l-0'
                                     : 'rounded-none border-x-0'
                                 : 'rounded'
-                            }`}
-                            title={`${care.group_name} - ${formatTime(care.start_time)} to ${formatTime(getActualEndTime(care.notes || '', care.end_time))}${multiDayInfo.isMultiDay ? ` (Day ${multiDayInfo.dayNumber} of ${multiDayInfo.totalDays})` : ''}`}
+                            } ${care.has_unseen_updates ? 'ring-2 ring-orange-400 ring-offset-1' : ''}`}
+                            title={`${care.group_name} - ${formatTime(care.start_time)} to ${formatTime(getActualEndTime(care.notes || '', care.end_time))}${multiDayInfo.isMultiDay ? ` (Day ${multiDayInfo.dayNumber} of ${multiDayInfo.totalDays})` : ''}${care.has_unseen_updates ? ' (New updates!)' : ''}`}
                             onClick={(e) => {
                               e.stopPropagation();
                               setSelectedCare(care);
@@ -2061,6 +2110,10 @@ function CalendarPageContent() {
                               setShowDetailModal(true);
                             }}
                           >
+                            {/* Unseen updates indicator */}
+                            {care.has_unseen_updates && (
+                              <div className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-orange-500 rounded-full border border-white" title="New updates" />
+                            )}
                             {/* Care type label */}
                             <div className="font-semibold truncate text-[9px] sm:text-[10px] md:text-xs">
                               {multiDayInfo.isMultiDay ? (
@@ -2177,8 +2230,12 @@ function CalendarPageContent() {
                             return (
                               <div
                                 key={`${care.id}-${index}`}
-                                className="bg-white rounded-lg shadow-sm border border-gray-200 p-4 relative"
-                                style={{ 
+                                className={`bg-white rounded-lg shadow-sm border p-4 relative ${
+                                  care.has_unseen_updates
+                                    ? 'border-orange-400 ring-2 ring-orange-400 ring-offset-1'
+                                    : 'border-gray-200'
+                                }`}
+                                style={{
                                   minHeight: `${blockHeight}px`,
                                   marginTop: `${startOffset}px`
                                 }}
@@ -2189,48 +2246,54 @@ function CalendarPageContent() {
                                   setShowDetailModal(true);
                                 }}
                               >
+                                {/* Unseen updates indicator */}
+                                {care.has_unseen_updates && (
+                                  <div className="absolute -top-2 -right-2 flex items-center gap-1 bg-orange-500 text-white text-xs font-medium px-2 py-0.5 rounded-full">
+                                    <span>New updates</span>
+                                  </div>
+                                )}
                                 {/* Modal-style layout */}
                                 <div className="space-y-3">
                                   {/* Group */}
                                   <div>
-                                    <span className="font-medium text-gray-700">Group:</span>
+                                    <span className="font-medium text-gray-700">{t('group')}:</span>
                                     <span className="ml-2 text-gray-900">{care.group_name}</span>
                                   </div>
                                   
                                   {/* Date */}
                                   <div>
-                                    <span className="font-medium text-gray-700">Date:</span>
+                                    <span className="font-medium text-gray-700">{t('date')}:</span>
                                     <span className="ml-2 text-gray-900">{format(selectedDate, 'MMM d, yyyy')}</span>
                                   </div>
                                   
                                   {/* Time */}
                                   <div>
-                                    <span className="font-medium text-gray-700">Time:</span>
+                                    <span className="font-medium text-gray-700">{t('time')}:</span>
                                     <span className="ml-2 text-gray-900">{formatTime(care.start_time)} - {formatTime(getActualEndTime(care.notes || '', care.end_time))}</span>
                                   </div>
                                   
                                   {/* Type */}
                                   <div>
-                                    <span className="font-medium text-gray-700">Type:</span>
+                                    <span className="font-medium text-gray-700">{t('type')}:</span>
                                     <span className={`ml-2 px-2 py-1 rounded text-xs ${getCareTypeColor(care.care_type, care.action_type, care.status, care.is_host, care.care_category)}`}>
                                       {care.care_type === 'event' ? 'Event' :
-                                       care.care_type === 'provided' ? 'Providing Care' :
+                                       care.care_type === 'provided' ? t('providingCare') :
                                        care.care_type === 'hangout' ? 'Hangout' :
                                        care.care_type === 'sleepover' ? 'Sleepover' :
-                                       care.care_type === 'open_block' ? 'Open Block' : 'Receiving Care'}
+                                       care.care_type === 'open_block' ? t('openBlock') : t('receivingCare')}
                                     </span>
                                   </div>
                                   
                                   {/* Status */}
                                   <div>
-                                    <span className="font-medium text-gray-700">Status:</span>
+                                    <span className="font-medium text-gray-700">{t('status')}:</span>
                                     <span className="ml-2 text-gray-900">{care.status}</span>
                                   </div>
                                   
                                   {/* Provider */}
                                   {care.providing_parent_name && (
                                     <div>
-                                      <span className="font-medium text-gray-700">Provider:</span>
+                                      <span className="font-medium text-gray-700">{t('provider')}:</span>
                                       <span className="ml-2 text-gray-900">{care.providing_parent_name}</span>
                                     </div>
                                   )}
@@ -2238,7 +2301,7 @@ function CalendarPageContent() {
                                   {/* Children or Pet */}
                                   {care.children_names && care.children_names.length > 0 && (
                                     <div>
-                                      <span className="font-medium text-gray-700">{care.pet_id ? 'Pet:' : 'Children:'}</span>
+                                      <span className="font-medium text-gray-700">{care.pet_id ? `${t('pet')}:` : `${t('children')}:`}</span>
                                       <div className="ml-2 mt-1">
                                         {care.children_names.map((childName, childIndex) => (
                                           <span key={childIndex} className="inline-block bg-gray-100 rounded px-2 py-1 text-xs mr-1 mb-1">
@@ -2252,7 +2315,7 @@ function CalendarPageContent() {
                                   {/* Notes */}
                                   {care.notes && (
                                     <div>
-                                      <span className="font-medium text-gray-700">Notes:</span>
+                                      <span className="font-medium text-gray-700">{t('notes')}:</span>
                                       <span className="ml-2 text-gray-900">{care.notes}</span>
                                     </div>
                                   )}
@@ -2281,16 +2344,22 @@ function CalendarPageContent() {
           {/* Legend */}
           <div className="mt-6 flex flex-wrap items-center gap-4 sm:gap-6 text-sm">
             <div className="flex items-center space-x-2">
-              <div className="w-4 h-4 bg-blue-100 border border-blue-300 rounded"></div>
-              <span>Receiving Care</span>
+              <div
+                className="w-4 h-4 rounded border border-gray-400"
+                style={{
+                  background: 'linear-gradient(to bottom right, rgb(191, 219, 254) 50%, rgb(187, 247, 208) 50%)'
+                }}
+              ></div>
+              <span>{t('childCare')}</span>
             </div>
             <div className="flex items-center space-x-2">
-              <div className="w-4 h-4 bg-green-100 border border-green-300 rounded"></div>
-              <span>Providing Care</span>
-            </div>
-            <div className="flex items-center space-x-2">
-              <div className="w-4 h-4 bg-purple-100 border border-purple-300 rounded"></div>
-              <span>Pet Care</span>
+              <div
+                className="w-4 h-4 rounded border border-gray-400"
+                style={{
+                  background: 'linear-gradient(to bottom right, rgb(233, 213, 255) 50%, rgb(254, 243, 199) 50%)'
+                }}
+              ></div>
+              <span>{t('petCare')}</span>
             </div>
           </div>
 
@@ -2309,79 +2378,79 @@ function CalendarPageContent() {
               </button>
             </div>
           )}
+          </div>
 
       {/* Care Detail Modal */}
       {showDetailModal && selectedCare && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-lg shadow-xl max-w-2xl w-full max-h-[90vh] flex flex-col">
+        <div className="fixed left-0 right-0 bg-black bg-opacity-50 flex items-center justify-center p-4" style={{ top: '145px', bottom: '90px', zIndex: 9999 }}>
+          <div className="bg-white rounded-lg shadow-xl max-w-2xl w-full max-h-full flex flex-col">
             <div className="px-6 py-4 border-b border-gray-200 flex-shrink-0">
               <div className="flex items-center justify-between">
                 <h3 className="text-lg font-semibold text-gray-900">Care Details</h3>
                 <button
                   onClick={() => setShowDetailModal(false)}
-                  className="text-gray-400 hover:text-gray-600"
+                  className="text-gray-400 hover:text-gray-600 text-2xl font-bold leading-none p-1"
+                  aria-label="Close"
                 >
-                  <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                  </svg>
+                  ×
                 </button>
               </div>
             </div>
             <div className="px-6 py-4 overflow-y-auto flex-1">
               <div className="space-y-3">
                 <div>
-                  <span className="font-medium text-gray-700">Group:</span>
+                  <span className="font-medium text-gray-700">{t('group')}:</span>
                   <span className="ml-2 text-gray-900">{selectedCare.group_name}</span>
                 </div>
                 {/* Pet care uses Drop off / Pick up format, others use Date / Time */}
                 {selectedCare.care_category === 'pet' ? (
                   <>
                     <div>
-                      <span className="font-medium text-gray-700">Drop off:</span>
+                      <span className="font-medium text-gray-700">{t('dropOff')}:</span>
                       <span className="ml-2 text-gray-900">
-                        {formatDateOnly(selectedCare.care_date)} at {formatTime(selectedCare.start_time)}
+                        {formatDateLocalized(selectedCare.care_date)} {t('at')} {formatTime(selectedCare.start_time)}
                       </span>
                     </div>
                     <div>
-                      <span className="font-medium text-gray-700">Pick up:</span>
+                      <span className="font-medium text-gray-700">{t('pickUp')}:</span>
                       <span className="ml-2 text-gray-900">
-                        {formatDateOnly(selectedCare.end_date || selectedCare.care_date)} at {formatTime(getActualEndTime(selectedCare.notes || '', selectedCare.end_time))}
+                        {formatDateLocalized(selectedCare.end_date || selectedCare.care_date)} {t('at')} {formatTime(getActualEndTime(selectedCare.notes || '', selectedCare.end_time))}
                       </span>
                     </div>
                   </>
                 ) : (
                   <>
                     <div>
-                      <span className="font-medium text-gray-700">Date:</span>
-                      <span className="ml-2 text-gray-900">{formatDateOnly(selectedCare.care_date)}</span>
+                      <span className="font-medium text-gray-700">{t('date')}:</span>
+                      <span className="ml-2 text-gray-900">{formatDateLocalized(selectedCare.care_date)}</span>
                     </div>
                     <div>
-                      <span className="font-medium text-gray-700">Time:</span>
+                      <span className="font-medium text-gray-700">{t('time')}:</span>
                       <span className="ml-2 text-gray-900">{formatTime(selectedCare.start_time)} - {formatTime(getActualEndTime(selectedCare.notes || '', selectedCare.end_time))}</span>
                     </div>
                   </>
                 )}
                 <div>
-                  <span className="font-medium text-gray-700">Type:</span>
+                  <span className="font-medium text-gray-700">{t('type')}:</span>
                       <span className={`ml-2 px-2 py-1 rounded text-xs ${getCareTypeColor(selectedCare.care_type, selectedCare.action_type, selectedCare.status, selectedCare.is_host, selectedCare.care_category)}`}>
                     {selectedCare.care_type === 'event' ? 'Event' :
-                     selectedCare.care_type === 'provided' ? 'Providing Care' :
+                     selectedCare.care_type === 'provided' ? t('providingCare') :
                      selectedCare.care_type === 'hangout' ? 'Hangout' :
                      selectedCare.care_type === 'sleepover' ? 'Sleepover' :
-                     selectedCare.care_type === 'open_block' ? 'Open Block' : 'Receiving Care'}
+                     selectedCare.care_type === 'open_block' ? t('openBlock') : t('receivingCare')}
                   </span>
                 </div>
                 {selectedCare.providing_parent_name && (
                   <div>
-                    <span className="font-medium text-gray-700">Provider:</span>
+                    <span className="font-medium text-gray-700">{t('provider')}:</span>
                     <span className="ml-2 text-gray-900">{selectedCare.providing_parent_name}</span>
                   </div>
                 )}
                 {selectedCare.children_names && selectedCare.children_names.length > 0 && (
                   <div>
                     <div className="flex items-center justify-between">
-                      <span className="font-medium text-gray-700">{selectedCare.pet_id ? 'Pet:' : 'Children:'}</span>
-                      {selectedCare.care_type === 'provided' && !selectedCare.pet_id && (
+                      <span className="font-medium text-gray-700">{selectedCare.care_category === 'pet' ? `${t('pet')}:` : `${t('children')}:`}</span>
+                      {selectedCare.care_type === 'provided' && selectedCare.care_category !== 'pet' && (
                         <button
                           onClick={() => handleOpenBlock(selectedCare)}
                           className="text-blue-600 hover:text-blue-700 font-medium text-sm flex items-center gap-1"
@@ -2390,7 +2459,7 @@ function CalendarPageContent() {
                           <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
                           </svg>
-                          <span>Open Block</span>
+                          <span>{t('openBlock')}</span>
                         </button>
                       )}
                     </div>
@@ -2404,7 +2473,7 @@ function CalendarPageContent() {
                   </div>
                 )}
                 <div>
-                  <span className="font-medium text-gray-700">Notes:</span>
+                  <span className="font-medium text-gray-700">{t('notes')}:</span>
                   {/* Editable notes for: provided care OR host of hangout/sleepover */}
                   {(selectedCare.care_type === 'provided' ||
                     ((selectedCare.care_type === 'hangout' || selectedCare.care_type === 'sleepover') && selectedCare.is_host)) ? (
@@ -2426,8 +2495,8 @@ function CalendarPageContent() {
                       />
                       <p className="text-xs text-gray-500 mt-1">
                         {selectedCare.care_type === 'provided'
-                          ? "Share your care plans and any important details for the receiving parent."
-                          : "These notes will be visible to all participants (host and attending families)."}
+                          ? t('shareCarePlans')
+                          : t('notesVisibleAll')}
                       </p>
                     </div>
                   ) : (
@@ -2435,13 +2504,13 @@ function CalendarPageContent() {
                       <div className="bg-gray-50 border border-gray-200 rounded-md p-3 text-sm text-gray-700">
                         {selectedCare.notes ||
                           (selectedCare.care_type === 'hangout' || selectedCare.care_type === 'sleepover'
-                            ? 'No notes provided by the host.'
-                            : 'No notes provided by the care provider.')}
+                            ? t('noNotesHost')
+                            : t('noNotesProvider'))}
                       </div>
                       <p className="text-xs text-gray-500 mt-1">
                         {selectedCare.care_type === 'hangout' || selectedCare.care_type === 'sleepover'
-                          ? "Event details from the host."
-                          : "Care plans and details from the provider."}
+                          ? t('eventDetailsHost')
+                          : t('carePlansProvider')}
                       </p>
                     </div>
                   )}
@@ -2453,7 +2522,7 @@ function CalendarPageContent() {
                   <div className="mt-6">
                     <div className="flex items-center justify-between mb-2">
                       <label className="block text-sm font-medium text-gray-700">
-                        Photos
+                        {t('photos')}
                       </label>
 
                       {/* Single Add Photo Button */}
@@ -2487,7 +2556,7 @@ function CalendarPageContent() {
 
                     {/* Upload Status Messages */}
                     {uploadingPhoto && (
-                      <p className="text-sm text-blue-600 mb-2">Uploading photo...</p>
+                      <p className="text-sm text-blue-600 mb-2">{t('uploadingPhoto')}</p>
                     )}
                     {photoError && (
                       <p className="text-sm text-red-600 mb-2">{photoError}</p>
@@ -2521,8 +2590,8 @@ function CalendarPageContent() {
 
                     <p className="text-xs text-gray-500 mt-2">
                       {selectedCare.care_type === 'provided'
-                        ? 'Upload photos to share with the receiving parent. Max 10MB per photo. Photos are automatically compressed.'
-                        : 'Upload photos to share with all participants. Max 10MB per photo. Photos are automatically compressed.'}
+                        ? t('uploadPhotosReceiving')
+                        : t('uploadPhotosAll')}
                     </p>
                   </div>
                 )}
@@ -2534,8 +2603,8 @@ function CalendarPageContent() {
                   <div className="mt-6">
                     <label className="block text-sm font-medium text-gray-700 mb-2">
                       {selectedCare.care_type === 'needed'
-                        ? 'Photos from Care Provider'
-                        : 'Photos from Host'}
+                        ? t('photosFromProvider')
+                        : t('photosFromHost')}
                     </label>
                     <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
                       {selectedCare.photo_urls.map((photoUrl, index) => (
@@ -2550,7 +2619,7 @@ function CalendarPageContent() {
                       ))}
                     </div>
                     <p className="text-xs text-gray-500 mt-2">
-                      Click on any photo to view full size.
+                      {t('clickPhotoFullSize')}
                     </p>
                   </div>
                 )}
@@ -2624,7 +2693,7 @@ function CalendarPageContent() {
                       onClick={() => handleReschedule(selectedCare)}
                       className="w-full px-4 py-2 bg-orange-600 text-white rounded-lg hover:bg-orange-700 mb-3"
                     >
-                      Reschedule
+                      {t('reschedule')}
                     </button>
                   )}
                   <button
@@ -2638,28 +2707,16 @@ function CalendarPageContent() {
                             return;
                           }
 
-                          console.log('=== Saving Reciprocal Care Notes ===');
-                          console.log('Scheduled Care ID:', selectedCare.id);
-                          console.log('Parent ID:', user.id);
-                          console.log('New Notes:', selectedCare.notes);
-                          console.log('Care Type:', selectedCare.care_type);
-                          console.log('Care Category:', selectedCare.care_category);
-                          console.log('Related Request ID:', selectedCare.related_request_id);
-
                           // Use the correct RPC function based on care category
                           const functionName = selectedCare.care_category === 'pet'
                             ? 'update_pet_care_notes'
                             : 'update_reciprocal_care_notes';
-
-                          console.log('Using function:', functionName);
 
                           const { data, error } = await supabase.rpc(functionName, {
                             p_scheduled_care_id: selectedCare.id,
                             p_parent_id: user.id,
                             p_new_notes: selectedCare.notes || ''
                           });
-
-                          console.log('Function Response:', { data, error });
 
                           if (error) {
                             console.error('Error saving notes:', error);
@@ -2672,8 +2729,6 @@ function CalendarPageContent() {
                             alert('Failed to save notes - no response from server');
                             return;
                           }
-
-                          console.log('Success:', data[0]);
 
                           // Refresh the calendar data to show updated notes
                           await fetchScheduledCare();
@@ -2704,69 +2759,75 @@ function CalendarPageContent() {
 
           {/* New Request Modal */}
           {showNewRequestModal && (
-            <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-              <div className="bg-white rounded-lg shadow-xl max-w-2xl w-full mx-4 max-h-[90vh] overflow-y-auto">
-                <div className="px-6 py-4 border-b border-gray-200">
-                  <div className="flex items-center justify-between">
-                    <h3 className="text-lg font-semibold text-gray-900">
-                      Create New {newRequestData.type === 'pet_care' ? 'Pet Care Request' :
-                        (newRequestData.type === 'care' ? 'Care Request' : newRequestData.type.charAt(0).toUpperCase() + newRequestData.type.slice(1))}
-                    </h3>
-                    <button
-                      onClick={() => setShowNewRequestModal(false)}
-                      className="text-gray-400 hover:text-gray-600"
-                    >
-                      <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                      </svg>
-                    </button>
+            <div className="fixed left-0 right-0 bg-black bg-opacity-50 overflow-y-auto" style={{ top: '100px', bottom: '90px', zIndex: 9999 }}>
+              <div className="flex items-start justify-center p-4">
+                <div className="bg-white rounded-lg shadow-xl max-w-2xl w-full">
+                  {/* Fixed Header */}
+                  <div className="px-6 py-4 border-b border-gray-200 sticky top-0 bg-white rounded-t-lg z-10">
+                    <div className="flex items-center justify-between">
+                      <h3 className="text-lg font-semibold text-gray-900">
+                        {newRequestData.type === 'care' ? t('createNewCareRequest') :
+                         newRequestData.type === 'hangout' ? t('createNewHangout') :
+                         newRequestData.type === 'sleepover' ? t('createNewSleepover') :
+                         t('createNewPetCareRequest')}
+                      </h3>
+                      <button
+                        onClick={() => setShowNewRequestModal(false)}
+                        className="text-gray-600 hover:text-gray-900 p-2 -mr-2 rounded-full hover:bg-gray-100"
+                      >
+                        <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                        </svg>
+                      </button>
+                    </div>
                   </div>
-                </div>
-                
-                <div className="px-6 py-4 space-y-4">
+
+                  <div className="px-6 py-4 space-y-4">
                   {/* Request Type Selection */}
                   <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-2">Type</label>
+                      <label className="block text-sm font-medium text-gray-700 mb-2">{t('type')}</label>
                       <div className="grid grid-cols-3 gap-3">
                         <button
                           type="button"
                           onClick={() => setNewRequestData(prev => ({ ...prev, type: 'care', hosting_child_ids: [], invited_child_ids: [], end_date: '' }))}
-                          className={`px-4 py-3 rounded-md border-2 transition-all ${
+                          className={`px-4 py-3 rounded-md border-2 transition-all text-center flex items-center justify-center ${
                             newRequestData.type === 'care'
                               ? 'border-blue-500 bg-blue-50 text-blue-700 font-semibold'
                               : 'border-gray-300 hover:border-gray-400'
                           }`}
                         >
-                          Care Request
+                          {t('careRequestType')}
                         </button>
                         <button
                           type="button"
                           onClick={() => setNewRequestData(prev => ({ ...prev, type: 'hangout', child_id: '', end_date: '' }))}
-                          className={`px-4 py-3 rounded-md border-2 transition-all ${
+                          className={`px-4 py-3 rounded-md border-2 transition-all text-center flex items-center justify-center ${
                             newRequestData.type === 'hangout'
                               ? 'border-green-500 bg-green-50 text-green-700 font-semibold'
                               : 'border-gray-300 hover:border-gray-400'
                           }`}
                         >
-                          Hangout
+                          {t('hangout')}
                         </button>
                         <button
                           type="button"
                           onClick={() => setNewRequestData(prev => ({ ...prev, type: 'pet_care', child_id: '', pet_id: '', hosting_child_ids: [], invited_child_ids: [] }))}
-                          className={`px-4 py-3 rounded-md border-2 transition-all ${
+                          className={`px-4 py-3 rounded-md border-2 transition-all text-center flex items-center justify-center ${
                             newRequestData.type === 'pet_care'
                               ? 'border-purple-500 bg-purple-50 text-purple-700 font-semibold'
                               : 'border-gray-300 hover:border-gray-400'
                           }`}
                         >
-                          🐾 Pet Care
+                          {t('petCareEmoji')}
                         </button>
                       </div>
                     </div>
 
-                  {/* Date */}
+                  {/* Date - Same native picker for all types */}
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">Date</label>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      {newRequestData.type === 'care' ? t('date') : t('startDate')}
+                    </label>
                     <input
                       type="date"
                       value={newRequestData.date}
@@ -2778,10 +2839,28 @@ function CalendarPageContent() {
                     />
                   </div>
 
+                  {/* End Date - Only for pet_care and hangout (multi-day) */}
+                  {(newRequestData.type === 'pet_care' || newRequestData.type === 'hangout') && (
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-2">
+                        {t('endDate')}
+                        <span className="ml-2 text-xs text-gray-500">{t('optionalForMultiDay')}</span>
+                      </label>
+                      <input
+                        type="date"
+                        value={newRequestData.end_date}
+                        onChange={(e) => setNewRequestData(prev => ({ ...prev, end_date: e.target.value }))}
+                        min={newRequestData.date || new Date().toISOString().split('T')[0]}
+                        max={`${new Date().getFullYear() + 5}-12-31`}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      />
+                    </div>
+                  )}
+
                   {/* Time */}
                   <div className="grid grid-cols-2 gap-4">
                     <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-2">Start Time</label>
+                      <label className="block text-sm font-medium text-gray-700 mb-2">{t('startTime')}</label>
                       <input
                         type="time"
                         value={newRequestData.start_time}
@@ -2796,8 +2875,8 @@ function CalendarPageContent() {
                     </div>
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-2">
-                        End Time
-                        {newRequestData.start_time && newRequestData.end_time && 
+                        {t('endTime')}
+                        {newRequestData.start_time && newRequestData.end_time &&
                          calculateTimeDuration(newRequestData.start_time, newRequestData.end_time).isNextDay && (
                           <span className="ml-1 text-blue-600 font-semibold">+1</span>
                         )}
@@ -2848,7 +2927,7 @@ function CalendarPageContent() {
                         const endDate = getEndDate(newRequestData.date, newRequestData.start_time, newRequestData.end_time);
                         return endDate ? (
                           <div className="mt-1 text-sm text-blue-600 font-medium">
-                            Ends on: {formatDateOnly(endDate)}
+                            {t('endsOn')} {formatDateLocalized(endDate)}
                           </div>
                         ) : null;
                       })()}
@@ -2858,7 +2937,7 @@ function CalendarPageContent() {
                   {/* Time Range Summary */}
                   {newRequestData.start_time && newRequestData.end_time && newRequestData.date && (
                     <div className="mt-2 p-3 bg-gray-50 rounded-lg">
-                      <div className="text-sm font-medium text-gray-700 mb-1">Time Range Summary:</div>
+                      <div className="text-sm font-medium text-gray-700 mb-1">{t('timeRangeSummary')}</div>
                       <div className="text-sm text-gray-600">
                         {(() => {
                           const result = calculateTimeDuration(newRequestData.start_time, newRequestData.end_time);
@@ -2867,15 +2946,15 @@ function CalendarPageContent() {
                           if (result.isNextDay && endDate) {
                             return (
                               <span>
-                                {formatDateOnly(new Date(newRequestData.date + 'T00:00:00'))} at {formatTime(newRequestData.start_time)} → {formatDateOnly(endDate)} at {formatTime(newRequestData.end_time)}
-                                <span className="ml-2 text-blue-600 font-medium">({result.duration.toFixed(1)} hours)</span>
+                                {formatDateLocalized(new Date(newRequestData.date + 'T00:00:00'))} {t('atTime')} {formatTime(newRequestData.start_time)} → {formatDateLocalized(endDate)} {t('atTime')} {formatTime(newRequestData.end_time)}
+                                <span className="ml-2 text-blue-600 font-medium">({result.duration.toFixed(1)} {t('hoursLabel')})</span>
                               </span>
                             );
                           } else {
                             return (
                               <span>
-                                {formatDateOnly(new Date(newRequestData.date + 'T00:00:00'))} from {formatTime(newRequestData.start_time)} to {formatTime(newRequestData.end_time)}
-                                <span className="ml-2 text-gray-500">({result.duration.toFixed(1)} hours)</span>
+                                {formatDateLocalized(new Date(newRequestData.date + 'T00:00:00'))} {t('fromTime')} {formatTime(newRequestData.start_time)} {t('toTime')} {formatTime(newRequestData.end_time)}
+                                <span className="ml-2 text-gray-500">({result.duration.toFixed(1)} {t('hoursLabel')})</span>
                               </span>
                             );
                           }
@@ -2893,7 +2972,7 @@ function CalendarPageContent() {
 
                   {/* Group Selection */}
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">Group</label>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">{t('group')}</label>
                     <select
                       value={newRequestData.group_id}
                       onChange={(e) => {
@@ -2921,7 +3000,7 @@ function CalendarPageContent() {
                       className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
                       required
                     >
-                      <option value="">Select a group</option>
+                      <option value="">{t('selectGroup')}</option>
                       {getFilteredGroups().map(group => (
                         <option key={group.id} value={group.id}>
                           {group.name} ({group.group_type})
@@ -2930,11 +3009,11 @@ function CalendarPageContent() {
                     </select>
                   </div>
 
-                  {/* Child Selection (Care Request & Hangout) */}
-                  {(newRequestData.type === 'care' || newRequestData.type === 'hangout') && newRequestData.group_id && (
+                  {/* Child Selection (Care Request only) */}
+                  {newRequestData.type === 'care' && newRequestData.group_id && (
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-2">
-                        Child
+                        {t('child')}
                       </label>
                       <select
                         value={newRequestData.child_id}
@@ -2942,7 +3021,7 @@ function CalendarPageContent() {
                         className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
                         required
                       >
-                        <option value="">Select a child</option>
+                        <option value="">{t('selectChild')}</option>
                         {children.map(child => (
                           <option key={child.id} value={child.id}>
                             {child.name}
@@ -2956,7 +3035,7 @@ function CalendarPageContent() {
                   {newRequestData.type === 'pet_care' && newRequestData.group_id && (
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-2">
-                        Pet
+                        {t('pet')}
                       </label>
                       <select
                         value={newRequestData.pet_id}
@@ -2964,7 +3043,7 @@ function CalendarPageContent() {
                         className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500"
                         required
                       >
-                        <option value="">Select a pet</option>
+                        <option value="">{t('selectPet')}</option>
                         {pets.map(pet => (
                           <option key={pet.id} value={pet.id}>
                             {pet.name} {pet.species ? `(${pet.species})` : ''}
@@ -2974,35 +3053,17 @@ function CalendarPageContent() {
                     </div>
                   )}
 
-                  {/* End Date - Only shown for pet care */}
-                  {newRequestData.type === 'pet_care' && (
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-2">
-                        End Date
-                        <span className="ml-2 text-xs text-purple-600">(Optional - for multi-day pet care)</span>
-                      </label>
-                      <input
-                        type="date"
-                        value={newRequestData.end_date}
-                        onChange={(e) => setNewRequestData(prev => ({ ...prev, end_date: e.target.value }))}
-                        min={newRequestData.date || undefined}
-                        className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500"
-                      />
-                      <p className="text-xs text-gray-500 mt-1">
-                        Leave empty for same-day care, or set an end date for vacations/trips
-                      </p>
-                    </div>
-                  )}
+                  {/* End Date - Removed: Now using DateRangePicker for pet_care and hangout */}
 
                   {/* Hosting Children (Hangout/Sleepover only) */}
                   {(newRequestData.type === 'hangout' || newRequestData.type === 'sleepover') && newRequestData.group_id && (
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-2">
-                        Hosting Children * (Your children who will host)
+                        {t('hostingChildrenLabel')} * {t('hostingChildrenDesc')}
                       </label>
                       <div className="border border-gray-300 rounded-md p-3 max-h-40 overflow-y-auto">
                         {children.length === 0 ? (
-                          <p className="text-sm text-gray-500">No children available</p>
+                          <p className="text-sm text-gray-500">{t('noChildrenAvailable')}</p>
                         ) : (
                           <div className="space-y-2">
                             {children.map(child => (
@@ -3034,11 +3095,11 @@ function CalendarPageContent() {
                   {(newRequestData.type === 'hangout' || newRequestData.type === 'sleepover') && newRequestData.group_id && (
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-2">
-                        Invited Children * (Children from the group to invite)
+                        {t('invitedChildrenLabel')} * {t('invitedChildrenDesc')}
                       </label>
                       <div className="border border-gray-300 rounded-md p-3 max-h-40 overflow-y-auto">
                         {groupChildren.length === 0 ? (
-                          <p className="text-sm text-gray-500">No children available in this group</p>
+                          <p className="text-sm text-gray-500">{t('noChildrenInGroup')}</p>
                         ) : (
                           <div className="space-y-2">
                             {groupChildren
@@ -3070,13 +3131,13 @@ function CalendarPageContent() {
 
                   {/* Notes */}
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">Notes (Optional)</label>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">{t('notesOptional')}</label>
                     <textarea
                       value={newRequestData.notes}
                       onChange={(e) => setNewRequestData(prev => ({ ...prev, notes: e.target.value }))}
                       className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
                       rows={3}
-                      placeholder="Any additional notes..."
+                      placeholder={t('anyAdditionalNotes')}
                     />
                   </div>
                 </div>
@@ -3087,27 +3148,31 @@ function CalendarPageContent() {
                       onClick={handleCreateNewRequest}
                       className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
                     >
-                      Create {newRequestData.type === 'care' ? 'Request' : newRequestData.type.charAt(0).toUpperCase() + newRequestData.type.slice(1)}
+                      {newRequestData.type === 'care' ? t('createRequestBtn') :
+                       newRequestData.type === 'hangout' ? t('createHangoutBtn') :
+                       newRequestData.type === 'sleepover' ? t('createSleepoverBtn') :
+                       t('createPetCareBtn')}
                     </button>
                     <button
                       onClick={() => setShowNewRequestModal(false)}
                       className="px-4 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700"
                     >
-                      Cancel
+                      {t('cancel')}
                     </button>
                   </div>
+                </div>
+              </div>
             </div>
           </div>
-        </div>
-      )}
+          )}
 
       {/* Open Block Modal */}
       {showOpenBlockModal && selectedCare && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-lg shadow-xl max-w-4xl w-full mx-4 max-h-[90vh] overflow-y-auto">
+        <div className="fixed left-0 right-0 bg-black bg-opacity-50 flex items-center justify-center p-4" style={{ top: '145px', bottom: '90px', zIndex: 9999 }}>
+          <div className="bg-white rounded-lg shadow-xl max-w-4xl w-full mx-4 max-h-full overflow-y-auto">
             <div className="px-6 py-4 border-b border-gray-200">
               <div className="flex items-center justify-between">
-                <h3 className="text-lg font-semibold text-gray-900">Open Block Invitation</h3>
+                <h3 className="text-lg font-semibold text-gray-900">{t('openBlockInvitation')}</h3>
                 <button
                   onClick={() => setShowOpenBlockModal(false)}
                   className="text-gray-400 hover:text-gray-600"
@@ -3118,19 +3183,19 @@ function CalendarPageContent() {
                 </button>
               </div>
               <p className="text-sm text-gray-600 mt-1">
-                Care block on {formatDateOnly(selectedCare.care_date)} at {formatTime(selectedCare.start_time)} - {formatTime(getActualEndTime(selectedCare.notes || '', selectedCare.end_time))}
+                {t('careBlock')} {formatDateLocalized(selectedCare.care_date)} {t('atTime')} {formatTime(selectedCare.start_time)} - {formatTime(getActualEndTime(selectedCare.notes || '', selectedCare.end_time))}
               </p>
             </div>
             
             <div className="px-6 py-4 space-y-6">
               {/* Available Parents Selection */}
               <div className="space-y-3">
-                <h4 className="font-medium text-gray-900">Select Parents to Invite</h4>
-                
+                <h4 className="font-medium text-gray-900">{t('selectParentsToInvite')}</h4>
+
                 {loadingParents ? (
                   <div className="text-center py-4">
                     <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto"></div>
-                    <p className="text-sm text-gray-600 mt-2">Loading available parents...</p>
+                    <p className="text-sm text-gray-600 mt-2">{t('loadingAvailableParents')}</p>
                   </div>
                 ) : availableParents.length > 0 ? (
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -3150,7 +3215,7 @@ function CalendarPageContent() {
                           <div>
                             <p className="font-medium">{parent.name}</p>
                             <p className="text-sm text-gray-600">
-                              {parent.children.length} child{parent.children.length !== 1 ? 'ren' : ''}
+                              {parent.children.length === 1 ? t('childCount', { count: 1 }) : t('childrenCount', { count: parent.children.length })}
                             </p>
                           </div>
                           <div className={`w-4 h-4 rounded-full border-2 ${
@@ -3167,17 +3232,17 @@ function CalendarPageContent() {
                 </div>
                 ) : (
                   <div className="text-center py-4 border-2 border-dashed border-gray-300 rounded-lg">
-                    <p className="text-gray-500">No available parents found for this care block.</p>
-                    <p className="text-sm text-gray-400 mt-1">All group members may already be involved or there are no eligible parents.</p>
+                    <p className="text-gray-500">{t('noAvailableParents')}</p>
+                    <p className="text-sm text-gray-400 mt-1">{t('noEligibleParents')}</p>
                   </div>
                 )}
               </div>
 
               {/* Reciprocal Times */}
               <div className="space-y-3">
-                <h4 className="font-medium text-gray-900">Reciprocal Care Times Needed</h4>
+                <h4 className="font-medium text-gray-900">{t('reciprocalCareTimesNeeded')}</h4>
                 <p className="text-sm text-gray-600">
-                  These time blocks will be offered to all invited parents on a first-come-first-serve basis.
+                  {t('timeBlocksOfferedDesc')}
                 </p>
                 
                 {openBlockData.reciprocalTimes.map((timeBlock, index) => {
@@ -3189,19 +3254,19 @@ function CalendarPageContent() {
                     <div key={index} className="border rounded-lg p-4 space-y-3">
                       <div className="flex items-center justify-between">
                         <h5 className="font-medium">
-                          Offer {index + 1}
+                          {t('offer')} {index + 1}
                         </h5>
                         <button
                           onClick={() => removeReciprocalTime(index)}
                           className="text-red-500 hover:text-red-700 text-sm"
                         >
-                          Remove
+                          {t('remove')}
                         </button>
                       </div>
                     
                     <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                       <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-1">Date</label>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">{t('date')}</label>
                         <input
                           type="date"
                           value={timeBlock.date}
@@ -3212,9 +3277,9 @@ function CalendarPageContent() {
                           required
                         />
                       </div>
-                      
+
                       <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-1">Start Time</label>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">{t('startTime')}</label>
                         <input
                           type="time"
                           value={timeBlock.startTime}
@@ -3223,9 +3288,9 @@ function CalendarPageContent() {
                           required
                         />
                       </div>
-                      
+
                       <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-1">End Time</label>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">{t('endTime')}</label>
                         <input
                           type="time"
                           value={timeBlock.endTime}
@@ -3243,7 +3308,7 @@ function CalendarPageContent() {
                   onClick={addReciprocalTime}
                   className="w-full px-4 py-2 border-2 border-dashed border-gray-300 text-gray-600 rounded-lg hover:border-gray-400 hover:text-gray-700"
                 >
-                  + Add Time Block
+                  {t('addTimeBlock')}
                 </button>
               </div>
             </div>
@@ -3254,7 +3319,7 @@ function CalendarPageContent() {
                   className="w-full px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
                   disabled={openBlockData.invitedParents.length === 0}
                 >
-                  Create Open Block Invitations
+                  {t('createOpenBlockInvitations')}
                 </button>
             </div>
                 </div>
@@ -3283,21 +3348,20 @@ function CalendarPageContent() {
               </div>
 
 
-    </div>
+    </Header>
   );
 }
 
 export default function CalendarPage() {
   return (
     <Suspense fallback={
-      <div className="min-h-screen bg-gray-50">
-        <Header />
+      <Header>
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
           <div className="flex justify-center items-center h-64">
-            <div className="text-gray-500">Loading calendar...</div>
+            <div className="text-gray-500">Loading...</div>
           </div>
         </div>
-      </div>
+      </Header>
     }>
       <CalendarPageContent />
     </Suspense>

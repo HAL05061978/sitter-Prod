@@ -1,0 +1,32 @@
+column_name,data_type
+id,uuid
+group_id,uuid
+requester_id,uuid
+pet_id,uuid
+requested_date,date
+end_date,date
+start_time,time without time zone
+end_time,time without time zone
+notes,text
+request_type,character varying
+status,character varying
+responder_id,uuid
+response_notes,text
+is_reciprocal,boolean
+reciprocal_parent_id,uuid
+reciprocal_pet_id,uuid
+reciprocal_date,date
+reciprocal_start_time,time without time zone
+reciprocal_end_time,time without time zone
+reciprocal_status,character varying
+created_at,timestamp with time zone
+updated_at,timestamp with time zone
+expires_at,timestamp with time zone
+reciprocal_care_id,uuid
+action_type,character varying
+original_request_id,uuid
+reschedule_reason,text
+reschedule_group_id,uuid
+actual_end_time,time without time zone
+is_next_day,boolean
+counter_proposal_to,uuid

@@ -1,0 +1,496 @@
+
+DECLARE
+    v_care_request_id UUID;
+    v_care_request RECORD;
+    v_block_time_id UUID;
+    v_invited_parent_id UUID;
+    v_reciprocal_date DATE;
+    v_reciprocal_start_time TIME;
+    v_reciprocal_end_time TIME;
+    v_existing_block_date DATE;
+    v_existing_block_start_time TIME;
+    v_existing_block_end_time TIME;
+    v_new_scheduled_care_id UUID;
+    v_providing_care_block_id UUID;
+    v_open_block_sender_receiving_care_block_id UUID;
+    v_accepting_parent_receiving_care_block_id UUID;
+    v_child RECORD;
+    v_declined_count INTEGER;
+BEGIN
+    -- Get the care request ID from the care response
+    SELECT request_id INTO v_care_request_id
+    FROM care_responses
+    WHERE id = p_care_response_id
+    AND status = 'pending';
+
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Care response not found or not in pending status';
+    END IF;
+
+    -- Get the complete care request details
+    SELECT * INTO v_care_request
+    FROM care_requests
+    WHERE id = v_care_request_id;
+
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Care request not found';
+    END IF;
+
+    -- Verify this is an open block request
+    IF v_care_request.request_type != 'open_block' THEN
+        RAISE EXCEPTION 'Care request is not an open block request';
+    END IF;
+
+    -- Get the block_time_id and invited_parent_id from the care response being accepted
+    SELECT block_time_id, invited_parent_id INTO v_block_time_id, v_invited_parent_id
+    FROM care_responses
+    WHERE id = p_care_response_id;
+
+    -- Get opened block times from care_requests table
+    SELECT requested_date, start_time, end_time INTO v_existing_block_date, v_existing_block_start_time, v_existing_block_end_time
+    FROM care_requests
+    WHERE id = v_care_request_id;
+
+    -- Validate that we have the required opened block information
+    IF v_existing_block_date IS NULL OR v_existing_block_start_time IS NULL OR v_existing_block_end_time IS NULL THEN
+        RAISE EXCEPTION 'Missing opened block date/time information in care request';
+    END IF;
+
+    -- Get the reciprocal times being offered from care_requests table
+    SELECT reciprocal_date, reciprocal_start_time, reciprocal_end_time INTO v_reciprocal_date, v_reciprocal_start_time, v_reciprocal_end_time
+    FROM care_requests
+    WHERE id = v_care_request_id;
+
+    IF v_reciprocal_date IS NULL OR v_reciprocal_start_time IS NULL OR v_reciprocal_end_time IS NULL THEN
+        RAISE EXCEPTION 'Missing reciprocal date/time information in care request';
+    END IF;
+
+    RAISE NOTICE '=== FIXED OPEN BLOCK ACCEPTANCE V7 ===';
+    RAISE NOTICE 'Parent accepting: % with child: %', p_accepting_parent_id, p_accepted_child_id;
+    RAISE NOTICE 'Open block sender: % with child: %', v_care_request.requester_id, v_care_request.child_id;
+
+    -- Create scheduled_care records
+    RAISE NOTICE '=== CREATING SCHEDULED_CARE BLOCKS ===';
+
+    -- 1. Accepting parent providing care for the RECIPROCAL time
+    INSERT INTO scheduled_care (
+        group_id, care_date, start_time, end_time, care_type, status, notes,
+        parent_id, child_id, related_request_id
+    ) VALUES (
+        v_care_request.group_id,
+        v_reciprocal_date,
+        v_reciprocal_start_time,
+        v_reciprocal_end_time,
+        'provided',
+        'confirmed',
+        v_care_request.notes || ' - Open block accepted - Parent providing care',
+        p_accepting_parent_id,
+        p_accepted_child_id,
+        v_care_request_id
+    ) RETURNING id INTO v_providing_care_block_id;
+
+    RAISE NOTICE 'Created Block 1: Accepting parent providing care on % %-% (ID: %)',
+        v_reciprocal_date, v_reciprocal_start_time, v_reciprocal_end_time, v_providing_care_block_id;
+
+    -- 2. Open block sender receiving care for the RECIPROCAL time
+    INSERT INTO scheduled_care (
+        group_id, care_date, start_time, end_time, care_type, status, notes,
+        parent_id, child_id, related_request_id
+    ) VALUES (
+        v_care_request.group_id,
+        v_reciprocal_date,
+        v_reciprocal_start_time,
+        v_reciprocal_end_time,
+        'needed',
+        'confirmed',
+        v_care_request.notes || ' - Open block accepted - sender receiving care',
+        v_care_request.requester_id,
+        v_care_request.child_id,
+        v_care_request_id
+    ) RETURNING id INTO v_open_block_sender_receiving_care_block_id;
+
+    RAISE NOTICE 'Created Block 2: Open block sender receiving care on % %-% (ID: %)',
+        v_reciprocal_date, v_reciprocal_start_time, v_reciprocal_end_time, v_open_block_sender_receiving_care_block_id;
+
+    -- 3. Accepting parent receiving care for the ORIGINAL OPENED BLOCK time
+    INSERT INTO scheduled_care (
+        group_id, care_date, start_time, end_time, care_type, status, notes,
+        parent_id, child_id, related_request_id
+    ) VALUES (
+        v_care_request.group_id,
+        v_existing_block_date,
+        v_existing_block_start_time,
+        v_existing_block_end_time,
+        'needed',
+        'confirmed',
+        v_care_request.notes || ' - Open block accepted - Parent receiving care',
+        p_accepting_parent_id,
+        p_accepted_child_id,
+        v_care_request_id
+    ) RETURNING id INTO v_accepting_parent_receiving_care_block_id;
+
+    RAISE NOTICE 'Created Block 3: Accepting parent receiving care on % %-% (ID: %)',
+        v_existing_block_date, v_existing_block_start_time, v_existing_block_end_time, v_accepting_parent_receiving_care_block_id;
+
+    -- ========== CHILD ASSIGNMENTS ==========
+
+    -- Add children to the PROVIDING care block (accepting parent's reciprocal block)
+    RAISE NOTICE '=== CHILD ASSIGNMENT FOR ACCEPTING PARENT PROVIDING BLOCK ===';
+
+    -- Add the accepting parent's child to their providing care block
+    INSERT INTO scheduled_care_children (
+        scheduled_care_id,
+        child_id,
+        providing_parent_id,
+        notes,
+        action_type
+    ) VALUES (
+        v_providing_care_block_id,
+        p_accepted_child_id,
+        p_accepting_parent_id,
+        'Open block - accepting parent child added to their providing care block',
+        'new'
+    );
+
+    RAISE NOTICE 'Added accepting parent child % to their providing care block', p_accepted_child_id;
+
+    -- Add the open block sender's child to the accepting parent's providing care block
+    INSERT INTO scheduled_care_children (
+        scheduled_care_id,
+        child_id,
+        providing_parent_id,
+        notes,
+        action_type
+    ) VALUES (
+        v_providing_care_block_id,
+        v_care_request.child_id,
+        p_accepting_parent_id,
+        'Open block - open block sender child added to accepting parent providing care block',
+        'new'
+    );
+
+    RAISE NOTICE 'Added open block sender child % to accepting parent providing care block', v_care_request.child_id;
+
+    -- FIXED: Add children to open block sender's RECEIVING care block (Rosmary receiving care from Karen)
+    RAISE NOTICE '=== ADDING CHILDREN TO OPEN BLOCK SENDER RECEIVING CARE BLOCK ===';
+    RAISE NOTICE 'Adding children to open block sender receiving care block: %', v_open_block_sender_receiving_care_block_id;
+
+    -- Add open block sender's child to their receiving care block
+    INSERT INTO scheduled_care_children (
+        scheduled_care_id,
+        child_id,
+        providing_parent_id,
+        notes,
+        action_type
+    ) VALUES (
+        v_open_block_sender_receiving_care_block_id,
+        v_care_request.child_id,
+        p_accepting_parent_id,  -- Karen is providing care
+        'Open block - open block sender child added to their receiving care block',
+        'new'
+    );
+
+    RAISE NOTICE 'Added open block sender child % to their receiving care block', v_care_request.child_id;
+
+    -- Add accepting parent's child to open block sender's receiving care block
+    INSERT INTO scheduled_care_children (
+        scheduled_care_id,
+        child_id,
+        providing_parent_id,
+        notes,
+        action_type
+    ) VALUES (
+        v_open_block_sender_receiving_care_block_id,
+        p_accepted_child_id,
+        p_accepting_parent_id,  -- Karen is providing care
+        'Open block - accepting parent child added to open block sender receiving care block',
+        'new'
+    );
+
+    RAISE NOTICE 'Added accepting parent child % to open block sender receiving care block', p_accepted_child_id;
+
+    -- FIXED: Add accepting parent's child to ALL blocks (providing AND receiving) matching the opened time slot
+    -- This includes Rosmary's providing block AND Hugo's receiving block at that same time
+    RAISE NOTICE '=== ADDING TO ALL BLOCKS FOR OPENED TIME SLOT ===';
+
+    -- Find ALL providing blocks that match the date/time of the opened block
+    -- and add the accepting parent's child to each one
+    FOR v_child IN
+        SELECT sc.id as providing_block_id, sc.parent_id as provider_parent_id
+        FROM scheduled_care sc
+        WHERE sc.group_id = v_care_request.group_id
+        AND sc.care_type = 'provided'
+        AND sc.care_date = v_existing_block_date
+        AND sc.start_time = v_existing_block_start_time
+        AND sc.end_time = v_existing_block_end_time
+        AND sc.id != v_providing_care_block_id  -- Don't re-add to the new block we just created
+    LOOP
+        RAISE NOTICE 'Adding accepting parent child % to providing block % (provider: %)',
+            p_accepted_child_id, v_child.providing_block_id, v_child.provider_parent_id;
+
+        -- Add the accepting parent's child to this providing block
+        INSERT INTO scheduled_care_children (
+            scheduled_care_id,
+            child_id,
+            providing_parent_id,
+            notes,
+            action_type
+        )
+        VALUES (
+            v_child.providing_block_id,
+            p_accepted_child_id,
+            v_child.provider_parent_id,
+            'Open block - accepting parent child added to existing provider block',
+            'new'
+        )
+        ON CONFLICT DO NOTHING;  -- In case already added
+
+        RAISE NOTICE 'SUCCESS: Added accepting parent child % to provider % providing block',
+            p_accepted_child_id, v_child.provider_parent_id;
+    END LOOP;
+
+    -- ADDITIONAL: Also add accepting parent's child to ALL RECEIVING blocks at the opened time slot
+    -- This ensures Hugo's receiving block (when Rosmary provides) also includes Gaston
+    RAISE NOTICE '=== ADDING TO ALL RECEIVING BLOCKS FOR OPENED TIME SLOT ===';
+
+    FOR v_child IN
+        SELECT sc.id as receiving_block_id, sc.parent_id as receiving_parent_id
+        FROM scheduled_care sc
+        WHERE sc.group_id = v_care_request.group_id
+        AND sc.care_type = 'needed'
+        AND sc.care_date = v_existing_block_date
+        AND sc.start_time = v_existing_block_start_time
+        AND sc.end_time = v_existing_block_end_time
+        AND sc.id != v_accepting_parent_receiving_care_block_id  -- Don't re-add to Karen's new block
+    LOOP
+        RAISE NOTICE 'Adding accepting parent child % to receiving block % (parent: %)',
+            p_accepted_child_id, v_child.receiving_block_id, v_child.receiving_parent_id;
+
+        -- Find the provider for this receiving block (should be Rosmary)
+        -- We'll use the first provider found in the providing blocks at this time
+        INSERT INTO scheduled_care_children (
+            scheduled_care_id,
+            child_id,
+            providing_parent_id,
+            notes,
+            action_type
+        )
+        SELECT
+            v_child.receiving_block_id,
+            p_accepted_child_id,
+            scc.providing_parent_id,
+            'Open block - accepting parent child added to existing receiving block',
+            'new'
+        FROM scheduled_care sc
+        JOIN scheduled_care_children scc ON scc.scheduled_care_id = sc.id
+        WHERE sc.group_id = v_care_request.group_id
+        AND sc.care_type = 'provided'
+        AND sc.care_date = v_existing_block_date
+        AND sc.start_time = v_existing_block_start_time
+        AND sc.end_time = v_existing_block_end_time
+        LIMIT 1
+        ON CONFLICT DO NOTHING;
+
+        RAISE NOTICE 'SUCCESS: Added accepting parent child % to receiving block for parent %',
+            p_accepted_child_id, v_child.receiving_parent_id;
+    END LOOP;
+
+    -- Add ALL children to the accepting parent's RECEIVING care block
+    RAISE NOTICE '=== ADDING CHILDREN TO ACCEPTING PARENT RECEIVING CARE BLOCK ===';
+    RAISE NOTICE 'Adding children to receiving care block: %', v_accepting_parent_receiving_care_block_id;
+
+    -- Get ALL children from the open block sender's original providing block and add them to accepting parent's receiving care block
+    FOR v_child IN
+        SELECT DISTINCT scc.child_id, scc.providing_parent_id
+        FROM scheduled_care sc
+        JOIN scheduled_care_children scc ON scc.scheduled_care_id = sc.id
+        WHERE sc.group_id = v_care_request.group_id
+        AND sc.care_type = 'provided'
+        AND sc.care_date = v_existing_block_date
+        AND sc.start_time = v_existing_block_start_time
+        AND sc.end_time = v_existing_block_end_time
+    LOOP
+        RAISE NOTICE 'Adding child % with provider % from original block to accepting parent receiving care block',
+            v_child.child_id, v_child.providing_parent_id;
+
+        INSERT INTO scheduled_care_children (
+            scheduled_care_id,
+            child_id,
+            providing_parent_id,
+            notes,
+            action_type
+        ) VALUES (
+            v_accepting_parent_receiving_care_block_id,
+            v_child.child_id,
+            v_child.providing_parent_id,
+            'Open block - child from original block added to accepting parent receiving care',
+            'new'
+        )
+        ON CONFLICT DO NOTHING;
+    END LOOP;
+
+    -- Also add the accepting parent's child to their receiving care block if not already added
+    -- Use the open block sender as the provider (since they sent the open block invitation)
+    INSERT INTO scheduled_care_children (
+        scheduled_care_id,
+        child_id,
+        providing_parent_id,
+        notes,
+        action_type
+    ) VALUES (
+        v_accepting_parent_receiving_care_block_id,
+        p_accepted_child_id,
+        v_care_request.requester_id,  -- Open block sender is the provider
+        'Open block - accepting parent child added to their receiving care block',
+        'new'
+    )
+    ON CONFLICT DO NOTHING;
+
+    RAISE NOTICE 'SUCCESS: All children added to accepting parent receiving care block';
+
+    -- Update care_requests status to accepted
+    UPDATE care_requests
+    SET
+        status = 'accepted',
+        responder_id = p_accepting_parent_id,
+        response_notes = v_care_request.notes || ' - Open block accepted',
+        reciprocal_parent_id = p_accepting_parent_id,
+        reciprocal_child_id = p_accepted_child_id,
+        reciprocal_status = 'accepted'
+    WHERE id = v_care_request_id;
+
+    -- Update the care response status to accepted
+    UPDATE care_responses
+    SET status = 'accepted'
+    WHERE id = p_care_response_id;
+
+    -- FIXED V7: First-come-first-serve decline logic (TWO PARTS)
+    -- PART 1: Decline ALL other time slots for the accepting parent from THIS SAME REQUESTER
+    -- This ensures if Karen accepts 1 of 2 time slots from Rosmary, the other gets declined for Karen
+    -- BUT other parents can still accept Rosmary's remaining time slots
+    -- AND Karen can still accept invitations from other parents
+    RAISE NOTICE '=== FIXED V7 PART 1: DECLINING OTHER TIME SLOTS FOR ACCEPTING PARENT ===';
+
+    WITH declined_responses AS (
+        UPDATE care_responses cr
+        SET status = 'declined'
+        WHERE cr.invited_parent_id = v_invited_parent_id  -- Same accepting parent (Karen)
+        AND cr.request_id IN (
+            -- Find all requests from the same requester (Rosmary)
+            SELECT id FROM care_requests
+            WHERE requester_id = v_care_request.requester_id
+            AND request_type = 'open_block'
+        )
+        AND cr.status = 'pending'
+        AND cr.id != p_care_response_id  -- Don't decline the one being accepted
+        RETURNING cr.id
+    )
+    SELECT COUNT(*) INTO v_declined_count FROM declined_responses;
+
+    RAISE NOTICE 'Declined % other time slot(s) for accepting parent % from requester %',
+        v_declined_count, v_invited_parent_id, v_care_request.requester_id;
+    RAISE NOTICE 'Other parents can still accept remaining time slots from this requester';
+    RAISE NOTICE 'Accepting parent can still accept invitations from other requesters';
+
+    -- ADDITIONAL: Decline this specific time slot for ALL other parents
+    -- This ensures only one parent can accept each specific time slot
+    RAISE NOTICE '=== DECLINING SAME TIME SLOT FOR ALL OTHER PARENTS ===';
+
+    IF v_block_time_id IS NOT NULL THEN
+        WITH declined_block_responses AS (
+            UPDATE care_responses
+            SET status = 'declined'
+            WHERE block_time_id = v_block_time_id  -- Same time slot
+            AND status = 'pending'
+            AND id != p_care_response_id  -- Don't decline the one being accepted
+            RETURNING id
+        )
+        SELECT COUNT(*) INTO v_declined_count FROM declined_block_responses;
+
+        RAISE NOTICE 'Declined % response(s) for the same time slot (block_time_id: %) across all parents',
+            v_declined_count, v_block_time_id;
+        RAISE NOTICE 'This time slot is now taken and unavailable to other parents';
+    END IF;
+
+    -- =====================================================
+    -- NEW: ADD NOTIFICATIONS
+    -- Valid types: 'reschedule_request', 'reschedule_response',
+    --              'care_request', 'care_response', 'group_invitation', 'system'
+    -- Using 'care_response' for open block acceptances
+    -- =====================================================
+    RAISE NOTICE '=== SENDING NOTIFICATIONS ===';
+
+    -- 1. Notify the ACCEPTOR (person who accepted the open block)
+    INSERT INTO notifications (
+        id,
+        user_id,
+        type,
+        title,
+        message,
+        data,
+        is_read,
+        created_at
+    )
+    VALUES (
+        gen_random_uuid(),
+        p_accepting_parent_id,
+        'care_response',
+        'Open Block Accepted',
+        'You accepted an open block invitation. Care blocks have been added to your calendar.',
+        jsonb_build_object(
+            'care_response_id', p_care_response_id,
+            'care_request_id', v_care_request_id,
+            'provider_id', v_care_request.requester_id,
+            'existing_block_date', v_existing_block_date,
+            'existing_block_start_time', v_existing_block_start_time,
+            'existing_block_end_time', v_existing_block_end_time
+        ),
+        false,
+        NOW()
+    );
+
+    RAISE NOTICE 'Sent notification to acceptor: %', p_accepting_parent_id;
+
+    -- 2. Notify the PROVIDER (person whose open block was accepted)
+    INSERT INTO notifications (
+        id,
+        user_id,
+        type,
+        title,
+        message,
+        data,
+        is_read,
+        created_at
+    )
+    VALUES (
+        gen_random_uuid(),
+        v_care_request.requester_id,
+        'care_response',
+        'Your Open Block Was Accepted',
+        'Your open block invitation was accepted. Care blocks have been added to your calendar.',
+        jsonb_build_object(
+            'care_response_id', p_care_response_id,
+            'care_request_id', v_care_request_id,
+            'acceptor_id', p_accepting_parent_id,
+            'existing_block_date', v_existing_block_date,
+            'existing_block_start_time', v_existing_block_start_time,
+            'existing_block_end_time', v_existing_block_end_time
+        ),
+        false,
+        NOW()
+    );
+
+    RAISE NOTICE 'Sent notification to provider: %', v_care_request.requester_id;
+
+    RAISE NOTICE '=== FUNCTION COMPLETED SUCCESSFULLY V7 WITH NOTIFICATIONS ===';
+    RAISE NOTICE 'All children added to all blocks (providing and receiving)';
+    RAISE NOTICE 'Accepting parent child added to ALL providing AND receiving blocks at opened time slot';
+    RAISE NOTICE 'First-come-first-serve logic applied correctly';
+    RAISE NOTICE 'Time slot properly marked as taken for all parents';
+    RAISE NOTICE 'Notifications sent to both parties';
+    RETURN TRUE;
+EXCEPTION
+    WHEN OTHERS THEN
+        RAISE NOTICE 'Error in accept_open_block_invitation: %', SQLERRM;
+        RAISE EXCEPTION 'Failed to accept open block invitation: %', SQLERRM;
+END;

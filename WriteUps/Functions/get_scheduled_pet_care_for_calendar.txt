@@ -1,0 +1,55 @@
+
+BEGIN
+    RETURN QUERY
+    SELECT
+        spc.id,
+        g.name as group_name,
+        spc.care_date,
+        spc.start_time,
+        spc.end_time,
+        spc.care_type::TEXT,
+        spc.status::TEXT,
+        spc.notes,
+        COUNT(DISTINCT spcp.pet_id) as children_count,
+        CASE
+            WHEN spc.care_type = 'needed' THEN
+                COALESCE(
+                    (SELECT provider_profile.full_name
+                     FROM scheduled_pet_care provider_care
+                     JOIN profiles provider_profile ON provider_care.parent_id = provider_profile.id
+                     WHERE provider_care.group_id = spc.group_id
+                     AND provider_care.care_date = spc.care_date
+                     AND provider_care.start_time = spc.start_time
+                     AND provider_care.end_time = spc.end_time
+                     AND provider_care.care_type = 'provided'
+                     AND provider_care.related_request_id = spc.related_request_id
+                     AND provider_care.parent_id != spc.parent_id
+                     LIMIT 1),
+                    'TBD'
+                )
+            WHEN spc.care_type = 'provided' THEN
+                p.full_name
+            ELSE
+                'Unknown'
+        END as providing_parent_name,
+        ARRAY_AGG(DISTINCT pet.name::TEXT) as children_names,
+        spc.action_type::TEXT,
+        spc.related_request_id,
+        spc.group_id,
+        jsonb_agg(DISTINCT jsonb_build_object('id', pet.id, 'full_name', pet.name)) FILTER (WHERE pet.id IS NOT NULL) as children_data,
+        FALSE as is_host,
+        -- Return the first pet_id as an identifier (all pets in group, so any will work)
+        (ARRAY_AGG(DISTINCT spcp.pet_id))[1] as pet_id
+    FROM scheduled_pet_care spc
+    JOIN groups g ON spc.group_id = g.id
+    JOIN profiles p ON spc.parent_id = p.id
+    LEFT JOIN scheduled_pet_care_pets spcp ON spc.id = spcp.scheduled_pet_care_id
+    LEFT JOIN pets pet ON spcp.pet_id = pet.id
+    WHERE spc.parent_id = p_parent_id
+    AND spc.care_date BETWEEN p_start_date AND p_end_date
+    AND spc.status = 'confirmed'
+    GROUP BY spc.id, g.name, spc.care_date, spc.start_time, spc.end_time,
+             spc.care_type, spc.status, spc.notes, p.full_name, spc.action_type,
+             spc.related_request_id, spc.group_id
+    ORDER BY spc.care_date, spc.start_time;
+END;

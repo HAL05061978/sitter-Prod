@@ -1,0 +1,1203 @@
+
+DECLARE
+    v_care_request RECORD;
+    v_responder_child_id UUID;
+    v_remaining_responses INTEGER;
+    v_counter_proposal_id UUID;
+    v_requester_child_id UUID;
+    v_has_pending_counter BOOLEAN;
+    v_existing_block_id UUID;
+    v_providing_parent_id UUID;
+    v_providing_child_id UUID;
+    v_existing_needed_id UUID;
+    v_is_counter_proposal BOOLEAN;
+    v_receiving_parent_id UUID;
+    v_receiving_child_id UUID;
+    v_is_responding_to_counter BOOLEAN;
+    v_counter_proposer_selected_arrangement UUID;
+    v_remaining_children INTEGER;
+    -- NEW VARIABLES FOR FIX
+    v_providing_block_id UUID;
+    v_children_count_before INTEGER;
+    v_original_rescheduler_child_id UUID;
+    v_counter_response_id UUID;
+    -- NEW VARIABLES FOR CHILD SYNC FIX
+    v_child_rec RECORD;
+    v_needed_block_rec RECORD;
+BEGIN
+    RAISE NOTICE 'handle_improved_reschedule_response called with response_id=%, responder_id=%, status=%',
+        p_care_response_id, p_responder_id, p_response_status;
+
+    -- Get the care request from the care_response
+    SELECT cr.* INTO v_care_request
+    FROM care_responses cresp
+    JOIN care_requests cr ON cresp.request_id = cr.id
+    WHERE cresp.id = p_care_response_id
+    AND cresp.responder_id = p_responder_id;
+
+    IF NOT FOUND THEN
+        RETURN json_build_object('success', false, 'error', 'Care response not found or not authorized');
+    END IF;
+
+    IF v_care_request.request_type != 'reschedule' THEN
+        RETURN json_build_object('success', false, 'error', 'Not a reschedule request');
+    END IF;
+
+    -- Detect if we're responding to a counter-proposal
+    v_is_responding_to_counter := (v_care_request.counter_proposal_to IS NOT NULL);
+
+    RAISE NOTICE 'Is responding to counter-proposal: %', v_is_responding_to_counter;
+
+    -- Get the responder's child from the yellow (rescheduled) needed block
+    SELECT sc.child_id INTO v_responder_child_id
+    FROM scheduled_care sc
+    WHERE sc.parent_id = p_responder_id
+    AND sc.group_id = v_care_request.group_id
+    AND sc.care_type = 'needed'
+    AND sc.status = 'rescheduled'
+    AND sc.care_date = v_care_request.reciprocal_date
+    AND sc.start_time = v_care_request.reciprocal_start_time
+    AND sc.end_time = v_care_request.reciprocal_end_time
+    LIMIT 1;
+
+    -- If not found in needed blocks, fall back to active child in this group
+    IF v_responder_child_id IS NULL THEN
+        SELECT c.id INTO v_responder_child_id
+        FROM children c
+        JOIN child_group_members cgm ON c.id = cgm.child_id
+        WHERE c.parent_id = p_responder_id
+        AND cgm.group_id = v_care_request.group_id
+        AND cgm.active = true
+        LIMIT 1;
+    END IF;
+
+    -- Get the requester's child from yellow blocks or scheduled_care_children
+    SELECT DISTINCT scc.child_id INTO v_requester_child_id
+    FROM scheduled_care sc
+    JOIN scheduled_care_children scc ON sc.id = scc.scheduled_care_id
+    WHERE sc.group_id = v_care_request.group_id
+    AND sc.status = 'rescheduled'
+    AND sc.care_date = v_care_request.reciprocal_date
+    AND sc.start_time = v_care_request.reciprocal_start_time
+    AND sc.end_time = v_care_request.reciprocal_end_time
+    AND scc.child_id IN (SELECT id FROM children WHERE parent_id = v_care_request.requester_id)
+    LIMIT 1;
+
+    -- If not found, fall back to active child in this group
+    IF v_requester_child_id IS NULL THEN
+        SELECT c.id INTO v_requester_child_id
+        FROM children c
+        JOIN child_group_members cgm ON c.id = cgm.child_id
+        WHERE c.parent_id = v_care_request.requester_id
+        AND cgm.group_id = v_care_request.group_id
+        AND cgm.active = true
+        LIMIT 1;
+    END IF;
+
+    -- Update care_response
+    UPDATE care_responses
+    SET status = p_response_status,
+        response_notes = p_response_notes,
+        decline_action = p_decline_action,
+        counter_proposal_date = p_counter_proposal_date,
+        counter_proposal_start_time = p_counter_proposal_start_time,
+        counter_proposal_end_time = p_counter_proposal_end_time,
+        selected_cancellation_request_id = p_selected_cancellation_request_id,
+        counter_proposal_notes = p_counter_proposal_notes,
+        updated_at = NOW()
+    WHERE id = p_care_response_id;
+
+    IF p_response_status = 'accepted' THEN
+        RAISE NOTICE 'Accepting reschedule/counter-proposal - creating or adding to block at new time';
+
+        -- Determine who is providing
+        SELECT parent_id INTO v_providing_parent_id
+        FROM scheduled_care
+        WHERE group_id = v_care_request.group_id
+        AND care_type = 'provided'
+        AND status = 'rescheduled'
+        AND care_date = v_care_request.reciprocal_date
+        AND start_time = v_care_request.reciprocal_start_time
+        AND end_time = v_care_request.reciprocal_end_time
+        LIMIT 1;
+
+        IF v_providing_parent_id IS NULL THEN
+            RAISE EXCEPTION 'Yellow providing block not found! Looking for: group_id=%, date=%, time=%-%, status=rescheduled',
+                v_care_request.group_id,
+                v_care_request.reciprocal_date,
+                v_care_request.reciprocal_start_time,
+                v_care_request.reciprocal_end_time;
+        END IF;
+
+        -- Get the provider's child
+        SELECT c.id INTO v_providing_child_id
+        FROM children c
+        WHERE c.parent_id = v_providing_parent_id
+        LIMIT 1;
+
+        -- Determine if this is a counter-proposal acceptance
+        v_is_counter_proposal := (v_care_request.requester_id != v_providing_parent_id);
+
+        IF v_is_counter_proposal THEN
+            v_receiving_parent_id := v_care_request.requester_id;
+            v_receiving_child_id := v_requester_child_id;
+            RAISE NOTICE 'Counter-proposal acceptance: Provider=%, Receiver=%', v_providing_parent_id, v_receiving_parent_id;
+        ELSE
+            v_receiving_parent_id := p_responder_id;
+            v_receiving_child_id := v_responder_child_id;
+            RAISE NOTICE 'Normal reschedule acceptance: Provider=%, Receiver=%', v_providing_parent_id, v_receiving_parent_id;
+        END IF;
+
+        -- Check if a confirmed providing block already exists at the new time
+        SELECT id INTO v_existing_block_id
+        FROM scheduled_care
+        WHERE group_id = v_care_request.group_id
+        AND parent_id = v_providing_parent_id
+        AND care_type = 'provided'
+        AND status = 'confirmed'
+        AND care_date = v_care_request.requested_date
+        AND start_time = v_care_request.start_time
+        AND end_time = v_care_request.end_time;
+
+        IF v_existing_block_id IS NULL THEN
+            RAISE NOTICE 'Creating NEW providing block at %', v_care_request.requested_date;
+
+            INSERT INTO scheduled_care (
+                group_id, parent_id, child_id, care_date, start_time, end_time,
+                care_type, status, related_request_id, notes, action_type
+            ) VALUES (
+                v_care_request.group_id,
+                v_providing_parent_id,
+                v_providing_child_id,
+                v_care_request.requested_date,
+                v_care_request.start_time,
+                v_care_request.end_time,
+                'provided',
+                'confirmed',
+                v_care_request.id,
+                'Rescheduled care block',
+                'new'
+            ) RETURNING id INTO v_existing_block_id;
+
+            -- Add provider's child to the new block
+            INSERT INTO scheduled_care_children (
+                scheduled_care_id, child_id, providing_parent_id, notes
+            ) VALUES (
+                v_existing_block_id,
+                v_providing_child_id,
+                v_providing_parent_id,
+                'Provider child in rescheduled block'
+            ) ON CONFLICT (scheduled_care_id, child_id) DO NOTHING;
+        ELSE
+            RAISE NOTICE 'Adding to EXISTING providing block at % (provider child already included)', v_care_request.requested_date;
+            -- Ensure provider's child is in the existing block
+            INSERT INTO scheduled_care_children (
+                scheduled_care_id, child_id, providing_parent_id, notes
+            ) VALUES (
+                v_existing_block_id,
+                v_providing_child_id,
+                v_providing_parent_id,
+                'Provider child in rescheduled block'
+            ) ON CONFLICT (scheduled_care_id, child_id) DO NOTHING;
+        END IF;
+
+        -- Add the receiving parent's child to the providing block
+        INSERT INTO scheduled_care_children (
+            scheduled_care_id, child_id, providing_parent_id, notes
+        ) VALUES (
+            v_existing_block_id,
+            v_receiving_child_id,
+            v_providing_parent_id,
+            'Added from reschedule acceptance'
+        ) ON CONFLICT (scheduled_care_id, child_id) DO NOTHING;
+
+        -- Remove receiving parent's child from the yellow block
+        DELETE FROM scheduled_care_children
+        WHERE child_id = v_receiving_child_id
+        AND scheduled_care_id IN (
+            SELECT id FROM scheduled_care
+            WHERE group_id = v_care_request.group_id
+            AND care_date = v_care_request.reciprocal_date
+            AND start_time = v_care_request.reciprocal_start_time
+            AND end_time = v_care_request.reciprocal_end_time
+            AND status = 'rescheduled'
+        );
+
+        -- Create or update the receiving parent's needed block at the new time
+        SELECT id INTO v_existing_needed_id
+        FROM scheduled_care
+        WHERE parent_id = v_receiving_parent_id
+        AND group_id = v_care_request.group_id
+        AND care_type = 'needed'
+        AND care_date = v_care_request.requested_date
+        AND start_time = v_care_request.start_time
+        AND end_time = v_care_request.end_time;
+
+        IF v_existing_needed_id IS NULL THEN
+            -- Create new needed block
+            INSERT INTO scheduled_care (
+                group_id, parent_id, child_id, care_date, start_time, end_time,
+                care_type, status, related_request_id, notes, action_type
+            ) VALUES (
+                v_care_request.group_id,
+                v_receiving_parent_id,
+                v_receiving_child_id,
+                v_care_request.requested_date,
+                v_care_request.start_time,
+                v_care_request.end_time,
+                'needed',
+                'confirmed',
+                v_care_request.id,
+                'Reschedule accepted',
+                'new'
+            ) RETURNING id INTO v_existing_needed_id;
+
+            -- Add children to the new needed block
+            RAISE NOTICE 'DEBUG: About to insert children. needed_block_id=%, receiving_child=%, providing_child=%, provider_parent=%',
+                v_existing_needed_id, v_receiving_child_id, v_providing_child_id, v_providing_parent_id;
+
+            INSERT INTO scheduled_care_children (
+                scheduled_care_id, child_id, providing_parent_id, notes
+            ) VALUES (
+                v_existing_needed_id,
+                v_receiving_child_id,
+                v_providing_parent_id,
+                'Child needing care in rescheduled block'
+            ) ON CONFLICT (scheduled_care_id, child_id) DO NOTHING;
+
+            INSERT INTO scheduled_care_children (
+                scheduled_care_id, child_id, providing_parent_id, notes
+            ) VALUES (
+                v_existing_needed_id,
+                v_providing_child_id,
+                v_providing_parent_id,
+                'Provider child in needed block'
+            ) ON CONFLICT (scheduled_care_id, child_id) DO NOTHING;
+
+        ELSE
+            -- Update existing needed block to confirmed
+            UPDATE scheduled_care
+            SET status = 'confirmed', action_type = 'new'
+            WHERE id = v_existing_needed_id;
+
+            -- Add children to the existing needed block
+            INSERT INTO scheduled_care_children (
+                scheduled_care_id, child_id, providing_parent_id, notes
+            ) VALUES (
+                v_existing_needed_id,
+                v_receiving_child_id,
+                v_providing_parent_id,
+                'Child needing care in rescheduled block'
+            ) ON CONFLICT (scheduled_care_id, child_id) DO NOTHING;
+
+            INSERT INTO scheduled_care_children (
+                scheduled_care_id, child_id, providing_parent_id, notes
+            ) VALUES (
+                v_existing_needed_id,
+                v_providing_child_id,
+                v_providing_parent_id,
+                'Provider child in needed block'
+            ) ON CONFLICT (scheduled_care_id, child_id) DO NOTHING;
+
+        END IF;
+
+        -- =====================================================
+        -- CRITICAL FIX: Sync ALL children across ALL blocks
+        -- =====================================================
+        -- After adding the accepting child to the providing block,
+        -- sync all children from the providing block to ALL needed blocks
+        -- at the same time slot. This ensures all parents see all children.
+
+        RAISE NOTICE 'Syncing children across all blocks at new time...';
+
+        -- For each child in the providing block, add to ALL needed blocks at this time
+        FOR v_child_rec IN
+            SELECT DISTINCT scc.child_id, scc.providing_parent_id
+            FROM scheduled_care_children scc
+            WHERE scc.scheduled_care_id = v_existing_block_id
+        LOOP
+            -- Add this child to ALL needed blocks at the same time slot
+            FOR v_needed_block_rec IN
+                SELECT sc.id as needed_block_id
+                FROM scheduled_care sc
+                WHERE sc.group_id = v_care_request.group_id
+                AND sc.care_type = 'needed'
+                AND sc.status = 'confirmed'
+                AND sc.care_date = v_care_request.requested_date
+                AND sc.start_time = v_care_request.start_time
+                AND sc.end_time = v_care_request.end_time
+            LOOP
+                INSERT INTO scheduled_care_children (
+                    scheduled_care_id, child_id, providing_parent_id, notes
+                ) VALUES (
+                    v_needed_block_rec.needed_block_id,
+                    v_child_rec.child_id,
+                    v_child_rec.providing_parent_id,
+                    'Synced from providing block'
+                ) ON CONFLICT (scheduled_care_id, child_id) DO NOTHING;
+            END LOOP;
+        END LOOP;
+
+        RAISE NOTICE 'Children synced across all blocks successfully';
+        -- =====================================================
+        -- END CRITICAL FIX
+        -- =====================================================
+
+        -- Delete the receiving parent's yellow needed block at the old time
+        DELETE FROM scheduled_care
+        WHERE parent_id = v_receiving_parent_id
+        AND group_id = v_care_request.group_id
+        AND care_type = 'needed'
+        AND status = 'rescheduled'
+        AND care_date = v_care_request.reciprocal_date
+        AND start_time = v_care_request.reciprocal_start_time
+        AND end_time = v_care_request.reciprocal_end_time;
+
+        RAISE NOTICE 'Child added to block at new time, yellow blocks updated';
+
+        -- =====================================================
+        -- PHASE 1: ADD SIMPLE RESCHEDULE ACCEPTANCE NOTIFICATIONS
+        -- =====================================================
+        IF NOT v_is_counter_proposal THEN
+            RAISE NOTICE 'Creating reschedule acceptance notifications';
+
+            -- Notification for requester
+            INSERT INTO notifications (user_id, type, title, message, data)
+            VALUES (
+                v_care_request.requester_id,
+                'reschedule_accepted',
+                (SELECT full_name FROM profiles WHERE id = p_responder_id) ||
+                    ' accepted your reschedule request for ' ||
+                    TO_CHAR(v_care_request.reciprocal_date, 'Mon DD, YYYY'),
+                '',
+                jsonb_build_object(
+                    'requester_id', v_care_request.requester_id,
+                    'responder_id', p_responder_id,
+                    'responder_name', (SELECT full_name FROM profiles WHERE id = p_responder_id),
+                    'original_date', v_care_request.reciprocal_date,
+                    'original_start_time', v_care_request.reciprocal_start_time,
+                    'original_end_time', v_care_request.reciprocal_end_time,
+                    'new_date', v_care_request.requested_date,
+                    'new_start_time', v_care_request.start_time,
+                    'new_end_time', v_care_request.end_time,
+                    'care_response_id', p_care_response_id
+                )
+            );
+
+            -- Notification for responder
+            INSERT INTO notifications (user_id, type, title, message, data)
+            VALUES (
+                p_responder_id,
+                'reschedule_accepted',
+                'You accepted ' ||
+                    (SELECT full_name FROM profiles WHERE id = v_care_request.requester_id) ||
+                    '''s reschedule request for ' ||
+                    TO_CHAR(v_care_request.reciprocal_date, 'Mon DD, YYYY'),
+                '',
+                jsonb_build_object(
+                    'requester_id', v_care_request.requester_id,
+                    'requester_name', (SELECT full_name FROM profiles WHERE id = v_care_request.requester_id),
+                    'responder_id', p_responder_id,
+                    'original_date', v_care_request.reciprocal_date,
+                    'original_start_time', v_care_request.reciprocal_start_time,
+                    'original_end_time', v_care_request.reciprocal_end_time,
+                    'new_date', v_care_request.requested_date,
+                    'new_start_time', v_care_request.start_time,
+                    'new_end_time', v_care_request.end_time,
+                    'care_response_id', p_care_response_id
+                )
+            );
+
+            RAISE NOTICE 'Reschedule acceptance notifications created successfully';
+        END IF;
+
+        -- COUNTER-PROPOSAL ACCEPTANCE HANDLING
+        IF v_is_responding_to_counter THEN
+            RAISE NOTICE 'Counter-proposal accepted - removing counter-proposer from original yellow blocks';
+
+            -- Remove counter-proposer's child from original yellow providing block
+            DELETE FROM scheduled_care_children
+            WHERE child_id = v_receiving_child_id
+            AND scheduled_care_id IN (
+                SELECT id FROM scheduled_care
+                WHERE group_id = v_care_request.group_id
+                AND care_date = v_care_request.reciprocal_date
+                AND start_time = v_care_request.reciprocal_start_time
+                AND end_time = v_care_request.reciprocal_end_time
+                AND status = 'rescheduled'
+            );
+
+            -- Check if original reschedule can be cleaned up
+            SELECT COUNT(DISTINCT scc.child_id) INTO v_remaining_children
+            FROM scheduled_care sc
+            JOIN scheduled_care_children scc ON sc.id = scc.scheduled_care_id
+            WHERE sc.group_id = v_care_request.group_id
+            AND sc.care_type = 'provided'
+            AND sc.status = 'rescheduled'
+            AND sc.care_date = v_care_request.reciprocal_date
+            AND sc.start_time = v_care_request.reciprocal_start_time
+            AND sc.end_time = v_care_request.reciprocal_end_time;
+
+            IF v_remaining_children = 0 THEN
+                DELETE FROM scheduled_care
+                WHERE group_id = v_care_request.group_id
+                AND status = 'rescheduled'
+                AND care_date = v_care_request.reciprocal_date
+                AND start_time = v_care_request.reciprocal_start_time
+                AND end_time = v_care_request.reciprocal_end_time;
+
+                RAISE NOTICE 'Cleaned up original yellow blocks after counter acceptance';
+            ELSE
+                RAISE NOTICE 'Original yellow blocks preserved - % parents still pending', v_remaining_children;
+            END IF;
+
+            UPDATE care_requests SET status = 'completed' WHERE id = v_care_request.id;
+
+            -- COUNTER-PROPOSAL ACCEPTED NOTIFICATIONS
+            RAISE NOTICE 'Creating counter-proposal accepted notifications';
+
+            DECLARE
+                v_original_request RECORD;
+                v_counter_proposer_id UUID;
+            BEGIN
+                SELECT * INTO v_original_request
+                FROM care_requests
+                WHERE id = v_care_request.counter_proposal_to;
+
+                v_counter_proposer_id := v_care_request.requester_id;
+
+                -- Notification for counter-proposer
+                INSERT INTO notifications (user_id, type, title, message, data)
+                VALUES (
+                    v_counter_proposer_id,
+                    'reschedule_counter_accepted',
+                    (SELECT full_name FROM profiles WHERE id = p_responder_id) ||
+                        ' accepted your counter-proposal for ' ||
+                        TO_CHAR(v_care_request.reciprocal_date, 'Mon DD, YYYY'),
+                    '',
+                    jsonb_build_object(
+                        'counter_proposer_id', v_counter_proposer_id,
+                        'acceptor_id', p_responder_id,
+                        'acceptor_name', (SELECT full_name FROM profiles WHERE id = p_responder_id),
+                        'original_date', v_care_request.reciprocal_date,
+                        'original_start_time', v_care_request.reciprocal_start_time,
+                        'original_end_time', v_care_request.reciprocal_end_time,
+                        'new_date', v_care_request.requested_date,
+                        'new_start_time', v_care_request.start_time,
+                        'new_end_time', v_care_request.end_time,
+                        'counter_request_id', v_care_request.id,
+                        'original_request_id', v_care_request.counter_proposal_to,
+                        'care_response_id', p_care_response_id
+                    )
+                );
+
+                -- Notification for acceptor
+                INSERT INTO notifications (user_id, type, title, message, data)
+                VALUES (
+                    p_responder_id,
+                    'reschedule_counter_accepted',
+                    'You accepted ' ||
+                        (SELECT full_name FROM profiles WHERE id = v_counter_proposer_id) ||
+                        '''s counter-proposal for ' ||
+                        TO_CHAR(v_care_request.reciprocal_date, 'Mon DD, YYYY'),
+                    '',
+                    jsonb_build_object(
+                        'counter_proposer_id', v_counter_proposer_id,
+                        'counter_proposer_name', (SELECT full_name FROM profiles WHERE id = v_counter_proposer_id),
+                        'acceptor_id', p_responder_id,
+                        'original_date', v_care_request.reciprocal_date,
+                        'original_start_time', v_care_request.reciprocal_start_time,
+                        'original_end_time', v_care_request.reciprocal_end_time,
+                        'new_date', v_care_request.requested_date,
+                        'new_start_time', v_care_request.start_time,
+                        'new_end_time', v_care_request.end_time,
+                        'counter_request_id', v_care_request.id,
+                        'original_request_id', v_care_request.counter_proposal_to,
+                        'care_response_id', p_care_response_id
+                    )
+                );
+
+                RAISE NOTICE 'Counter-proposal accepted notifications created successfully';
+            END;
+
+            RETURN json_build_object(
+                'success', true,
+                'message', 'Counter-proposal accepted',
+                'request_id', v_care_request.id
+            );
+        END IF;
+
+    ELSIF p_response_status = 'declined' THEN
+        -- COUNTER-PROPOSAL DECLINE HANDLING
+        IF v_is_responding_to_counter THEN
+            RAISE NOTICE 'Declining counter-proposal % - simple decline only (no counter back)', v_care_request.id;
+
+            -- Remove counter-proposer's child from yellow providing block
+            DELETE FROM scheduled_care_children
+            WHERE child_id = v_requester_child_id
+            AND scheduled_care_id IN (
+                SELECT id FROM scheduled_care
+                WHERE group_id = v_care_request.group_id
+                AND care_date = v_care_request.reciprocal_date
+                AND start_time = v_care_request.reciprocal_start_time
+                AND end_time = v_care_request.reciprocal_end_time
+                AND status = 'rescheduled'
+                AND care_type = 'provided'
+            );
+
+            -- Remove counter-proposer's yellow needed block
+            DELETE FROM scheduled_care
+            WHERE parent_id = v_care_request.requester_id
+            AND group_id = v_care_request.group_id
+            AND care_type = 'needed'
+            AND status = 'rescheduled'
+            AND care_date = v_care_request.reciprocal_date
+            AND start_time = v_care_request.reciprocal_start_time
+            AND end_time = v_care_request.reciprocal_end_time;
+
+            -- Get the arrangement Bruce selected when he sent the counter
+            SELECT selected_cancellation_request_id INTO v_counter_proposer_selected_arrangement
+            FROM care_responses
+            WHERE request_id = v_care_request.counter_proposal_to
+            AND responder_id = v_care_request.requester_id
+            AND decline_action = 'counter_propose'
+            LIMIT 1;
+
+            -- Cancel the block the counter-proposer selected
+            IF v_counter_proposer_selected_arrangement IS NOT NULL THEN
+                RAISE NOTICE 'Counter declined - removing rescheduler child from selected arrangement % (keeping other children)',
+                    v_counter_proposer_selected_arrangement;
+
+                -- Get the original reschedule requester's child
+                SELECT child_id INTO v_original_rescheduler_child_id
+                FROM care_requests
+                WHERE id = v_care_request.counter_proposal_to
+                LIMIT 1;
+
+                -- Remove ONLY the rescheduler's child from PROVIDING blocks
+                DELETE FROM scheduled_care_children scc
+                USING scheduled_care sc
+                WHERE scc.scheduled_care_id = sc.id
+                AND sc.related_request_id = v_counter_proposer_selected_arrangement
+                AND sc.status != 'rescheduled'
+                AND sc.care_type = 'provided'
+                AND scc.child_id = v_original_rescheduler_child_id;
+
+                RAISE NOTICE 'Removed rescheduler child from selected arrangement providing blocks';
+
+                -- Remove rescheduler's child from ALL related NEEDED blocks
+                DELETE FROM scheduled_care_children scc
+                USING scheduled_care sc, care_requests cr
+                WHERE scc.scheduled_care_id = sc.id
+                AND cr.id = v_counter_proposer_selected_arrangement
+                AND sc.group_id = cr.group_id
+                AND sc.care_date = cr.reciprocal_date
+                AND sc.start_time = cr.reciprocal_start_time
+                AND sc.end_time = cr.reciprocal_end_time
+                AND sc.status != 'rescheduled'
+                AND sc.care_type = 'needed'
+                AND scc.child_id = v_original_rescheduler_child_id;
+
+                RAISE NOTICE 'Removed rescheduler child from all related needed blocks (by date/time match)';
+
+                -- Delete ALL needed blocks that are empty OR don't have the needing parent's own child
+                DELETE FROM scheduled_care sc
+                USING care_requests cr
+                WHERE cr.id = v_counter_proposer_selected_arrangement
+                AND sc.group_id = cr.group_id
+                AND sc.care_date = cr.reciprocal_date
+                AND sc.start_time = cr.reciprocal_start_time
+                AND sc.end_time = cr.reciprocal_end_time
+                AND sc.care_type = 'needed'
+                AND sc.status != 'rescheduled'
+                AND (
+                    NOT EXISTS (
+                        SELECT 1 FROM scheduled_care_children scc
+                        WHERE scc.scheduled_care_id = sc.id
+                    )
+                    OR
+                    NOT EXISTS (
+                        SELECT 1 FROM scheduled_care_children scc
+                        JOIN children c ON scc.child_id = c.id
+                        WHERE scc.scheduled_care_id = sc.id
+                        AND c.parent_id = sc.parent_id
+                    )
+                );
+
+                RAISE NOTICE 'Deleted all meaningless needed blocks (empty or missing owner child)';
+
+                -- Cancel providing blocks if they have zero children OR only provider's own child
+                UPDATE scheduled_care sc
+                SET status = 'cancelled', action_type = 'cancelled'
+                FROM care_requests cr
+                WHERE cr.id = v_counter_proposer_selected_arrangement
+                AND sc.group_id = cr.group_id
+                AND sc.care_date = cr.reciprocal_date
+                AND sc.start_time = cr.reciprocal_start_time
+                AND sc.end_time = cr.reciprocal_end_time
+                AND sc.status != 'rescheduled'
+                AND sc.care_type = 'provided'
+                AND (
+                    NOT EXISTS (
+                        SELECT 1 FROM scheduled_care_children scc
+                        WHERE scc.scheduled_care_id = sc.id
+                    )
+                    OR
+                    NOT EXISTS (
+                        SELECT 1 FROM scheduled_care_children scc
+                        JOIN children c ON scc.child_id = c.id
+                        WHERE scc.scheduled_care_id = sc.id
+                        AND c.parent_id != sc.parent_id
+                    )
+                );
+
+                RAISE NOTICE 'Cancelled any empty or self-only providing blocks (by date/time match)';
+
+                UPDATE care_requests
+                SET status = 'canceled'
+                WHERE id = v_counter_proposer_selected_arrangement;
+            END IF;
+
+            -- Check if cleanup should run after declining counter
+            UPDATE care_requests SET status = 'declined' WHERE id = v_care_request.id;
+
+            -- Get the original reschedule request
+            SELECT * INTO v_care_request
+            FROM care_requests
+            WHERE id = v_care_request.counter_proposal_to;
+
+            -- Check if any other counters are still pending
+            SELECT EXISTS (
+                SELECT 1 FROM care_requests
+                WHERE counter_proposal_to = v_care_request.id
+                AND status IN ('pending', 'awaiting_response')
+            ) INTO v_has_pending_counter;
+
+            -- Count remaining children in yellow block
+            SELECT COUNT(DISTINCT scc.child_id) INTO v_remaining_children
+            FROM scheduled_care sc
+            JOIN scheduled_care_children scc ON sc.id = scc.scheduled_care_id
+            WHERE sc.group_id = v_care_request.group_id
+            AND sc.care_type = 'provided'
+            AND sc.status = 'rescheduled'
+            AND sc.care_date = v_care_request.reciprocal_date
+            AND sc.start_time = v_care_request.reciprocal_start_time
+            AND sc.end_time = v_care_request.reciprocal_end_time;
+
+            IF NOT v_has_pending_counter AND v_remaining_children = 0 THEN
+                UPDATE care_requests SET status = 'completed' WHERE id = v_care_request.id;
+
+                DELETE FROM scheduled_care
+                WHERE group_id = v_care_request.group_id
+                AND status = 'rescheduled'
+                AND care_date = v_care_request.reciprocal_date
+                AND start_time = v_care_request.reciprocal_start_time
+                AND end_time = v_care_request.reciprocal_end_time;
+
+                RAISE NOTICE 'Counter-proposal declined - cleaned up yellow blocks (last response)';
+            ELSE
+                RAISE NOTICE 'Counter-proposal declined - yellow blocks preserved (% children, pending counters: %)', v_remaining_children, v_has_pending_counter;
+            END IF;
+
+            -- COUNTER-PROPOSAL DECLINED NOTIFICATIONS
+            RAISE NOTICE 'Creating counter-proposal declined notifications';
+
+            DECLARE
+                v_declined_counter RECORD;
+                v_counter_proposer_id UUID;
+            BEGIN
+                SELECT * INTO v_declined_counter
+                FROM care_requests
+                WHERE counter_proposal_to = v_care_request.id
+                AND status = 'declined'
+                ORDER BY updated_at DESC
+                LIMIT 1;
+
+                v_counter_proposer_id := v_declined_counter.requester_id;
+
+                -- Notification for counter-proposer
+                INSERT INTO notifications (user_id, type, title, message, data)
+                VALUES (
+                    v_counter_proposer_id,
+                    'reschedule_counter_declined',
+                    (SELECT full_name FROM profiles WHERE id = p_responder_id) ||
+                        ' declined your counter-proposal for ' ||
+                        TO_CHAR(v_care_request.reciprocal_date, 'Mon DD, YYYY'),
+                    '',
+                    jsonb_build_object(
+                        'counter_proposer_id', v_counter_proposer_id,
+                        'decliner_id', p_responder_id,
+                        'decliner_name', (SELECT full_name FROM profiles WHERE id = p_responder_id),
+                        'original_date', v_care_request.reciprocal_date,
+                        'original_start_time', v_care_request.reciprocal_start_time,
+                        'original_end_time', v_care_request.reciprocal_end_time,
+                        'declined_counter_date', v_declined_counter.requested_date,
+                        'declined_counter_start_time', v_declined_counter.start_time,
+                        'declined_counter_end_time', v_declined_counter.end_time,
+                        'selected_cancellation_date', (
+                            SELECT CASE
+                                WHEN request_type = 'open_block' THEN reciprocal_date
+                                ELSE requested_date
+                            END
+                            FROM care_requests WHERE id = v_counter_proposer_selected_arrangement
+                        ),
+                        'selected_cancellation_start_time', (
+                            SELECT CASE
+                                WHEN request_type = 'open_block' THEN reciprocal_start_time
+                                ELSE start_time
+                            END
+                            FROM care_requests WHERE id = v_counter_proposer_selected_arrangement
+                        ),
+                        'selected_cancellation_end_time', (
+                            SELECT CASE
+                                WHEN request_type = 'open_block' THEN reciprocal_end_time
+                                ELSE end_time
+                            END
+                            FROM care_requests WHERE id = v_counter_proposer_selected_arrangement
+                        ),
+                        'counter_request_id', v_declined_counter.id,
+                        'original_request_id', v_care_request.id,
+                        'care_response_id', p_care_response_id
+                    )
+                );
+
+                -- Notification for decliner
+                INSERT INTO notifications (user_id, type, title, message, data)
+                VALUES (
+                    p_responder_id,
+                    'reschedule_counter_declined',
+                    'You declined ' ||
+                        (SELECT full_name FROM profiles WHERE id = v_counter_proposer_id) ||
+                        '''s counter-proposal for ' ||
+                        TO_CHAR(v_care_request.reciprocal_date, 'Mon DD, YYYY'),
+                    '',
+                    jsonb_build_object(
+                        'counter_proposer_id', v_counter_proposer_id,
+                        'counter_proposer_name', (SELECT full_name FROM profiles WHERE id = v_counter_proposer_id),
+                        'decliner_id', p_responder_id,
+                        'original_date', v_care_request.reciprocal_date,
+                        'original_start_time', v_care_request.reciprocal_start_time,
+                        'original_end_time', v_care_request.reciprocal_end_time,
+                        'declined_counter_date', v_declined_counter.requested_date,
+                        'declined_counter_start_time', v_declined_counter.start_time,
+                        'declined_counter_end_time', v_declined_counter.end_time,
+                        'selected_cancellation_date', (
+                            SELECT CASE
+                                WHEN request_type = 'open_block' THEN reciprocal_date
+                                ELSE requested_date
+                            END
+                            FROM care_requests WHERE id = v_counter_proposer_selected_arrangement
+                        ),
+                        'selected_cancellation_start_time', (
+                            SELECT CASE
+                                WHEN request_type = 'open_block' THEN reciprocal_start_time
+                                ELSE start_time
+                            END
+                            FROM care_requests WHERE id = v_counter_proposer_selected_arrangement
+                        ),
+                        'selected_cancellation_end_time', (
+                            SELECT CASE
+                                WHEN request_type = 'open_block' THEN reciprocal_end_time
+                                ELSE end_time
+                            END
+                            FROM care_requests WHERE id = v_counter_proposer_selected_arrangement
+                        ),
+                        'counter_request_id', v_declined_counter.id,
+                        'original_request_id', v_care_request.id,
+                        'care_response_id', p_care_response_id
+                    )
+                );
+
+                RAISE NOTICE 'Counter-proposal declined notifications created successfully';
+            END;
+
+            RETURN json_build_object(
+                'success', true,
+                'message', 'Counter-proposal declined',
+                'request_id', v_care_request.id
+            );
+
+        ELSIF p_decline_action = 'counter_propose' AND p_counter_proposal_date IS NOT NULL THEN
+            -- DECLINE WITH COUNTER-PROPOSAL
+            RAISE NOTICE 'Creating counter-proposal reschedule request';
+
+            INSERT INTO care_requests (
+                group_id, requester_id, child_id,
+                requested_date, start_time, end_time,
+                request_type, status, action_type,
+                original_request_id,
+                notes,
+                reciprocal_date, reciprocal_start_time, reciprocal_end_time,
+                reschedule_group_id,
+                reciprocal_care_id,
+                counter_proposal_to
+            ) VALUES (
+                v_care_request.group_id,
+                p_responder_id,
+                v_responder_child_id,
+                p_counter_proposal_date,
+                p_counter_proposal_start_time,
+                p_counter_proposal_end_time,
+                'reschedule',
+                'pending',
+                'reschedule',
+                v_care_request.id,
+                'Counter-proposal: ' || COALESCE(p_counter_proposal_notes, 'Alternative time offered'),
+                v_care_request.reciprocal_date,
+                v_care_request.reciprocal_start_time,
+                v_care_request.reciprocal_end_time,
+                gen_random_uuid(),
+                NULL,
+                v_care_request.id
+            ) RETURNING id INTO v_counter_proposal_id;
+
+            -- Create response for original requester
+            INSERT INTO care_responses (
+                request_id, responder_id, response_type, status, action_type
+            ) VALUES (
+                v_counter_proposal_id,
+                v_care_request.requester_id,
+                'pending',
+                'pending',
+                'counter_proposal_response'
+            ) RETURNING id INTO v_counter_response_id;
+
+            RAISE NOTICE 'Created counter-proposal: % (blocks stay yellow until acceptance)', v_counter_proposal_id;
+
+            -- COUNTER-PROPOSAL SENT NOTIFICATIONS
+            RAISE NOTICE 'Creating counter-proposal sent notifications';
+
+            -- Notification for original requester
+            INSERT INTO notifications (user_id, type, title, message, data)
+            VALUES (
+                v_care_request.requester_id,
+                'reschedule_counter_sent',
+                (SELECT full_name FROM profiles WHERE id = p_responder_id) ||
+                    ' sent a counter-proposal for ' ||
+                    TO_CHAR(v_care_request.reciprocal_date, 'Mon DD, YYYY'),
+                '',
+                jsonb_build_object(
+                    'original_requester_id', v_care_request.requester_id,
+                    'counter_proposer_id', p_responder_id,
+                    'counter_proposer_name', (SELECT full_name FROM profiles WHERE id = p_responder_id),
+                    'original_date', v_care_request.reciprocal_date,
+                    'original_start_time', v_care_request.reciprocal_start_time,
+                    'original_end_time', v_care_request.reciprocal_end_time,
+                    'original_requested_date', v_care_request.requested_date,
+                    'original_requested_start_time', v_care_request.start_time,
+                    'original_requested_end_time', v_care_request.end_time,
+                    'counter_date', p_counter_proposal_date,
+                    'counter_start_time', p_counter_proposal_start_time,
+                    'counter_end_time', p_counter_proposal_end_time,
+                    'counter_request_id', v_counter_proposal_id,
+                    'original_request_id', v_care_request.id,
+                    'care_response_id', v_counter_response_id,
+                    'selected_cancellation_request_id', p_selected_cancellation_request_id,
+                    'selected_cancellation_date', (SELECT CASE WHEN request_type = 'open_block' THEN reciprocal_date ELSE requested_date END FROM care_requests WHERE id = p_selected_cancellation_request_id),
+                    'selected_cancellation_start_time', (SELECT CASE WHEN request_type = 'open_block' THEN reciprocal_start_time ELSE start_time END FROM care_requests WHERE id = p_selected_cancellation_request_id),
+                    'selected_cancellation_end_time', (SELECT CASE WHEN request_type = 'open_block' THEN reciprocal_end_time ELSE end_time END FROM care_requests WHERE id = p_selected_cancellation_request_id),
+                    'selected_cancellation_requesting_parent', (SELECT p.full_name FROM care_requests cr JOIN profiles p ON cr.requester_id = p.id WHERE cr.id = p_selected_cancellation_request_id),
+                    'selected_cancellation_receiving_parent', (SELECT p.full_name FROM care_responses crsp JOIN profiles p ON crsp.responder_id = p.id WHERE crsp.request_id = p_selected_cancellation_request_id LIMIT 1)
+                )
+            );
+
+            -- Notification for counter-proposer
+            INSERT INTO notifications (user_id, type, title, message, data)
+            VALUES (
+                p_responder_id,
+                'reschedule_counter_sent',
+                'You sent a counter-proposal to ' ||
+                    (SELECT full_name FROM profiles WHERE id = v_care_request.requester_id) ||
+                    ' for ' ||
+                    TO_CHAR(v_care_request.reciprocal_date, 'Mon DD, YYYY'),
+                '',
+                jsonb_build_object(
+                    'original_requester_id', v_care_request.requester_id,
+                    'original_requester_name', (SELECT full_name FROM profiles WHERE id = v_care_request.requester_id),
+                    'counter_proposer_id', p_responder_id,
+                    'original_date', v_care_request.reciprocal_date,
+                    'original_start_time', v_care_request.reciprocal_start_time,
+                    'original_end_time', v_care_request.reciprocal_end_time,
+                    'original_requested_date', v_care_request.requested_date,
+                    'original_requested_start_time', v_care_request.start_time,
+                    'original_requested_end_time', v_care_request.end_time,
+                    'counter_date', p_counter_proposal_date,
+                    'counter_start_time', p_counter_proposal_start_time,
+                    'counter_end_time', p_counter_proposal_end_time,
+                    'counter_request_id', v_counter_proposal_id,
+                    'original_request_id', v_care_request.id,
+                    'care_response_id', v_counter_response_id,
+                    'selected_cancellation_request_id', p_selected_cancellation_request_id,
+                    'selected_cancellation_date', (SELECT CASE WHEN request_type = 'open_block' THEN reciprocal_date ELSE requested_date END FROM care_requests WHERE id = p_selected_cancellation_request_id),
+                    'selected_cancellation_start_time', (SELECT CASE WHEN request_type = 'open_block' THEN reciprocal_start_time ELSE start_time END FROM care_requests WHERE id = p_selected_cancellation_request_id),
+                    'selected_cancellation_end_time', (SELECT CASE WHEN request_type = 'open_block' THEN reciprocal_end_time ELSE end_time END FROM care_requests WHERE id = p_selected_cancellation_request_id),
+                    'selected_cancellation_requesting_parent', (SELECT p.full_name FROM care_requests cr JOIN profiles p ON cr.requester_id = p.id WHERE cr.id = p_selected_cancellation_request_id),
+                    'selected_cancellation_receiving_parent', (SELECT p.full_name FROM care_responses crsp JOIN profiles p ON crsp.responder_id = p.id WHERE crsp.request_id = p_selected_cancellation_request_id LIMIT 1)
+                )
+            );
+
+        ELSE
+            -- SIMPLE DECLINE (no counter-proposal)
+            RAISE NOTICE 'Declining original reschedule % - removing child from blocks', v_care_request.id;
+
+            -- Find the providing block and check how many children it has
+            SELECT sc.id, COUNT(scc.child_id) INTO v_providing_block_id, v_children_count_before
+            FROM scheduled_care sc
+            LEFT JOIN scheduled_care_children scc ON sc.id = scc.scheduled_care_id
+            WHERE sc.parent_id = p_responder_id
+            AND sc.group_id = v_care_request.group_id
+            AND sc.care_type = 'provided'
+            AND sc.status IN ('confirmed', 'rescheduled')
+            AND sc.care_date = v_care_request.reciprocal_date
+            AND sc.start_time = v_care_request.reciprocal_start_time
+            AND sc.end_time = v_care_request.reciprocal_end_time
+            GROUP BY sc.id
+            LIMIT 1;
+
+            IF v_providing_block_id IS NOT NULL THEN
+                RAISE NOTICE 'Found providing block: % with % children before removal', v_providing_block_id, v_children_count_before;
+
+                -- Remove ONLY the requester's child from the providing block
+                DELETE FROM scheduled_care_children
+                WHERE scheduled_care_id = v_providing_block_id
+                AND child_id = v_requester_child_id;
+
+                RAISE NOTICE 'Removed child % from providing block %', v_requester_child_id, v_providing_block_id;
+
+                -- Cancel block if it was the ONLY child OR only has providing parent's own child left
+                IF v_children_count_before = 1 OR NOT EXISTS (
+                    SELECT 1 FROM scheduled_care_children scc
+                    JOIN children c ON scc.child_id = c.id
+                    JOIN scheduled_care sc ON scc.scheduled_care_id = sc.id
+                    WHERE scc.scheduled_care_id = v_providing_block_id
+                    AND c.parent_id != sc.parent_id
+                ) THEN
+                    RAISE NOTICE 'Block is empty or only has provider own child - cancelling entire providing block';
+                    UPDATE scheduled_care
+                    SET status = 'cancelled', action_type = 'cancelled'
+                    WHERE id = v_providing_block_id;
+                ELSE
+                    RAISE NOTICE 'Block still has % other children from other parents - keeping the block', v_children_count_before - 1;
+                END IF;
+            ELSE
+                RAISE NOTICE 'No providing block found for responder - this may be a needed-only block';
+            END IF;
+
+            -- Remove requester's child from ALL related "needed" blocks
+            DELETE FROM scheduled_care_children scc
+            USING scheduled_care sc
+            WHERE scc.scheduled_care_id = sc.id
+            AND sc.parent_id != p_responder_id
+            AND sc.group_id = v_care_request.group_id
+            AND sc.care_type = 'needed'
+            AND sc.care_date = v_care_request.reciprocal_date
+            AND sc.start_time = v_care_request.reciprocal_start_time
+            AND sc.end_time = v_care_request.reciprocal_end_time
+            AND scc.child_id = v_requester_child_id;
+
+            RAISE NOTICE 'Removed requester child from all related needed blocks';
+
+            -- Delete any needed blocks that no longer have the needing parent's own child
+            DELETE FROM scheduled_care sc
+            WHERE sc.parent_id != p_responder_id
+            AND sc.group_id = v_care_request.group_id
+            AND sc.care_type = 'needed'
+            AND sc.care_date = v_care_request.reciprocal_date
+            AND sc.start_time = v_care_request.reciprocal_start_time
+            AND sc.end_time = v_care_request.reciprocal_end_time
+            AND (
+                NOT EXISTS (
+                    SELECT 1 FROM scheduled_care_children scc
+                    WHERE scc.scheduled_care_id = sc.id
+                )
+                OR
+                NOT EXISTS (
+                    SELECT 1 FROM scheduled_care_children scc
+                    JOIN children c ON scc.child_id = c.id
+                    WHERE scc.scheduled_care_id = sc.id
+                    AND c.parent_id = sc.parent_id
+                )
+            );
+
+            RAISE NOTICE 'Deleted meaningless needed blocks (empty or missing owner child)';
+
+            -- Remove responder's child from yellow blocks
+            DELETE FROM scheduled_care_children
+            WHERE child_id = v_responder_child_id
+            AND scheduled_care_id IN (
+                SELECT id FROM scheduled_care
+                WHERE group_id = v_care_request.group_id
+                AND care_date = v_care_request.reciprocal_date
+                AND start_time = v_care_request.reciprocal_start_time
+                AND end_time = v_care_request.reciprocal_end_time
+                AND status = 'rescheduled'
+            );
+
+            -- Delete responder's yellow needed block
+            DELETE FROM scheduled_care
+            WHERE parent_id = p_responder_id
+            AND group_id = v_care_request.group_id
+            AND care_type = 'needed'
+            AND status = 'rescheduled'
+            AND care_date = v_care_request.reciprocal_date
+            AND start_time = v_care_request.reciprocal_start_time
+            AND end_time = v_care_request.reciprocal_end_time;
+
+            -- Handle selected cancellation request
+            IF p_selected_cancellation_request_id IS NOT NULL THEN
+                DELETE FROM scheduled_care
+                WHERE related_request_id = p_selected_cancellation_request_id
+                AND status != 'rescheduled';
+
+                UPDATE care_requests
+                SET status = 'canceled'
+                WHERE id = p_selected_cancellation_request_id;
+            END IF;
+
+            -- DECLINE NOTIFICATIONS
+            RAISE NOTICE 'Creating reschedule decline notifications';
+
+            -- Notification for requester
+            INSERT INTO notifications (user_id, type, title, message, data)
+            VALUES (
+                v_care_request.requester_id,
+                'reschedule_declined',
+                (SELECT full_name FROM profiles WHERE id = p_responder_id) ||
+                    ' declined your reschedule request for ' ||
+                    TO_CHAR(v_care_request.reciprocal_date, 'Mon DD, YYYY'),
+                '',
+                jsonb_build_object(
+                    'requester_id', v_care_request.requester_id,
+                    'responder_id', p_responder_id,
+                    'responder_name', (SELECT full_name FROM profiles WHERE id = p_responder_id),
+                    'declined_reschedule_date', v_care_request.reciprocal_date,
+                    'declined_reschedule_start_time', v_care_request.reciprocal_start_time,
+                    'declined_reschedule_end_time', v_care_request.reciprocal_end_time,
+                    'selected_cancellation_date', (
+                        SELECT CASE
+                            WHEN request_type = 'open_block' THEN reciprocal_date
+                            ELSE requested_date
+                        END
+                        FROM care_requests WHERE id = p_selected_cancellation_request_id
+                    ),
+                    'selected_cancellation_start_time', (
+                        SELECT CASE
+                            WHEN request_type = 'open_block' THEN reciprocal_start_time
+                            ELSE start_time
+                        END
+                        FROM care_requests WHERE id = p_selected_cancellation_request_id
+                    ),
+                    'selected_cancellation_end_time', (
+                        SELECT CASE
+                            WHEN request_type = 'open_block' THEN reciprocal_end_time
+                            ELSE end_time
+                        END
+                        FROM care_requests WHERE id = p_selected_cancellation_request_id
+                    ),
+                    'selected_cancellation_request_id', p_selected_cancellation_request_id,
+                    'care_response_id', p_care_response_id
+                )
+            );
+
+            -- Notification for responder
+            INSERT INTO notifications (user_id, type, title, message, data)
+            VALUES (
+                p_responder_id,
+                'reschedule_declined',
+                'You declined ' ||
+                    (SELECT full_name FROM profiles WHERE id = v_care_request.requester_id) ||
+                    '''s reschedule request for ' ||
+                    TO_CHAR(v_care_request.reciprocal_date, 'Mon DD, YYYY'),
+                '',
+                jsonb_build_object(
+                    'requester_id', v_care_request.requester_id,
+                    'requester_name', (SELECT full_name FROM profiles WHERE id = v_care_request.requester_id),
+                    'responder_id', p_responder_id,
+                    'declined_reschedule_date', v_care_request.reciprocal_date,
+                    'declined_reschedule_start_time', v_care_request.reciprocal_start_time,
+                    'declined_reschedule_end_time', v_care_request.reciprocal_end_time,
+                    'selected_cancellation_date', (
+                        SELECT CASE
+                            WHEN request_type = 'open_block' THEN reciprocal_date
+                            ELSE requested_date
+                        END
+                        FROM care_requests WHERE id = p_selected_cancellation_request_id
+                    ),
+                    'selected_cancellation_start_time', (
+                        SELECT CASE
+                            WHEN request_type = 'open_block' THEN reciprocal_start_time
+                            ELSE start_time
+                        END
+                        FROM care_requests WHERE id = p_selected_cancellation_request_id
+                    ),
+                    'selected_cancellation_end_time', (
+                        SELECT CASE
+                            WHEN request_type = 'open_block' THEN reciprocal_end_time
+                            ELSE end_time
+                        END
+                        FROM care_requests WHERE id = p_selected_cancellation_request_id
+                    ),
+                    'selected_cancellation_request_id', p_selected_cancellation_request_id,
+                    'care_response_id', p_care_response_id
+                )
+            );
+
+            RAISE NOTICE 'Reschedule decline notifications created successfully';
+        END IF;
+    END IF;
+
+    -- Check remaining responses
+    SELECT COUNT(*) INTO v_remaining_responses
+    FROM care_responses
+    WHERE request_id = v_care_request.id
+    AND status = 'pending';
+
+    -- Cleanup if all responses are complete and no counter-proposal was created
+    IF v_remaining_responses = 0 AND v_counter_proposal_id IS NULL THEN
+        SELECT EXISTS (
+            SELECT 1 FROM care_requests
+            WHERE counter_proposal_to = v_care_request.id
+            AND status IN ('pending', 'awaiting_response')
+        ) INTO v_has_pending_counter;
+
+        IF NOT v_has_pending_counter THEN
+            SELECT COUNT(DISTINCT scc.child_id) INTO v_remaining_children
+            FROM scheduled_care sc
+            JOIN scheduled_care_children scc ON sc.id = scc.scheduled_care_id
+            WHERE sc.group_id = v_care_request.group_id
+            AND sc.care_type = 'provided'
+            AND sc.status = 'rescheduled'
+            AND sc.care_date = v_care_request.reciprocal_date
+            AND sc.start_time = v_care_request.reciprocal_start_time
+            AND sc.end_time = v_care_request.reciprocal_end_time;
+
+            IF v_remaining_children > 0 THEN
+                RAISE NOTICE 'Skipping cleanup - yellow providing block still has % receiving children (other parents pending)', v_remaining_children;
+            ELSE
+                UPDATE care_requests SET status = 'completed' WHERE id = v_care_request.id;
+
+                DELETE FROM scheduled_care
+                WHERE group_id = v_care_request.group_id
+                AND status = 'rescheduled'
+                AND care_date = v_care_request.reciprocal_date
+                AND start_time = v_care_request.reciprocal_start_time
+                AND end_time = v_care_request.reciprocal_end_time;
+
+                RAISE NOTICE 'Cleaned up yellow blocks - all parents responded';
+            END IF;
+        ELSE
+            RAISE NOTICE 'Skipping cleanup - counter-proposal is pending';
+        END IF;
+    ELSIF v_counter_proposal_id IS NOT NULL THEN
+        RAISE NOTICE 'Skipping cleanup - counter-proposal just created';
+    ELSE
+        RAISE NOTICE 'Skipping cleanup - still have % pending responses', v_remaining_responses;
+    END IF;
+
+    RETURN json_build_object(
+        'success', true,
+        'message', 'Reschedule response processed',
+        'remaining_responses', v_remaining_responses,
+        'counter_proposal_id', v_counter_proposal_id
+    );
+END;

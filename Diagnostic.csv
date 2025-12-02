@@ -1,0 +1,5 @@
+trigger_name,event_object_table,action_statement,action_timing,event_manipulation
+trigger_notify_event_created,care_requests,EXECUTE FUNCTION notify_event_created(),AFTER,INSERT
+trigger_notify_event_updated,care_requests,EXECUTE FUNCTION notify_event_updated(),AFTER,UPDATE
+sync_care_requests_on_response_change,care_responses,EXECUTE FUNCTION sync_care_requests_on_response_change(),AFTER,UPDATE
+sync_care_requests_on_response_insert,care_responses,EXECUTE FUNCTION sync_care_requests_on_response_insert(),AFTER,INSERT

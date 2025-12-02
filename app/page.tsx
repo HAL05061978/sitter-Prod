@@ -2,8 +2,8 @@ import Link from 'next/link';
 
 export default function HomePage() {
   return (
-          <main className="flex flex-col items-center justify-center min-h-screen bg-white">
-      <h1 className="text-4xl font-bold mb-4 text-gray-900">Welcome to Sitter!</h1>
+          <main className="flex flex-col items-center justify-center min-h-screen bg-white px-6 safe-area-inset">
+      <h1 className="text-3xl font-bold mb-4 text-gray-900 text-center">Welcome to Sitter!</h1>
       <p className="mb-8 text-center max-w-xl text-gray-600">
         A smarter way for parents to schedule playdates, carpooling, and exchange childcare hours. Join or create groups, manage your children's activities, and discover local marketplace offers—all in one place.
       </p>

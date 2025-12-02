@@ -1,0 +1,28 @@
+
+BEGIN
+    RETURN QUERY
+    SELECT
+        cr.id,
+        cr.id as request_id,
+        p.full_name as requester_name,
+        g.name as group_name,
+        cr.reciprocal_date as original_date,
+        cr.reciprocal_start_time as original_start_time,
+        cr.reciprocal_end_time as original_end_time,
+        cr.requested_date as new_date,
+        cr.start_time as new_start_time,
+        cr.end_time as new_end_time,
+        cr_responses.status,
+        cr_responses.response_notes,
+        cr.created_at,
+        cr_responses.id as care_response_id,
+        cr.reschedule_group_id
+    FROM care_requests cr
+    JOIN profiles p ON cr.requester_id = p.id
+    JOIN groups g ON cr.group_id = g.id
+    JOIN care_responses cr_responses ON cr.id = cr_responses.request_id
+    WHERE cr.request_type = 'reschedule'
+    AND cr_responses.responder_id = p_parent_id
+    AND cr_responses.status = 'pending'
+    ORDER BY cr.created_at DESC;
+END;

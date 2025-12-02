@@ -1,0 +1,21 @@
+  Validation Flow Diagram
+
+  Creating Pet Care Request (app/calendar/page.tsx)
+    ↓
+  1. Check existing scheduled pet care (lines 1643-1666) ✓
+    ↓ If no conflicts
+  2. Call create_pet_care_request (backend)
+    ↓
+  Request created ✓
+
+  Responding to Pet Care Request (app/scheduler/page.tsx)
+    ↓
+  1. User enters reciprocal dates
+    ↓
+  2. Live validation useEffect runs (lines 407-448) ⚠️
+    ↓ If overlap detected
+  3. Show yellow fields + warning (lines 4023-4027, 4061-4082)
+    ↓ User can still try to submit
+  4. Submit validation check (lines 2543-2546) ❌ Blocks submission
+    ↓ If user bypasses frontend
+  5. Backend validation in SQL (PHASE1_STEP7 lines 52-60) ❌ Final safety

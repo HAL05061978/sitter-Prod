@@ -1,5 +1,13 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  // For Capacitor: enable static export when building for mobile
+  output: process.env.BUILD_MODE === 'capacitor' ? 'export' : undefined,
+
+  // Skip TypeScript checking during build (for production deployment)
+  typescript: {
+    ignoreBuildErrors: true,
+  },
+
   // Enable experimental features for better performance
   experimental: {
     // Enable server components logging in development

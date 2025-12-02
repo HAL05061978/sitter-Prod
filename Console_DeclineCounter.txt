@@ -1,0 +1,20 @@
+=== OPENING RESCHEDULE RESPONSE MODAL FOR DECLINE ===
+page-0d6efae3099644ae.js:1 Care Request ID: 4314bfef-132a-4f2f-b83c-8f022881adce
+page-0d6efae3099644ae.js:1 Care Response ID: 9916086d-6938-4853-8d72-5c6565e5fe94
+page-0d6efae3099644ae.js:1 📊 Accepted invitations to display: (2) [{…}, {…}]
+page-0d6efae3099644ae.js:1 📊 Processing invitation: {is_provider_view: true, is_acceptor_view: undefined, acceptor_name: 'Bruce H', provider_name: undefined}
+page-0d6efae3099644ae.js:1 📊 Adding provider message: {id: 'open-block-provider-a84b139a-0865-4ff7-b320-71ddd838189c', type: 'open_block_provider_notified', title: "Bruce H accepted your Emma's Care Group open block offer for Nov 4, 2025", subtitle: '', timestamp: '2025-11-04T19:57:28.833491+00:00', …}
+page-0d6efae3099644ae.js:1 📊 Processing invitation: {is_provider_view: true, is_acceptor_view: undefined, acceptor_name: 'Karen Lop', provider_name: undefined}
+page-0d6efae3099644ae.js:1 📊 Adding provider message: {id: 'open-block-provider-5128914c-2aef-45d6-badc-cde81b31f643', type: 'open_block_provider_notified', title: "Karen Lop accepted your Emma's Care Group open block offer for Nov 4, 2025", subtitle: '', timestamp: '2025-11-04T19:57:28.833491+00:00', …}
+page-0d6efae3099644ae.js:1 🔍 Checking for responses to my requests...
+page-0d6efae3099644ae.js:1 🔍 careRequests: []
+page-0d6efae3099644ae.js:1 🔍 careResponses: [{…}]
+page-0d6efae3099644ae.js:1 🔍 Total requests with responses: 0
+page-0d6efae3099644ae.js:1 🔵 RescheduleResponseModal loaded - ENHANCED VERSION with decline workflow
+page-0d6efae3099644ae.js:1 ✅ Reschedule details loaded: {reschedule_request: {…}, original_request: {…}, new_request: {…}, participating_parents: Array(0), responses: Array(0)}
+page-0d6efae3099644ae.js:1 ✅ Is counter-proposal: true
+page-0d6efae3099644ae.js:1 🔵 RescheduleResponseModal loaded - ENHANCED VERSION with decline workflow
+index.global.js:23 add node:  <textarea id=​"responseNotes" rows=​"3" class=​"w-full px-3 py-2 border border-gray-300 rounded-md focus:​outline-none focus:​ring-2 focus:​ring-blue-500" placeholder=​"Add any notes about your response...">​</textarea>​
+page-0d6efae3099644ae.js:1 Fetching arrangements between: 88416767-8bca-46c7-9dd3-f191a134b46b and 1f66fb72-ccfb-4a55-8738-716a12543421
+page-0d6efae3099644ae.js:1 Arrangements result: {data: Array(1), error: null}
+page-0d6efae3099644ae.js:1 🔵 RescheduleResponseModal loaded - ENHANCED VERSION with decline workflow

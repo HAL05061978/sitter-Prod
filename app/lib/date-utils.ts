@@ -38,14 +38,19 @@ export function parseDateSafely(dateString: string | Date | null | undefined): D
 /**
  * Format a date string to show only the date (e.g., "Jan 15, 2025")
  * FIXED: Use parseDateSafely to prevent timezone issues
+ * Now supports i18n - accepts optional language parameter or checks localStorage
  */
-export function formatDateOnly(dateString: string | Date): string {
+export function formatDateOnly(dateString: string | Date, lang?: string): string {
   if (!dateString) return '';
-  
+
   const date = parseDateSafely(dateString);
   if (!date) return '';
-  
-  return date.toLocaleDateString('en-US', {
+
+  // Use provided lang, or get from localStorage
+  const language = lang || (typeof window !== 'undefined' ? localStorage.getItem('i18nextLng') || 'en' : 'en');
+  const locale = language === 'es' ? 'es-ES' : 'en-US';
+
+  return date.toLocaleDateString(locale, {
     month: 'short',
     day: 'numeric',
     year: 'numeric'
@@ -54,13 +59,14 @@ export function formatDateOnly(dateString: string | Date): string {
 
 /**
  * Format a time string to show only the time (e.g., "2:30 PM")
+ * Now supports i18n - checks localStorage for language preference
  */
 export function formatTime(timeString: string): string {
   if (!timeString) return '';
-  
+
   // Handle different time formats
   let time: Date;
-  
+
   if (timeString.includes('T') || timeString.includes(' ')) {
     // Full datetime string
     time = new Date(timeString);
@@ -70,10 +76,14 @@ export function formatTime(timeString: string): string {
     time = new Date();
     time.setHours(parseInt(hours, 10), parseInt(minutes, 10), 0, 0);
   }
-  
+
   if (isNaN(time.getTime())) return '';
-  
-  return time.toLocaleTimeString('en-US', {
+
+  // Get language from localStorage (set by i18n)
+  const lang = typeof window !== 'undefined' ? localStorage.getItem('i18nextLng') || 'en' : 'en';
+  const locale = lang === 'es' ? 'es-ES' : 'en-US';
+
+  return time.toLocaleTimeString(locale, {
     hour: 'numeric',
     minute: '2-digit',
     hour12: true
@@ -83,14 +93,19 @@ export function formatTime(timeString: string): string {
 /**
  * Format a timestamp to show the date and time (e.g., "Jan 15, 2025 at 2:30 PM")
  * FIXED: Use parseDateSafely to prevent timezone issues
+ * Now supports i18n - checks localStorage for language preference
  */
 export function formatTimestampDate(timestamp: string | Date): string {
   if (!timestamp) return '';
-  
+
   const date = parseDateSafely(timestamp);
   if (!date) return '';
-  
-  return date.toLocaleDateString('en-US', {
+
+  // Get language from localStorage (set by i18n)
+  const lang = typeof window !== 'undefined' ? localStorage.getItem('i18nextLng') || 'en' : 'en';
+  const locale = lang === 'es' ? 'es-ES' : 'en-US';
+
+  return date.toLocaleDateString(locale, {
     month: 'short',
     day: 'numeric',
     year: 'numeric',

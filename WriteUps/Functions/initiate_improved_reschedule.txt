@@ -1,0 +1,149 @@
+
+DECLARE
+    v_original_block RECORD;
+    v_requester_child_id UUID;
+    v_reschedule_group_id UUID;
+    v_participating_parent RECORD;
+    v_responses_created INTEGER := 0;
+    v_original_reciprocal_request_id UUID;
+    v_new_request_id UUID;
+BEGIN
+    -- Generate a group ID for this reschedule batch
+    v_reschedule_group_id := gen_random_uuid();
+
+    -- Get the original providing block
+    SELECT sc.*, p.full_name as parent_name, g.name as group_name
+    INTO v_original_block
+    FROM scheduled_care sc
+    JOIN profiles p ON sc.parent_id = p.id
+    JOIN groups g ON sc.group_id = g.id
+    WHERE sc.id = p_scheduled_care_id
+    AND sc.care_type = 'provided';
+
+    IF NOT FOUND THEN
+        RETURN QUERY SELECT FALSE, 'Scheduled care block not found', NULL::UUID, NULL::UUID;
+        RETURN;
+    END IF;
+
+    -- Get the requester's child
+    SELECT scc.child_id INTO v_requester_child_id
+    FROM scheduled_care_children scc
+    JOIN children c ON scc.child_id = c.id
+    WHERE scc.scheduled_care_id = p_scheduled_care_id
+    AND c.parent_id = v_original_block.parent_id
+    LIMIT 1;
+
+    IF v_requester_child_id IS NULL THEN
+        RETURN QUERY SELECT FALSE, 'No child found for the scheduled care block', NULL::UUID, NULL::UUID;
+        RETURN;
+    END IF;
+
+    -- Find the original reciprocal request ID
+    WITH RECURSIVE request_chain AS (
+        SELECT id, request_type, original_request_id, 1 as depth
+        FROM care_requests
+        WHERE id = v_original_block.related_request_id
+
+        UNION ALL
+
+        SELECT cr.id, cr.request_type, cr.original_request_id, rc.depth + 1
+        FROM care_requests cr
+        JOIN request_chain rc ON cr.id = rc.original_request_id
+        WHERE rc.depth < 10
+    )
+    SELECT id INTO v_original_reciprocal_request_id
+    FROM request_chain
+    WHERE request_type IN ('reciprocal', 'regular', 'open_block')
+    ORDER BY depth DESC
+    LIMIT 1;
+
+    IF v_original_reciprocal_request_id IS NULL THEN
+        SELECT id INTO v_original_reciprocal_request_id
+        FROM care_requests
+        WHERE group_id = v_original_block.group_id
+        AND requester_id = v_original_block.parent_id
+        AND request_type = 'reciprocal'
+        AND reciprocal_date = v_original_block.care_date
+        AND reciprocal_start_time = v_original_block.start_time
+        AND reciprocal_end_time = v_original_block.end_time
+        LIMIT 1;
+    END IF;
+
+    -- Mark the existing providing block as rescheduled (yellow)
+    UPDATE scheduled_care
+    SET
+        status = 'rescheduled',
+        action_type = 'rescheduled',
+        notes = COALESCE(notes, '') || ' - Pending reschedule responses'
+    WHERE parent_id = v_original_block.parent_id
+    AND group_id = v_original_block.group_id
+    AND care_date = v_original_block.care_date
+    AND start_time = v_original_block.start_time
+    AND end_time = v_original_block.end_time
+    AND care_type = 'provided';
+
+    -- Remove provider's child from yellow providing block
+    DELETE FROM scheduled_care_children
+    WHERE scheduled_care_id = p_scheduled_care_id
+    AND child_id IN (
+        SELECT id FROM children WHERE parent_id = v_original_block.parent_id
+    );
+
+    -- Create the reschedule care_request with correct action_type
+    INSERT INTO care_requests (
+        group_id, requester_id, child_id, requested_date, start_time, end_time,
+        request_type, status, reschedule_reason, action_type, original_request_id,
+        notes, reschedule_group_id, reciprocal_date, reciprocal_start_time, reciprocal_end_time,
+        reciprocal_care_id
+    ) VALUES (
+        v_original_block.group_id, v_original_block.parent_id, v_requester_child_id,
+        p_new_date, p_new_start_time, p_new_end_time,
+        'reschedule', 'pending', p_reschedule_reason,
+        'reschedule_request',  -- FIXED: Use 'reschedule_request' instead of 'reschedule'
+        v_original_reciprocal_request_id,
+        'Original: ' || v_original_block.care_date || ' ' || v_original_block.start_time || '-' || v_original_block.end_time || ' | New: ' || p_new_date || ' ' || p_new_start_time || '-' || p_new_end_time,
+        v_reschedule_group_id, v_original_block.care_date, v_original_block.start_time, v_original_block.end_time,
+        NULL  -- No block created yet - will be updated on acceptance
+    ) RETURNING id INTO v_new_request_id;
+
+    -- Create care_responses for participating parents
+    FOR v_participating_parent IN
+        SELECT DISTINCT
+            c.parent_id,
+            p.full_name as parent_name,
+            c.id as child_id,
+            c.full_name as child_name
+        FROM scheduled_care_children scc
+        JOIN children c ON scc.child_id = c.id
+        JOIN profiles p ON c.parent_id = p.id
+        WHERE scc.scheduled_care_id = p_scheduled_care_id
+        AND c.parent_id != v_original_block.parent_id
+    LOOP
+        INSERT INTO care_responses (
+            request_id, responder_id, response_type, status, action_type
+        ) VALUES (
+            v_new_request_id, v_participating_parent.parent_id, 'pending', 'pending', 'reschedule_response'
+        );
+
+        -- Mark participating parent's blocks as rescheduled (yellow)
+        UPDATE scheduled_care
+        SET
+            status = 'rescheduled',
+            action_type = 'rescheduled',
+            notes = COALESCE(notes, '') || ' - Pending reschedule response'
+        WHERE parent_id = v_participating_parent.parent_id
+        AND group_id = v_original_block.group_id
+        AND care_date = v_original_block.care_date
+        AND start_time = v_original_block.start_time
+        AND end_time = v_original_block.end_time
+        AND status IN ('confirmed', 'pending');
+
+        v_responses_created := v_responses_created + 1;
+    END LOOP;
+
+    RETURN QUERY SELECT
+        TRUE,
+        'Reschedule initiated successfully. Created 1 request with ' || v_responses_created || ' responses.',
+        v_reschedule_group_id,
+        v_new_request_id;
+END;

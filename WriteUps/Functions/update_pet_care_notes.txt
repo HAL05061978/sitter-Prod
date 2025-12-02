@@ -1,0 +1,76 @@
+
+DECLARE
+    v_related_request_id UUID;
+    v_care_type TEXT;
+    v_care_date DATE;
+    v_start_time TIME;
+    v_end_time TIME;
+    v_group_id UUID;
+    v_parent_id UUID;
+    v_updated_count INTEGER := 0;
+BEGIN
+    -- Get the care block details
+    SELECT
+        sc.related_request_id,
+        sc.care_type,
+        sc.care_date,
+        sc.start_time,
+        sc.end_time,
+        sc.group_id,
+        sc.parent_id
+    INTO
+        v_related_request_id,
+        v_care_type,
+        v_care_date,
+        v_start_time,
+        v_end_time,
+        v_group_id,
+        v_parent_id
+    FROM scheduled_pet_care sc
+    WHERE sc.id = p_scheduled_care_id;
+
+    -- Validate this is reciprocal pet care
+    IF v_care_type NOT IN ('provided', 'needed', 'received') THEN
+        RETURN QUERY SELECT FALSE, 'This function only works for reciprocal pet care blocks'::TEXT, 0;
+        RETURN;
+    END IF;
+
+    -- Validate that the parent is the provider
+    IF v_care_type != 'provided' THEN
+        RETURN QUERY SELECT FALSE, 'Only the provider can update notes for reciprocal pet care'::TEXT, 0;
+        RETURN;
+    END IF;
+
+    -- Validate that this is the parent's block
+    IF v_parent_id != p_parent_id THEN
+        RETURN QUERY SELECT FALSE, 'You can only update your own pet care blocks'::TEXT, 0;
+        RETURN;
+    END IF;
+
+    -- Update the provider's block
+    UPDATE scheduled_pet_care
+    SET
+        notes = p_new_notes,
+        updated_at = NOW()
+    WHERE id = p_scheduled_care_id;
+
+    v_updated_count := v_updated_count + 1;
+
+    -- Find and update the receiver's block (same time, same group, care_type = 'needed')
+    UPDATE scheduled_pet_care
+    SET
+        notes = p_new_notes,
+        updated_at = NOW()
+    WHERE
+        group_id = v_group_id
+        AND care_date = v_care_date
+        AND start_time = v_start_time
+        AND end_time = v_end_time
+        AND care_type = 'needed'
+        AND related_request_id = v_related_request_id
+        AND parent_id != p_parent_id;
+
+    v_updated_count := v_updated_count + 1;
+
+    RETURN QUERY SELECT TRUE, 'Notes updated successfully for both provider and receiver'::TEXT, v_updated_count;
+END;
